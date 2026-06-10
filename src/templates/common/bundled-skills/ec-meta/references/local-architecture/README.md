@@ -1,0 +1,81 @@
+# Local Architecture
+
+How an installed Easy Coding harness is laid out and why.
+
+## Two layers
+
+The harness deliberately separates **platform-native files** from **shared runtime data**:
+
+- **Platform-native** (agent discovers these natively): skills, hooks, sub-agent definitions,
+  and the main constraint file. They live in each platform's standard directory
+  (`.claude/`, `.agents/` + `.codex/`, `.qoder/`). The agent's own `/` or `$` discovery finds
+  them — the harness invents no new discovery mechanism.
+- **Shared runtime data** (`.easy-coding/`): `config.yaml`, `state.json`, `tasks/`, `memory/`,
+  `spec/`, and the project knowledge assets (SOUL/RULES/ABSTRACT/TEST_STRATEGY/CHANGELOG).
+  Skills and hooks read and write these.
+
+The CLI installs the platform-native files. Agent skills do all the thinking (project
+analysis, workflow operation). The CLI never analyzes the project.
+
+## `.easy-coding/` runtime layout
+
+```
+.easy-coding/
+  config.yaml        shared project config (in git)
+  state.json         personal workflow state (NOT in git)
+  SOUL.md            project identity + dialogue standards
+  RULES.md           coding rules (per-language sections)
+  ABSTRACT.md        architecture cognition
+  TEST_STRATEGY.md   project-level test baseline
+  CHANGELOG.md       architecture change log (follows ABSTRACT)
+  tasks/             one folder per task
+    project-init/    created by the CLI; ec-init completes it
+    {MM-DD-name}/    task.json · dev-spec.md · test-strategy.md · execution.jsonl
+  memory/
+    short/           sliding-window short memories (max 10, keep 5)
+    long/            MEMORY.md index · BUSINESS.md · TECHNICAL.md
+  spec/
+    main/            confirmed designs from ec-brainstorming
+    dev/             dev-spec candidates (default out of normal commits)
+```
+
+## Workflow state machine
+
+8 stages + 2 terminals, owned by ec-workflow:
+`INIT → ANALYSIS → WAITING_CONFIRM → IMPLEMENT → REVIEW → VERIFICATION → MEMORY_SHORT →
+MEMORY_LONG → COMPLETE`, plus `CLOSED` (user abort, no memory flow). WAITING_CONFIRM and
+VERIFICATION are hard gates. The current stage persists in `state.json`; hooks inject it as a
+breadcrumb so every reply can render the status line.
+
+Task switching: `state.json.current_task` is a single slot, but the user can switch between
+tasks at any time. When a user's prompt doesn't match the active task, ec-workflow's intent
+router offers to suspend the current task and switch. The suspended task retains its stage in
+`task.json`; no data is lost. Each task folder is self-contained.
+
+## Task persistence
+
+Each task is a folder. `task.json` is metadata; `dev-spec.md` is the human-readable plan;
+`execution.jsonl` is an append-only plan-and-log (one `plan` record, then `dispatch`/`result`
+/`review`/`verify`/`handoff` records). Because plan and log live on disk, not in an agent's
+context window, a task survives session end and agent switches with zero information loss.
+
+## Memory system
+
+Short memory: one schema-v2 file per task, sliding window (max 10, keep 5). Long memory:
+three files (index + business + technical), distilled from out-of-window short memories with
+explicit conflict resolution. ABSTRACT.md is backfilled/updated when memory distillation
+detects an architecture change.
+
+## Project knowledge — four layers
+
+Identity (SOUL, rarely changes) · Constraints (RULES, stable) · Cognition (ABSTRACT, updated
+on architecture change) · Memory (short + long, updated every task). ec-workflow always reads
+SOUL + RULES + recent short memory; ec-analysis loads ABSTRACT and matching long memory on
+demand.
+
+## Dead-drop coordination
+
+`.easy-coding/` is a dead drop. Agent A writes results and leaves; agent B reads them and
+continues. All platform-agnostic artifacts (dev-spec, execution.jsonl, task.json, memory)
+make cross-agent handoff lossless. `state.json` records `last_agent` so a new agent knows a
+task was handed off rather than self-interrupted.

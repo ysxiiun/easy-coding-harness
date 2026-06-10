@@ -1,0 +1,36 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "{{PYTHON_CMD}} {{platform_config_dir}}/hooks/session-start.py",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "{{PYTHON_CMD}} {{platform_config_dir}}/hooks/inject-workflow-state.py",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "{{PYTHON_CMD}} {{platform_config_dir}}/hooks/inject-subagent-context.py",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

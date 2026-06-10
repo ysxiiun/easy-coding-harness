@@ -1,0 +1,9 @@
+# Project-scoped Codex defaults for Easy Coding workflows.
+
+project_doc_fallback_filenames = ["AGENTS.md"]
+
+# Codex hooks require user-level enablement in ~/.codex/config.toml:
+# [features]
+# hooks = true
+#
+# Recent Codex versions may also require approving project hooks via /hooks.
