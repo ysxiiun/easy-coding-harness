@@ -42,7 +42,7 @@ export async function status(): Promise<void> {
     console.log("  upgrade: up to date");
   }
   console.log(`  agents: ${config.agents.join(", ") || "(none)"}`);
-  console.log(`  project: ${config.project.name} (${config.project.mode})`);
+  console.log(`  project: ${config.project.name}`);
   console.log("");
   console.log(chalk.bold("Session"));
   if (session?.current_task) {

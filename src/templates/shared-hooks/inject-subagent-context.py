@@ -4,6 +4,8 @@ import os
 from pathlib import Path
 import sys
 
+from easy_coding_state import snapshot_state
+
 
 def configure_stdio() -> None:
     for stream in (sys.stdin, sys.stdout, sys.stderr):
@@ -26,15 +28,6 @@ def find_ec_root(start: Path) -> Path | None:
         if current == current.parent:
             return None
         current = current.parent
-
-
-def load_json(path: Path) -> dict | None:
-    if not path.exists():
-        return None
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
 
 
 def emit(event_name: str, context: str) -> None:
@@ -61,15 +54,15 @@ def main() -> int:
     if root is None:
         return 0
 
-    session = load_json(root / ".easy-coding" / "sessions" / f"{os.getppid()}.json") or {}
-    task_id = session.get("current_task")
+    state = snapshot_state(root)
+    task_id = state.get("current_task")
     context = [
         "[easy-coding:subagent-guard]",
         "Sub-agents must follow the task card, stay within the allowed file scope, and return structured results.",
         "They must not claim completion or verification without fresh evidence.",
     ]
     if task_id:
-        context.append(f"Active Easy Coding task: {task_id}")
+        context.append(f"Active Easy Coding task: {task_id} ({state['status']})")
 
     event_name = payload.get("hook_event_name") or payload.get("hookEventName") or "PreToolUse"
     emit(event_name, "\n".join(context))

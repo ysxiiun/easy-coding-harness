@@ -7,7 +7,7 @@ import { pathExists } from "./file-writer.js";
 export type VersionComparison = -1 | 0 | 1;
 
 function normalize(version: string): number[] {
-  const [core] = version.split("-");
+  const [core] = String(version ?? "").split("-");
   return core.split(".").map((part) => {
     const parsed = Number.parseInt(part, 10);
     return Number.isNaN(parsed) ? 0 : parsed;
@@ -38,7 +38,13 @@ export async function checkForUpgrade(cwd: string): Promise<void> {
     return;
   }
 
-  const config = await readConfigYaml(configPath);
+  let config: Awaited<ReturnType<typeof readConfigYaml>>;
+  try {
+    config = await readConfigYaml(configPath);
+  } catch {
+    return;
+  }
+
   const installed = String(config.harness_version ?? "");
   if (installed && isVersionBehind(installed)) {
     process.stderr.write(

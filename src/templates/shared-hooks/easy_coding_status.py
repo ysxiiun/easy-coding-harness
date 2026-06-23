@@ -1,6 +1,12 @@
-import json
-import os
 from pathlib import Path
+
+from easy_coding_state import (
+    HELP_SUFFIX,
+    get_pending_init_version,
+    is_project_init_required,
+    record_seen_stage,
+    snapshot_state,
+)
 
 
 READY_LINE = (
@@ -9,110 +15,95 @@ READY_LINE = (
 )
 WAITING_INIT_LINE = "> **Easy Coding** · Waiting init · Use `ec-init` to initialize"
 
-VALID_TRANSITIONS: dict[str, set[str]] = {
-    "idle": {"INIT"},
-    "INIT": {"ANALYSIS", "CLOSED"},
-    "ANALYSIS": {"WAITING_CONFIRM", "CLOSED"},
-    "WAITING_CONFIRM": {"IMPLEMENT", "ANALYSIS", "CLOSED"},
-    "IMPLEMENT": {"REVIEW", "ANALYSIS", "CLOSED"},
-    "REVIEW": {"VERIFICATION", "IMPLEMENT", "ANALYSIS", "CLOSED"},
-    "VERIFICATION": {"MEMORY_SHORT", "IMPLEMENT", "CLOSED"},
-    "MEMORY_SHORT": {"MEMORY_LONG", "CLOSED"},
-    "MEMORY_LONG": {"COMPLETE", "CLOSED"},
-    "COMPLETE": set(),
-    "CLOSED": set(),
-}
-
-
-def load_json(path: Path) -> dict | None:
-    if not path.exists():
-        return None
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-
-
-def load_task(root: Path, task_id: str | None) -> dict | None:
-    if not task_id:
-        return None
-    return load_json(root / ".easy-coding" / "tasks" / task_id / "task.json")
-
-
-def load_session(root: Path) -> dict | None:
-    ppid = os.getppid()
-    return load_json(root / ".easy-coding" / "sessions" / f"{ppid}.json")
-
-
-def write_session(root: Path, session: dict) -> None:
-    ppid = os.getppid()
-    session_path = root / ".easy-coding" / "sessions" / f"{ppid}.json"
-    session_path.parent.mkdir(parents=True, exist_ok=True)
-    session_path.write_text(json.dumps(session, indent=2, ensure_ascii=False), encoding="utf-8")
-
-
-def is_project_init_required(root: Path) -> bool:
-    project_init = load_json(root / ".easy-coding" / "tasks" / "project-init" / "task.json")
-    return bool(project_init and project_init.get("status") != "COMPLETE")
-
-
-def validate_transition(previous: str, current: str) -> str | None:
-    if previous == current:
-        return None
-    allowed = VALID_TRANSITIONS.get(previous, set())
-    if current in allowed:
-        return None
-    return f"ILLEGAL TRANSITION: {previous} -> {current}. Allowed from {previous}: {sorted(allowed) or 'NONE (terminal state)'}."
-
+MANDATORY_DEV_SPEC_HEADERS: list[str] = [
+    "## 技术方案",
+    "### 项目模式",
+    "### 任务类型",
+    "### 需求解析",
+    "### 现状",
+    "### 冲突摘要",
+    "### 待用户决策",
+    "### 影响面分析",
+    "### 改动范围",
+    "### 修改方案",
+    "### 实施拆解",
+    "### 测试策略",
+    "### 风险与注意事项",
+]
 
 def build_status_line(root: Path, session: dict, agent: str | None = None) -> str:
-    task_id = session.get("current_task")
+    state = snapshot_state(root, session=session)
+    task_id = state["current_task"]
     if task_id:
-        task = load_task(root, str(task_id))
-        status = str(task["status"]) if task and task.get("status") else "PENDING"
+        status = str(state["status"])
         line = f"> **Easy Coding** · `{task_id}` · `{status}`"
-        if task:
-            last_agent = task.get("last_agent")
-            if agent and last_agent and last_agent != agent:
-                line += f" · Handoff -> `{last_agent}`"
+        last_agent = state.get("last_agent")
+        if agent and last_agent and last_agent != agent:
+            line += f" · Handoff -> `{last_agent}`"
+        if state["is_terminal"] or state["task_missing"]:
+            line += f" · {HELP_SUFFIX}"
         return line
 
     if is_project_init_required(root):
         return WAITING_INIT_LINE
 
+    pending = get_pending_init_version(root)
+    if pending:
+        return (
+            f"> **Easy Coding** · Waiting init · "
+            f"Upgrade to v{pending} — run `ec-init` to adapt"
+        )
+
     return READY_LINE
 
 
 def build_machine_breadcrumbs(root: Path, session: dict, agent: str | None = None) -> list[str]:
-    task_id = session.get("current_task")
-    task = load_task(root, str(task_id)) if task_id else None
-    stage = str(task["status"]) if task and task.get("status") else "idle"
-    lines = [f"[workflow-state:{stage}]"]
+    state = snapshot_state(root, session=session)
+    task_id = state["current_task"]
+    task = state["task"]
+    stage = str(state["status"]) if task else "idle"
+    lines = [f"[workflow-state:{stage}]", f"[easy-coding:session-file:{state['session_file']}]"]
 
     if task_id:
         lines.append(f"[current-task:{task_id}]")
-        if task:
-            last_agent = task.get("last_agent")
-            if agent and last_agent and last_agent != agent:
-                lines.append(f"[easy-coding:handoff-from:{last_agent}]")
+        if state["task_missing"]:
+            lines.append(f"[easy-coding:current-task-missing:{task_id}]")
+        last_agent = state.get("last_agent")
+        if agent and last_agent and last_agent != agent:
+            lines.append(f"[easy-coding:handoff-from:{last_agent}]")
 
     if is_project_init_required(root):
         lines.append("[easy-coding:init-required]")
+    else:
+        pending = get_pending_init_version(root)
+        if pending:
+            lines.append(f"[easy-coding:upgrade-init-pending:{pending}]")
+
+    # Stage-specific reminders
+    if stage == "ANALYSIS" and task_id:
+        dev_spec = root / ".easy-coding" / "tasks" / str(task_id) / "dev-spec.md"
+        if dev_spec.exists():
+            try:
+                content = dev_spec.read_text(encoding="utf-8")
+                missing = [h for h in MANDATORY_DEV_SPEC_HEADERS if h not in content]
+                if missing:
+                    names = ",".join(h.lstrip("#").strip() for h in missing)
+                    lines.append(f"[easy-coding:analysis-template-drift:missing:{names}]")
+                else:
+                    lines.append("[easy-coding:analysis-template-ok]")
+            except OSError:
+                lines.append("[easy-coding:analysis-gate:skeleton-first-then-fill]")
+        else:
+            lines.append("[easy-coding:analysis-gate:skeleton-first-then-fill]")
 
     # State machine validation
-    last_seen = session.get("last_seen_stage")
-    if last_seen and task and task.get("status"):
+    if task_id and task and task.get("status"):
         current_stage = str(task["status"])
-        violation = validate_transition(last_seen, current_stage)
+        last_seen = session.get("last_seen_stage")
+        violation = record_seen_stage(root, str(task_id), current_stage)
         if violation:
             lines.append(f"[ILLEGAL-TRANSITION:{last_seen}->{current_stage}]")
             lines.append(f"[easy-coding:transition-error:{violation}]")
-        if last_seen != current_stage:
-            session["last_seen_stage"] = current_stage
-            write_session(root, session)
-    elif task and task.get("status"):
-        session["last_seen_stage"] = str(task["status"])
-        write_session(root, session)
 
     return lines
 

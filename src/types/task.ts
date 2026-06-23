@@ -21,6 +21,7 @@ export interface StageHistoryEntry {
 export interface SessionFile {
   current_task: string | null;
   created_at: string;
+  last_seen_task?: string | null;
   last_seen_stage?: string;
 }
 
@@ -37,6 +38,7 @@ export interface TaskJson {
   repo_paths?: Record<string, string>;
   context?: Record<string, unknown>;
   spawned_from?: string | null;
+  pending_init_since?: string;
   spawned_tasks?: string[];
   closed_reason?: string | null;
   repos?: string[];

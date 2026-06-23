@@ -32,3 +32,17 @@ export function replaceMarkedRegion(existing: string, generatedRegion: string): 
 export function hasMarkedRegion(content: string): boolean {
   return extractMarkedRegion(content) !== null;
 }
+
+// Strips the generated region (and its markers) while keeping the user's surrounding content.
+// Returns "" when nothing but the region remained, so callers can keep an empty shell file.
+export function removeMarkedRegion(content: string): string {
+  const region = extractMarkedRegion(content);
+  if (!region) {
+    return content;
+  }
+  const remaining = content
+    .replace(region, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  return remaining ? `${remaining}\n` : "";
+}

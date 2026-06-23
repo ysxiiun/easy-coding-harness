@@ -78,5 +78,5 @@ be suspended (ec-workflow's intent routing handles the rest).
 
 - Write no implementation code, scaffold nothing, take no implementation action.
 - The only ec-* skill you may invoke is `ec-workflow` (on user confirmation after approval).
-  Do not touch state.json or the state machine directly.
+  Do not touch session files, task status fields, or the state machine directly.
 - One question per message — never overwhelm.

@@ -22,7 +22,7 @@ discovery surfaces them under `/ec-` or `$ec-`.
 
 - **Skills** (`SKILL.md`): frontmatter `name` + `description`, then markdown instructions.
   They carry the workflow logic. Platform differences — the skill trigger (`/` vs `$`), the
-  state-file path, and the sub-agent spawn instruction — are filled in from a small
+  session path, state API path, and the sub-agent spawn instruction — are filled in from a small
   placeholder map at install time, so one source template serves all three platforms.
 - **Sub-agent definitions**: role baselines for the implementer / reviewer / verifier
   sub-agents. Claude/Qoder use markdown frontmatter; Codex uses TOML with
@@ -31,10 +31,14 @@ discovery surfaces them under `/ec-` or `$ec-`.
 
 ## Hooks and settings
 
-Three Python hooks, shared verbatim across platforms (only the JSON wrapper differs):
+Python runtime files are shared verbatim across platforms (only the JSON wrapper differs):
 
-- `session-start.py` — ensures `state.json` exists; injects resume / init-required / handoff
-  breadcrumbs. Idempotent.
+- `easy_coding_state.py` — the single runtime API for current-task pointers, task status,
+  transitions, and task state reads.
+- `easy_coding_status.py` — renders the Markdown status line and machine breadcrumbs from
+  state API snapshots.
+- `session-start.py` — ensures the per-session file exists; performs legacy `state.json`
+  migration; injects resume / init-required / handoff breadcrumbs. Idempotent.
 - `inject-workflow-state.py` — injects the `workflow-state` and `current-task` breadcrumbs so
   the status line can render.
 - `inject-subagent-context.py` — injects the sub-agent guard before an Agent tool call.

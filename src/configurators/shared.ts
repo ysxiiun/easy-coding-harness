@@ -96,27 +96,35 @@ export async function writeSkills(
   dir: string,
   skills: SkillTemplate[],
   bundled: BundledSkillTemplate[],
-): Promise<void> {
+): Promise<string[]> {
   await ensureDir(dir);
+  const written: string[] = [];
 
   for (const skill of skills) {
-    await writeTextFile(path.join(dir, skill.name, "SKILL.md"), skill.content);
+    const destination = path.join(dir, skill.name, "SKILL.md");
+    await writeTextFile(destination, skill.content);
+    written.push(destination);
   }
 
   for (const skill of bundled) {
-    await copyTemplateDirectory(skill.sourceDir, path.join(dir, skill.name), skill.context);
+    written.push(
+      ...(await copyTemplateDirectory(skill.sourceDir, path.join(dir, skill.name), skill.context)),
+    );
   }
+
+  return written;
 }
 
 export async function writeSharedHooks(
   dir: string,
   platform: AgentPlatform,
   opts: SharedHookOptions = {},
-): Promise<void> {
+): Promise<string[]> {
   const hooksRoot = getTemplatePath("shared-hooks");
   const ctx = PLATFORM_META[platform].templateContext;
   const entries = await readdir(hooksRoot);
   await ensureDir(dir);
+  const written: string[] = [];
 
   for (const entry of entries.sort()) {
     if (opts.skipSubagentContext && entry === "inject-subagent-context.py") {
@@ -134,7 +142,10 @@ export async function writeSharedHooks(
     const destination = path.join(dir, entry);
     await writeTextFile(destination, content);
     await import("node:fs/promises").then(({ chmod }) => chmod(destination, 0o755));
+    written.push(destination);
   }
+
+  return written;
 }
 
 export async function copyPlatformTemplates(
@@ -142,12 +153,12 @@ export async function copyPlatformTemplates(
   destination: string,
   skipDirs: string[],
   ctx: TemplateContext,
-): Promise<void> {
+): Promise<string[]> {
   const source = getTemplatePath(platformTemplateDir);
-  await copyTemplateDirectory(source, destination, ctx, new Set(skipDirs));
+  return copyTemplateDirectory(source, destination, ctx, new Set(skipDirs));
 }
 
-export async function writeMainConstraint(cwd: string, platform: AgentPlatform): Promise<void> {
+export async function writeMainConstraint(cwd: string, platform: AgentPlatform): Promise<string> {
   const meta = PLATFORM_META[platform];
   const ctx = meta.templateContext;
   const templateName = `${meta.mainConstraint}.tpl`;
@@ -169,6 +180,7 @@ export async function writeMainConstraint(cwd: string, platform: AgentPlatform):
   } else {
     await writeTextFile(destination, generated);
   }
+  return destination;
 }
 
 async function copyTemplateDirectory(
@@ -176,8 +188,9 @@ async function copyTemplateDirectory(
   destination: string,
   ctx: TemplateContext,
   skipDirs = new Set<string>(),
-): Promise<void> {
+): Promise<string[]> {
   await ensureDir(destination);
+  const written: string[] = [];
 
   for (const entry of (await readdir(source)).sort()) {
     if (skipDirs.has(entry) || shouldSkipTemplateEntry(entry)) {
@@ -189,13 +202,16 @@ async function copyTemplateDirectory(
     const sourceStat = await stat(sourcePath);
 
     if (sourceStat.isDirectory()) {
-      await copyTemplateDirectory(sourcePath, destinationPath, ctx, skipDirs);
+      written.push(...(await copyTemplateDirectory(sourcePath, destinationPath, ctx, skipDirs)));
       continue;
     }
 
     const content = resolvePlaceholders(await readTextFile(sourcePath), ctx, sourcePath);
     await writeTextFile(destinationPath, content);
+    written.push(destinationPath);
   }
+
+  return written;
 }
 
 function shouldSkipTemplateEntry(entry: string): boolean {

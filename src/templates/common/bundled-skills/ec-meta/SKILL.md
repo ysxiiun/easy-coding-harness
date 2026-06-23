@@ -21,9 +21,12 @@ source in the global npm install.
 ## Source-of-truth rules
 
 - `ec-workflow`'s SKILL.md is the source of truth for the workflow.
-- `.easy-coding/config.yaml` is the source of truth for project configuration.
+- `.easy-coding/config.yaml` is the CLI-owned source of truth for structural config
+  (`harness_version`, `agents`, `memory`, `behavior`, …) — the CLI reads and writes it.
+- `.easy-coding/project.yaml` is the ec-init-owned source of truth for project analysis
+  (`mode`, `language`, `test`, `build`, `lint`) — the CLI never reads it.
 - Customization edits the LOCAL installed copy only, never the scaffold source package.
-- Never edit runtime data here: `state.json`, `tasks/`, `memory/`.
+- Never edit runtime data here: `sessions/`, `tasks/`, `memory/`.
 - Warn the user: harness-managed files (ec-* skills, shared hooks, generated hook config,
   generated main-constraint regions) are **overwritten by `easy-coding upgrade`**. Durable
   customization belongs in project custom instructions (outside the generated markers) or in

@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { configureClaude } from "../../src/configurators/claude.js";
+import { pathExists } from "../../src/utils/file-writer.js";
 import { writeRuntimeScaffold } from "../../src/utils/runtime-scaffold.js";
 import { writeProjectInitTask } from "../../src/utils/task-json.js";
 
@@ -39,6 +40,9 @@ describe("configureClaude", () => {
     expect(
       await readFile(path.join(tempDir, ".claude", "hooks", "easy_coding_status.py"), "utf8"),
     ).toContain("READY_LINE");
+    expect(
+      await readFile(path.join(tempDir, ".claude", "hooks", "easy_coding_state.py"), "utf8"),
+    ).toContain("create-task");
 
     const main = await readFile(path.join(tempDir, "CLAUDE.md"), "utf8");
     expect(main).toContain("easy-coding-harness generated");
@@ -51,6 +55,18 @@ describe("configureClaude", () => {
     expect(main).not.toContain("}```");
     expect(main).toContain("`/ec-init`");
     expect(main).toContain("`/ec-meta`");
+
+    const verificationSkill = await readFile(
+      path.join(tempDir, ".claude", "skills", "ec-verification", "SKILL.md"),
+      "utf8",
+    );
+    expect(verificationSkill.indexOf("--stage MEMORY_SHORT")).toBeGreaterThan(-1);
+    expect(verificationSkill.indexOf("--stage MEMORY_LONG")).toBeGreaterThan(
+      verificationSkill.indexOf("--stage MEMORY_SHORT"),
+    );
+    expect(verificationSkill.indexOf("--stage COMPLETE")).toBeGreaterThan(
+      verificationSkill.indexOf("--stage MEMORY_LONG"),
+    );
 
     const metaReference = await readFile(
       path.join(
@@ -129,6 +145,40 @@ describe("configureClaude", () => {
     expect(stdout).not.toContain("$ec-workflow");
   });
 
+  it("generated hooks do not infer a current task when the session is empty", async () => {
+    await configureClaude(tempDir);
+    await writeRuntimeScaffold(tempDir, ["claude-code"]);
+    await mkdir(path.join(tempDir, ".easy-coding", "tasks", "06-12-active"), { recursive: true });
+    await writeFile(
+      path.join(tempDir, ".easy-coding", "tasks", "06-12-active", "task.json"),
+      JSON.stringify(
+        {
+          type: "feature",
+          title: "Active task",
+          status: "ANALYSIS",
+          created_at: "2026-06-12T00:00:00Z",
+          created_by: "claude-code",
+          last_agent: "claude-code",
+          stage_history: [],
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    const hook = path.join(tempDir, ".claude", "hooks", "session-start.py");
+    const stdout = execFileSync("python3", [hook], {
+      cwd: tempDir,
+      input: "{}",
+      encoding: "utf8",
+    });
+
+    expect(stdout).toContain("> **Easy Coding** · Ready · Use `ec-workflow`");
+    expect(stdout).toContain("[workflow-state:idle]");
+    expect(stdout).not.toContain("06-12-active");
+  });
+
   it("generated hooks migrate legacy state.json and show task status with handoff", async () => {
     await configureClaude(tempDir);
     await writeRuntimeScaffold(tempDir, ["claude-code"]);
@@ -181,7 +231,7 @@ describe("configureClaude", () => {
     expect(stdout).toContain("[easy-coding:handoff-from:codex]");
   });
 
-  it("generated hooks show idle state when session points to missing task", async () => {
+  it("generated hooks show missing state when session points to missing task", async () => {
     await configureClaude(tempDir);
     await writeRuntimeScaffold(tempDir, ["claude-code"]);
     await mkdir(path.join(tempDir, ".easy-coding", "sessions"), { recursive: true });
@@ -205,8 +255,232 @@ describe("configureClaude", () => {
       encoding: "utf8",
     });
 
-    expect(stdout).toContain("> **Easy Coding** · `missing-task` · `PENDING`");
+    expect(stdout).toContain("> **Easy Coding** · `missing-task` · `MISSING`");
+    expect(stdout).toContain("Use `ec-workflow` to start or resume a task");
     expect(stdout).toContain("[workflow-state:idle]");
     expect(stdout).toContain("[current-task:missing-task]");
+    expect(stdout).toContain("[easy-coding:current-task-missing:missing-task]");
+  });
+
+  it("generated hooks clear a stale terminal current task instead of switching to another active task", async () => {
+    await configureClaude(tempDir);
+    await writeRuntimeScaffold(tempDir, ["claude-code"]);
+    await mkdir(path.join(tempDir, ".easy-coding", "sessions"), { recursive: true });
+    await mkdir(path.join(tempDir, ".easy-coding", "tasks", "06-12-done"), { recursive: true });
+    await mkdir(path.join(tempDir, ".easy-coding", "tasks", "06-12-active"), { recursive: true });
+    await writeFile(
+      path.join(tempDir, ".easy-coding", "sessions", `${process.pid}.json`),
+      JSON.stringify({ current_task: "06-12-done", created_at: new Date().toISOString() }, null, 2),
+      "utf8",
+    );
+    await writeFile(
+      path.join(tempDir, ".easy-coding", "tasks", "06-12-done", "task.json"),
+      JSON.stringify(
+        {
+          type: "bugfix",
+          title: "Done task",
+          status: "COMPLETE",
+          created_at: "2026-06-12T00:00:00Z",
+          created_by: "claude-code",
+          last_agent: "claude-code",
+          stage_history: [],
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    await writeFile(
+      path.join(tempDir, ".easy-coding", "tasks", "06-12-active", "task.json"),
+      JSON.stringify(
+        {
+          type: "feature",
+          title: "Active task",
+          status: "IMPLEMENT",
+          created_at: "2026-06-12T01:00:00Z",
+          created_by: "claude-code",
+          last_agent: "claude-code",
+          stage_history: [],
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    const hook = path.join(tempDir, ".claude", "hooks", "inject-workflow-state.py");
+    const stdout = execFileSync("python3", [hook], {
+      cwd: tempDir,
+      input: "{}",
+      encoding: "utf8",
+    });
+
+    expect(stdout).toContain("> **Easy Coding** · Ready · Use `ec-workflow`");
+    expect(stdout).toContain("[workflow-state:idle]");
+    expect(stdout).not.toContain("[current-task:06-12-done]");
+    expect(stdout).not.toContain("[current-task:06-12-active]");
+    const session = JSON.parse(
+      await readFile(path.join(tempDir, ".easy-coding", "sessions", `${process.pid}.json`), "utf8"),
+    );
+    expect(session.current_task).toBeNull();
+  });
+
+  it("state API creates a task and advances it through legal transitions", async () => {
+    await configureClaude(tempDir);
+    await writeRuntimeScaffold(tempDir, ["claude-code"]);
+
+    const stateApi = path.join(tempDir, ".claude", "hooks", "easy_coding_state.py");
+    const sessionFile = ".easy-coding/sessions/custom-session.json";
+    execFileSync(
+      "python3",
+      [
+        stateApi,
+        "create-task",
+        "--session-file",
+        sessionFile,
+        "--task-id",
+        "06-12-api",
+        "--type",
+        "feature",
+        "--title",
+        "API task",
+        "--agent",
+        "claude-code",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    const stages = [
+      "ANALYSIS",
+      "WAITING_CONFIRM",
+      "IMPLEMENT",
+      "REVIEW",
+      "VERIFICATION",
+      "MEMORY_SHORT",
+      "MEMORY_LONG",
+      "COMPLETE",
+    ];
+    for (const stage of stages) {
+      execFileSync(
+        "python3",
+        [
+          stateApi,
+          "transition",
+          "--session-file",
+          sessionFile,
+          "--stage",
+          stage,
+          "--agent",
+          "claude-code",
+        ],
+        { cwd: tempDir, encoding: "utf8" },
+      );
+    }
+
+    const task = JSON.parse(
+      await readFile(path.join(tempDir, ".easy-coding", "tasks", "06-12-api", "task.json"), "utf8"),
+    );
+    expect(task.status).toBe("COMPLETE");
+    expect(task.stage_history.map((entry: { stage: string }) => entry.stage)).toEqual([
+      "INIT",
+      ...stages,
+    ]);
+    const session = JSON.parse(await readFile(path.join(tempDir, sessionFile), "utf8"));
+    expect(session.current_task).toBeNull();
+    expect(session.last_seen_stage).toBe("idle");
+  });
+
+  it("state API closes the current task and clears the session pointer", async () => {
+    await configureClaude(tempDir);
+    await writeRuntimeScaffold(tempDir, ["claude-code"]);
+
+    const stateApi = path.join(tempDir, ".claude", "hooks", "easy_coding_state.py");
+    execFileSync(
+      "python3",
+      [
+        stateApi,
+        "create-task",
+        "--task-id",
+        "06-12-close",
+        "--type",
+        "feature",
+        "--title",
+        "Close task",
+        "--agent",
+        "claude-code",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    execFileSync(
+      "python3",
+      [
+        stateApi,
+        "close-current",
+        "--reason",
+        "no longer needed",
+        "--agent",
+        "claude-code",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+
+    const task = JSON.parse(
+      await readFile(
+        path.join(tempDir, ".easy-coding", "tasks", "06-12-close", "task.json"),
+        "utf8",
+      ),
+    );
+    expect(task.status).toBe("CLOSED");
+    expect(task.closed_reason).toBe("no longer needed");
+
+    const session = JSON.parse(
+      await readFile(path.join(tempDir, ".easy-coding", "sessions", `${process.pid}.json`), "utf8"),
+    );
+    expect(session.current_task).toBeNull();
+
+    const hook = path.join(tempDir, ".claude", "hooks", "inject-workflow-state.py");
+    const stdout = execFileSync("python3", [hook], {
+      cwd: tempDir,
+      input: "{}",
+      encoding: "utf8",
+    });
+    expect(stdout).toContain("> **Easy Coding** · Ready · Use `ec-workflow`");
+    expect(stdout).toContain("[workflow-state:idle]");
+  });
+
+  it("state API rejects session files outside .easy-coding/sessions", async () => {
+    await configureClaude(tempDir);
+    await writeRuntimeScaffold(tempDir, ["claude-code"]);
+
+    const stateApi = path.join(tempDir, ".claude", "hooks", "easy_coding_state.py");
+    const outsidePath = path.join(path.dirname(tempDir), `${path.basename(tempDir)}-session.json`);
+    try {
+      expect(() =>
+        execFileSync(
+          "python3",
+          [
+            stateApi,
+            "create-task",
+            "--session-file",
+            `../${path.basename(outsidePath)}`,
+            "--task-id",
+            "06-12-escape",
+            "--type",
+            "feature",
+            "--title",
+            "Escape session",
+            "--agent",
+            "claude-code",
+          ],
+          { cwd: tempDir, stdio: "ignore" },
+        ),
+      ).toThrow();
+
+      expect(await pathExists(outsidePath)).toBe(false);
+      expect(
+        await pathExists(path.join(tempDir, ".easy-coding", "tasks", "06-12-escape", "task.json")),
+      ).toBe(false);
+    } finally {
+      await rm(outsidePath, { force: true });
+    }
   });
 });

@@ -35,18 +35,31 @@ First run `/ec-init`; daily work goes through `/ec-workflow`.
 
 - Stages do not skip. WAITING_CONFIRM is a real gate — implement only after the user confirms
   the plan and test strategy (unless `behavior.auto_mode` is on and the user asked for it).
+- ANALYSIS must follow template-first: read `.easy-coding/templates/dev-spec-skeleton.md` then
+  write its exact content to the task's dev-spec.md as the FIRST tool calls, then fill sections
+  incrementally via edits. Reply to the user with the complete dev-spec.md content — never a
+  summary table or custom format.
 - VERIFICATION is a hard gate: lint + typecheck + test must pass on fresh evidence, and
   coverage must match the test strategy, before a task can complete.
 - Archive (memory flow) runs only after explicit user acceptance — an unaccepted task's
   memory is dirty data.
 - NO COMPLETION CLAIMS WITHOUT FRESH VERIFICATION EVIDENCE.
+- All cross-platform modules (skills, hooks, references) must use universal agent protocols.
+  Do not rely on any specific agent's proprietary conventions unless the module is explicitly
+  a platform-specific compatibility layer. Reference files use descriptive filenames (e.g.,
+  `memory-migration.md`), not platform convention names.
 
 ## Runtime contract
 
-- Workflow state lives at `{{workflow_state_path}}`; the CLI only installs files and creates
-  the project-init task — agent skills perform all project analysis.
+- Workflow state operations go through `{{platform_config_dir}}/hooks/easy_coding_state.py`;
+  do not hand-edit session files, `current_task`, task `status`, `stage_history`, or
+  `last_agent`.
+- The hook injects `[easy-coding:session-file:P]`; pass that path to the state script with
+  `--session-file <P>` when changing the current task or stage.
+- Workflow session files live at `{{workflow_state_path}}`; the CLI only installs files and
+  creates the project-init task — agent skills perform all project analysis.
 - Cross-repo references in git-tracked task artifacts use repo NAMES, never local paths.
-  Cache local paths only in `.easy-coding/state.json.repo_paths`.
+  Cache local paths only through the state script so they land on the current task.
 
 <!-- ═══ end easy-coding-harness generated ═══ -->
 

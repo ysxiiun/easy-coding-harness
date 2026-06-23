@@ -297,7 +297,7 @@ easy-coding add-agent --agent=codex
 
 1. 在 Claude Code 中完成分析和方案确认
 2. 选择"切换其他智能体继续"
-3. Claude Code 写入交接记录（handoff），更新 state.json
+3. Claude Code 写入交接记录（handoff），通过状态 API 更新当前任务指针
 4. 打开 Qoder（或其他 Agent）
 5. 执行 `/ec-workflow`，自动发现交接任务并恢复
 
@@ -312,13 +312,13 @@ easy-coding add-agent --agent=codex
 状态行会提示当前状态：
 
 ```
-> **Easy Coding** · Tasking · add-search · IMPLEMENT
+> **Easy Coding** · `add-search` · `IMPLEMENT`
 ```
 
 如果是交接来的任务：
 
 ```
-> **Easy Coding** · Tasking · add-search · IMPLEMENT · Handoff from claude-code
+> **Easy Coding** · `add-search` · `IMPLEMENT` · Handoff -> `claude-code`
 ```
 
 ---
@@ -415,7 +415,7 @@ my-project/
 │
 └── .easy-coding/              # 运行时数据（所有平台共享）
     ├── config.yaml            # 项目配置
-    ├── state.json             # 工作流状态（不入 git）
+    ├── sessions/              # 会话状态（不入 git）
     ├── SOUL.md                # 项目身份（ec-init 生成）
     ├── RULES.md               # 编码规范（ec-init 生成）
     ├── ABSTRACT.md            # 项目架构（ec-init 生成）

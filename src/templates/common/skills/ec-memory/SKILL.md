@@ -14,23 +14,40 @@ recorded comment/doc language.
 
 ## MEMORY_SHORT — write one short memory entry
 
-Create one file under `.easy-coding/memory/short/` with schema-v2 frontmatter:
+Create one file under `.easy-coding/memory/short/` following the format in
+`.easy-coding/memory/SHORT_MEMORY_TEMPLATE.md`. File naming convention:
+`{NNN}_{YYYYMMDD}_{smart_name}.md`. The entry is immutable after creation.
+Frontmatter (all fields required):
 
 ```yaml
 ---
+memory_schema: 2
 id: SM-{YYYYMMDD}-{NN}
 date: {YYYY-MM-DD}
-task_type: {feature | bugfix | refactor | perf}
-domain: {business domain}
-tags: [tag1, tag2]
-related_files: [file1, file2]
-target_long: {business | technical | both | none}
+task_type: {feature | bugfix | refactor | perf | doc | workflow}
+project_mode: {startup | iteration}
+domain:
+  - {business domain or module}
+tags:
+  - {keyword}
+related_files:
+  - {key file or module}
+commit: {hash | none}
+verification: {passed | partial | not_run}
+memory_value: {business | technical | both | none}
+target_long: {BUSINESS | TECHNICAL | BOTH | NONE}
 ---
-{body: what was done, why this approach, key decisions. Pull facts from execution.jsonl
-result/verify records, not from a fuzzy memory of the conversation.}
+The body follows the template structure: Task Summary, Execution Evidence, Business Memory
+Candidates, Technical Memory Candidates, Non-Distillation Content, and Related Memories.
+Pull facts from execution.jsonl result/verify records, not from a fuzzy memory of the
+conversation. Refer to SHORT_MEMORY_TEMPLATE.md for the complete section format.
 ```
 
 If the task was cross-repo, record the repo names involved and the collaboration reason.
+
+**Immutability:** Short memories are write-once. Never edit an existing short memory file —
+create a new one instead. Short memories serve as both a recent-detail sliding window and a
+distillation buffer for long-term memory.
 
 **Sliding window (informational):** The short memory directory has a soft cap defined by
 `memory.short_term_max` (default 10). MEMORY_SHORT only WRITES one entry per completed task

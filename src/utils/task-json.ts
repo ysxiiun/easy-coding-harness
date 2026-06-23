@@ -82,6 +82,15 @@ export async function writeProjectInitTask(
   );
 }
 
+export async function setPendingInitSince(cwd: string, version: string): Promise<void> {
+  const filePath = getTaskJsonPath(cwd, PROJECT_INIT_TASK_ID);
+  if (!(await pathExists(filePath))) return;
+  const task = await readTaskJson(filePath);
+  if (task.status !== "COMPLETE") return;
+  task.pending_init_since = version;
+  await writeTaskJson(filePath, task);
+}
+
 export interface TaskSummary {
   id: string;
   task: TaskJson;

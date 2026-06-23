@@ -1,9 +1,11 @@
 import { note, outro } from "@clack/prompts";
 import chalk from "chalk";
 import { CONFIGURATORS } from "../configurators/index.js";
+import { VERSION } from "../constants/version.js";
 import { PLATFORM_META } from "../types/platform.js";
 import { renderBanner } from "../ui/banner.js";
 import { ensureEasyCodingSessionsIgnored } from "../utils/gitignore.js";
+import { type InstallArtifact, writeInstallManifest } from "../utils/install-manifest.js";
 import { detectEasyCodingInstallState } from "../utils/install-state.js";
 import { writeRuntimeScaffold } from "../utils/runtime-scaffold.js";
 import { writeProjectInitTask } from "../utils/task-json.js";
@@ -26,12 +28,18 @@ export async function init(opts: PlatformOptions): Promise<void> {
   }
 
   const platforms = await resolvePlatforms(opts, ["claude-code"]);
+  const artifacts: InstallArtifact[] = [];
 
   for (const platform of platforms) {
-    await CONFIGURATORS[platform](cwd);
+    artifacts.push(...(await CONFIGURATORS[platform](cwd)));
   }
 
   await writeRuntimeScaffold(cwd, platforms);
+  await writeInstallManifest(cwd, {
+    harnessVersion: VERSION,
+    agents: platforms,
+    artifacts,
+  });
   await writeProjectInitTask(cwd, platforms, {
     initSource: installState.kind === "legacy" ? "legacy-easy-coding" : "fresh",
     legacyAssets: installState.kind === "legacy" ? installState.legacyAssets : undefined,

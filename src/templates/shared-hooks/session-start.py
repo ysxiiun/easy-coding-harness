@@ -5,7 +5,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 import sys
 
-from easy_coding_status import build_status_context, load_session, write_session
+from easy_coding_state import load_session, write_session
+from easy_coding_status import build_status_context
 
 
 def configure_stdio() -> None:

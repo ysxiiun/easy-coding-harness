@@ -9,16 +9,11 @@ export interface EasyCodingConfig {
   agents: AgentPlatform[];
   project: {
     name: string;
-    mode: "auto" | "startup" | "iterative";
   };
   memory: {
     short_term_max: number;
     short_term_keep: number;
     schema_version: number;
-  };
-  test: {
-    framework: string;
-    command: string;
   };
   tasks: {
     auto_archive_days: number;
@@ -41,16 +36,11 @@ export function createDefaultConfig(params: {
     agents: params.agents,
     project: {
       name: params.projectName,
-      mode: "auto",
     },
     memory: {
       short_term_max: 10,
       short_term_keep: 5,
       schema_version: 2,
-    },
-    test: {
-      framework: "auto",
-      command: "",
     },
     tasks: {
       auto_archive_days: 30,

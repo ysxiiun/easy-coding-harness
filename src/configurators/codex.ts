@@ -1,6 +1,12 @@
 import path from "node:path";
 import { PLATFORM_META } from "../types/platform.js";
 import {
+  type InstallArtifact,
+  constraintRegionArtifact,
+  fileArtifact,
+  hookRegistrationArtifacts,
+} from "../utils/install-manifest.js";
+import {
   copyPlatformTemplates,
   resolveBundledSkills,
   resolveSkills,
@@ -9,17 +15,49 @@ import {
   writeSkills,
 } from "./shared.js";
 
-export async function configureCodex(cwd: string): Promise<void> {
+export async function configureCodex(cwd: string): Promise<InstallArtifact[]> {
   const platform = "codex";
   const meta = PLATFORM_META[platform];
   const ctx = meta.templateContext;
+  const hookConfigPath = path.join(cwd, meta.hookConfigFile);
+  const artifacts: InstallArtifact[] = [];
 
-  await writeSkills(
-    path.join(cwd, meta.skillsDir),
-    await resolveSkills(ctx),
-    await resolveBundledSkills(ctx),
+  artifacts.push(
+    ...(
+      await writeSkills(
+        path.join(cwd, meta.skillsDir),
+        await resolveSkills(ctx),
+        await resolveBundledSkills(ctx),
+      )
+    ).map((filePath) => fileArtifact(filePath, "skill", platform)),
   );
-  await writeSharedHooks(path.join(cwd, meta.hooksDir), platform, { skipSubagentContext: true });
-  await copyPlatformTemplates("codex", path.join(cwd, ".codex"), ["hooks"], ctx);
-  await writeMainConstraint(cwd, platform);
+  artifacts.push(
+    ...(
+      await writeSharedHooks(path.join(cwd, meta.hooksDir), platform, {
+        skipSubagentContext: true,
+      })
+    ).map((filePath) => fileArtifact(filePath, "hook", platform)),
+  );
+
+  const platformFiles = await copyPlatformTemplates(
+    "codex",
+    path.join(cwd, ".codex"),
+    ["hooks"],
+    ctx,
+  );
+  artifacts.push(
+    ...platformFiles
+      .filter((filePath) => filePath !== hookConfigPath)
+      .map((filePath) =>
+        fileArtifact(
+          filePath,
+          filePath.startsWith(path.join(cwd, meta.agentsDir)) ? "agent" : "platform-config",
+          platform,
+        ),
+      ),
+  );
+  artifacts.push(...(await hookRegistrationArtifacts(hookConfigPath, platform)));
+  artifacts.push(constraintRegionArtifact(await writeMainConstraint(cwd, platform), platform));
+
+  return artifacts;
 }

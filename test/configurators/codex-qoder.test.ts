@@ -32,6 +32,9 @@ describe("configureCodex", () => {
     expect(await pathExists(path.join(tempDir, ".codex", "hooks", "easy_coding_status.py"))).toBe(
       true,
     );
+    expect(await pathExists(path.join(tempDir, ".codex", "hooks", "easy_coding_state.py"))).toBe(
+      true,
+    );
     expect(
       await pathExists(path.join(tempDir, ".codex", "hooks", "inject-workflow-state.py")),
     ).toBe(true);
@@ -75,6 +78,9 @@ describe("configureQoder", () => {
     expect(await pathExists(path.join(tempDir, ".qoder", "hooks", "easy_coding_status.py"))).toBe(
       true,
     );
+    expect(await pathExists(path.join(tempDir, ".qoder", "hooks", "easy_coding_state.py"))).toBe(
+      true,
+    );
     expect(await pathExists(path.join(tempDir, ".qoder", "hooks", "inject-subagent-context.py"))).toBe(
       true,
     );
@@ -87,6 +93,9 @@ describe("configureQoder", () => {
     const settings = await readFile(path.join(tempDir, ".qodercn", "settings.json"), "utf8");
     expect(settings).toContain(".qodercn/hooks/session-start.py");
     expect(await pathExists(path.join(tempDir, ".qodercn", "hooks", "easy_coding_status.py"))).toBe(
+      true,
+    );
+    expect(await pathExists(path.join(tempDir, ".qodercn", "hooks", "easy_coding_state.py"))).toBe(
       true,
     );
     expect(await pathExists(path.join(tempDir, ".qodercn", "skills", "ec-meta", "SKILL.md"))).toBe(

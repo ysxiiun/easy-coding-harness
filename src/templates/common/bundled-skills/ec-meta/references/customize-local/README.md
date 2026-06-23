@@ -15,7 +15,8 @@ How to change the harness locally without losing it on `easy-coding upgrade`.
 `easy-coding upgrade` **never touches**:
 
 - `config.yaml` (only `harness_version` is bumped)
-- `state.json`, `tasks/`, `memory/`, `spec/`
+- `project.yaml` (ec-init's project profile)
+- `sessions/`, `tasks/`, `memory/`, `spec/`
 - `SOUL.md` / `RULES.md` / `ABSTRACT.md` / `TEST_STRATEGY.md` / `CHANGELOG.md`
 - the user region of `CLAUDE.md` / `AGENTS.md` (outside the markers)
 

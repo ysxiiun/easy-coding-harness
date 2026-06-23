@@ -7,6 +7,7 @@ import {
   MEMORY_DIR,
   SESSIONS_DIR,
   SPEC_DIR,
+  TEMPLATES_DIR,
 } from "../constants/paths.js";
 import { VERSION } from "../constants/version.js";
 import type { AgentPlatform } from "../types/platform.js";
@@ -32,6 +33,16 @@ export async function writeRuntimeScaffold(cwd: string, agents: AgentPlatform[])
   await ensureDir(path.join(easyCodingDir, SPEC_DIR, MAIN_SPEC_DIR));
   await ensureDir(path.join(easyCodingDir, SPEC_DIR, DEV_SPEC_DIR));
   await writeMemoryScaffold(easyCodingDir);
+  await writeTemplatesScaffold(easyCodingDir);
+}
+
+async function writeTemplatesScaffold(easyCodingDir: string): Promise<void> {
+  const templatesDir = path.join(easyCodingDir, TEMPLATES_DIR);
+  await ensureDir(templatesDir);
+
+  const src = getTemplatePath("runtime", "templates", "dev-spec-skeleton.md");
+  const dest = path.join(templatesDir, "dev-spec-skeleton.md");
+  await writeTextFile(dest, await readTextFile(src));
 }
 
 async function writeMemoryScaffold(easyCodingDir: string): Promise<void> {
@@ -46,5 +57,11 @@ async function writeMemoryScaffold(easyCodingDir: string): Promise<void> {
     }
     const templatePath = getTemplatePath("runtime", "memory", "long", file);
     await writeTextFile(destination, await readTextFile(templatePath));
+  }
+
+  const shortTemplateDest = path.join(memoryDir, "SHORT_MEMORY_TEMPLATE.md");
+  if (!(await pathExists(shortTemplateDest))) {
+    const templatePath = getTemplatePath("runtime", "memory", "SHORT_MEMORY_TEMPLATE.md");
+    await writeTextFile(shortTemplateDest, await readTextFile(templatePath));
   }
 }

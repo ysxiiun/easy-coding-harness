@@ -1,12 +1,13 @@
 {
   "name": "easy-coding-harness",
-  "version": "0.1.8",
+  "version": "0.2.1",
   "description": "CLI scaffold for installing Easy Coding harness files into agent-native directories.",
   "type": "module",
   "bin": {
     "easy-coding": "./dist/cli.js"
   },
   "files": [
+    "CHANGELOG.md",
     "dist/",
     "templates/"
   ],

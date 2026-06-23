@@ -62,6 +62,8 @@ npm run typecheck   # tsc --noEmit
 
 ### Documentation Maintenance
 
-- **README.md** is the single source of truth for changelog. After every version change, add a new entry under "版本与更新日志".
-- **No separate CHANGELOG.md** — all version history lives in README.md.
+- **CHANGELOG.md** is the single source of truth for version history. After every version change, add a new entry at the top of CHANGELOG.md.
+- **README.md** must only summarize the versioning policy and link to CHANGELOG.md; do not put full release notes back into README.md.
+- **package.json `files` must include CHANGELOG.md** so the npm package contains the file README.md links to.
+- **Version bump workflow**: update `package.json` / `package-lock.json` version → add CHANGELOG.md entry → ensure README.md install commands and changelog link stay current → implement changes → build & test.
 - Keep README.md skill table and platform table current when adding/removing skills or platforms.

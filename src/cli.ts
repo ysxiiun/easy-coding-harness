@@ -1,6 +1,7 @@
 import chalk from "chalk";
 import { Command } from "commander";
 import { addAgent } from "./commands/add-agent.js";
+import { clear } from "./commands/clear.js";
 import { init } from "./commands/init.js";
 import { status } from "./commands/status.js";
 import { upgrade } from "./commands/upgrade.js";
@@ -53,5 +54,12 @@ program
   .command("status")
   .description("Show installed agents, version, and tasks")
   .action(withErrorHandling(status));
+
+program
+  .command("clear")
+  .description("Remove installed harness files (skills, hooks, config); keep tasks, spec, memory")
+  .option("--dry-run", "Preview what would be removed without deleting")
+  .option("-y, --yes", "Skip confirmation")
+  .action(withErrorHandling(clear));
 
 program.parse();

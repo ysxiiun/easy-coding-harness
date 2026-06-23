@@ -10,7 +10,7 @@ The harness deliberately separates **platform-native files** from **shared runti
   and the main constraint file. They live in each platform's standard directory
   (`.claude/`, `.agents/` + `.codex/`, `.qoder/`). The agent's own `/` or `$` discovery finds
   them — the harness invents no new discovery mechanism.
-- **Shared runtime data** (`.easy-coding/`): `config.yaml`, `state.json`, `tasks/`, `memory/`,
+- **Shared runtime data** (`.easy-coding/`): `config.yaml`, `project.yaml`, `sessions/`, `tasks/`, `memory/`,
   `spec/`, and the project knowledge assets (SOUL/RULES/ABSTRACT/TEST_STRATEGY/CHANGELOG).
   Skills and hooks read and write these.
 
@@ -21,8 +21,9 @@ analysis, workflow operation). The CLI never analyzes the project.
 
 ```
 .easy-coding/
-  config.yaml        shared project config (in git)
-  state.json         personal workflow state (NOT in git)
+  config.yaml        CLI-owned structural config (in git)
+  project.yaml       ec-init project profile (in git)
+  sessions/          personal workflow session files (NOT in git)
   SOUL.md            project identity + dialogue standards
   RULES.md           coding rules (per-language sections)
   ABSTRACT.md        architecture cognition
@@ -44,13 +45,15 @@ analysis, workflow operation). The CLI never analyzes the project.
 8 stages + 2 terminals, owned by ec-workflow:
 `INIT → ANALYSIS → WAITING_CONFIRM → IMPLEMENT → REVIEW → VERIFICATION → MEMORY_SHORT →
 MEMORY_LONG → COMPLETE`, plus `CLOSED` (user abort, no memory flow). WAITING_CONFIRM and
-VERIFICATION are hard gates. The current stage persists in `state.json`; hooks inject it as a
-breadcrumb so every reply can render the status line.
+VERIFICATION are hard gates. The active task pointer lives in `sessions/{ppid}.json`;
+when the task reaches `COMPLETE` or `CLOSED`, the state API clears `current_task` so the
+session returns to Ready. Each task's stage persists in its `task.json`. Hooks inject the
+session and task state as breadcrumbs so every reply can render the status line.
 
-Task switching: `state.json.current_task` is a single slot, but the user can switch between
-tasks at any time. When a user's prompt doesn't match the active task, ec-workflow's intent
-router offers to suspend the current task and switch. The suspended task retains its stage in
-`task.json`; no data is lost. Each task folder is self-contained.
+Task switching: the session file has a single `current_task` slot, but the user can switch
+between tasks at any time. When a user's prompt doesn't match the active task, ec-workflow's
+intent router offers to suspend the current task and switch. The suspended task retains its
+stage in `task.json`; no data is lost. Each task folder is self-contained.
 
 ## Task persistence
 
@@ -77,5 +80,5 @@ demand.
 
 `.easy-coding/` is a dead drop. Agent A writes results and leaves; agent B reads them and
 continues. All platform-agnostic artifacts (dev-spec, execution.jsonl, task.json, memory)
-make cross-agent handoff lossless. `state.json` records `last_agent` so a new agent knows a
-task was handed off rather than self-interrupted.
+make cross-agent handoff lossless. `task.json.last_agent` records the last owner so a new
+agent knows a task was handed off rather than self-interrupted.

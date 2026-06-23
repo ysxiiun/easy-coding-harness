@@ -18,9 +18,10 @@ when you recognize abandonment intent in the user's message.
    Require an explicit yes. (Skip the confirm only if the task is already COMPLETE and the
    user just wants it tidied.)
 2. **Record the reason.** Capture the user's reason in one line.
-3. **Clean state:**
-   - `task.json`: `status` → `CLOSED`, `closed_reason` → "{reason}".
-   - `state.json`: `current_task` → null (leave `current_stage` as the hook will report idle).
+3. **Close through the state API:** run
+   `{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py close-current --session-file <P> --reason "<reason>" --agent <agent-id>`.
+   This sets `task.json.status` to `CLOSED`, records `closed_reason`, updates history, and
+   clears session `current_task` so the next hook injection returns to Ready.
 4. **No memory flow.** Do not run MEMORY_SHORT/LONG. An incomplete task's memory is dirty data.
 5. **Linked tasks.** If the task has `spawned_from` or `spawned_tasks`, note the closure fact
    on the relation so a future agent understands the chain.

@@ -18,14 +18,19 @@ replies are English.
    - Missing → tell the user to run the `easy-coding init` CLI first. Stop.
    - `status != "COMPLETE"` → tell the user to run `{{skill_trigger}}ec-init` first. Stop.
      Do not perform project initialization yourself; that is ec-init's job.
+   - `[easy-coding:upgrade-init-pending:X]` in breadcrumbs → tell the user: "Harness upgraded
+     to vX. Running `{{skill_trigger}}ec-init` is recommended to adapt project knowledge and
+     complete migration. You can skip and start working — the reminder will persist until
+     ec-init runs." Do NOT stop. Proceed with normal startup.
 2. **Required reading** (cheap, always):
    - `.easy-coding/SOUL.md` — project identity and dialogue standards; obey for the session.
    - `.easy-coding/RULES.md` — coding rules; re-checked before every write.
    - Latest 5 entries in `.easy-coding/memory/short/` — recent task context.
    Do NOT bulk-read ABSTRACT.md or long memory here; ec-analysis loads them on demand.
 3. **State check + Intent routing.** Read the hook-injected breadcrumbs (`[current-task:X]`,
-   `[workflow-state:Y]`) to determine the active task and stage, then decide based on
-   whether the user's message carries a task-related prompt beyond the bare skill trigger.
+   `[workflow-state:Y]`, `[easy-coding:session-file:P]`) to determine the active task,
+   stage, and session file, then decide based on whether the user's message carries a
+   task-related prompt beyond the bare skill trigger.
 
    **No prompt (bare trigger):**
    - `current_task` set with an active stage → resume that stage (see Resume and handoff).
@@ -53,9 +58,10 @@ replies are English.
         directly (step 4).
 
 4. **New task.** When creating a task (from step 3), create
-   `.easy-coding/tasks/{MM-DD-task-slug}/task.json` with `type`, `title` (one-line summary
-   of the user's prompt), `status:"INIT"`, `created_at`, `created_by` (current agent id),
-   set `current_task` in state.json, and enter INIT.
+   the task through the state API, which creates `task.json`, sets `status:"INIT"`, writes
+   `stage_history`, and sets the session `current_task`:
+   `{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py create-task --session-file <P> --task-id <MM-DD-task-slug> --type <type> --title "<one-line summary>" --agent <agent-id>`.
+   Then enter INIT.
 
 ## State machine
 
@@ -72,7 +78,7 @@ any stage --[user abort via ec-task-close]--> CLOSED
 
 | Stage | Owner skill | What happens | Exit condition |
 |---|---|---|---|
-| INIT | ec-workflow | collect context, settle task scope wording | task understood |
+| INIT | ec-workflow | collect context, settle scope AND delivery form (change code vs. produce a document) | task understood |
 | ANALYSIS | ec-analysis | dev-spec + execution plan + test strategy | analysis presented |
 | WAITING_CONFIRM | ec-workflow | blocking gate; user reviews the plan | explicit user confirmation |
 | IMPLEMENT | ec-implementing | code changes per confirmed plan | all units done |
@@ -83,11 +89,17 @@ any stage --[user abort via ec-task-close]--> CLOSED
 | COMPLETE | ec-workflow | clear current_task, set task status, summary | terminal |
 | CLOSED | ec-task-close | user abort; no memory flow | terminal |
 
+> **INIT delivery-form rule.** When creating the task, `type` and `title` must faithfully
+> reflect the delivery form implied by the user's request. A refactor/fix/feature is a CODE
+> task; do not record it as an analysis/report task. Do not let ANALYSIS later re-interpret a
+> code task into a documentation-only task — that is a downgrade (see ec-analysis HARD RULE 5).
+
 ## Task switching
 
 When the user confirms switching from task A to task B:
 1. Task A's status is already persisted in its `task.json` — nothing extra to save.
-2. Set `current_task` to task B's id in the session file (`.easy-coding/sessions/{ppid}.json`).
+2. Set the current task through the state API:
+   `{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py set-current --session-file <P> --task-id <task-b-id> --agent <agent-id>`.
 3. Read task B's `task.json` to determine its current stage.
 4. Resume task B's stage via the appropriate stage skill.
 
@@ -100,13 +112,24 @@ routing matches, and switching happens again.
 - **Never skip a stage.** ANALYSIS cannot jump to VERIFICATION; IMPLEMENT cannot start before
   WAITING_CONFIRM passes. No exception for "simple" tasks — simple tasks have short analyses,
   not skipped ones.
+- **ANALYSIS entry gate.** When entering ANALYSIS, your FIRST TWO tool calls must be:
+  (1) Read `.easy-coding/templates/dev-spec-skeleton.md`, then (2) Write its exact content
+  to the task's dev-spec.md. This is a mechanical copy, not a generation task. Do not read
+  code, load memory, or analyze before the skeleton is on disk. This is ec-analysis
+  HARD RULE 1 — violating it means the analysis has failed. Your reply to the user must
+  be the complete dev-spec.md content, not a summary or custom format.
+  Additionally, ANALYSIS must stay faithful to the user's delivery form — it may NOT downgrade
+  a code task to a report-only task — and the 改动范围 table must list only real project code,
+  never `.easy-coding/` harness artifacts (ec-analysis HARD RULES 5 and 6).
 - **WAITING_CONFIRM is a real gate.** Proceed only on explicit user confirmation of BOTH the
   analysis conclusion and the test strategy. Silence, enthusiasm, or a topic change is not
   confirmation. Sole exception: `behavior.auto_mode: true` in `.easy-coding/config.yaml`
-  AND the user asked for autonomous execution.
-- **On every transition** update the active task's `task.json` immediately (not at turn end):
-  set `status` to the new stage, append `{stage, agent, entered_at}` to `stage_history`, set
-  `last_agent` to the current agent id (`claude-code` / `codex` / `qoder`).
+  AND the user asked for autonomous execution. `auto_mode` ONLY waives this confirmation step;
+  it carries NO scope or delivery-form decision. Never cite `auto_mode` (or "the user already
+  decided in INIT") to justify narrowing scope or downgrading a code task to a report.
+- **On every transition** call the state API immediately (not at turn end):
+  `{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py transition --session-file <P> --stage <STAGE> --agent <agent-id>`.
+  Do not hand-edit `status`, `stage_history`, `last_agent`, `current_task`, or session files.
 - **Hook enforcement.** The `inject-workflow-state` hook validates every stage transition
   against the state machine. If you see `[ILLEGAL-TRANSITION:...]` in the injected context,
   you MUST revert the task's status to the previous valid stage and explain why the
@@ -120,14 +143,17 @@ routing matches, and switching happens again.
 - **Task switching is allowed at any stage.** The suspended task retains its stage in
   task.json. Do not run memory flows for suspended tasks — only completed tasks get archived.
 - **Archive only after user acceptance.** VERIFICATION passing does not complete the task.
-  After the user accepts, MEMORY_SHORT → MEMORY_LONG → COMPLETE run automatically.
-- **COMPLETE closeout:** set task.json `status:"COMPLETE"`, clear `current_task` in the
-  session file, output a summary (what was done, files changed, key decisions).
+  After the user accepts, call state API transitions in order:
+  MEMORY_SHORT → MEMORY_LONG → COMPLETE. Do not jump directly from VERIFICATION to COMPLETE.
+- **COMPLETE closeout:** call the state API with `--stage COMPLETE`. The state API clears
+  session `current_task` for terminal tasks, so the next hook injection returns to Ready.
+  Then output a summary (what was done, files changed, key decisions).
 
 ## Resume and handoff
 
 Hook breadcrumbs you may receive: `[workflow-state:X]`, `[current-task:Y]`,
-`[easy-coding:handoff-from:Z]`, `[easy-coding:init-required]`.
+`[easy-coding:session-file:P]`, `[easy-coding:handoff-from:Z]`,
+`[easy-coding:init-required]`.
 
 Resuming an active task (whether from session restart, handoff, or task switch):
 1. Read `task.json` and the dev-spec sections relevant to the current stage.
@@ -154,7 +180,8 @@ switches agents by itself.
 
 Start every reply with the single Markdown blockquote status line injected by the hook,
 then a blank line. Do not render machine breadcrumbs such as `[workflow-state:...]` to the
-user. If no status line is injected (harness inactive), do not invent one.
+user. If no status line is injected (harness inactive), do not invent one. Status display is
+script-owned; skills must never construct or "fix" the status line manually.
 
 ## Boundaries
 

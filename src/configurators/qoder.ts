@@ -1,6 +1,14 @@
-import { existsSync, readdirSync } from "node:fs";
+import type { Dirent } from "node:fs";
+import { readdir } from "node:fs/promises";
 import path from "node:path";
-import { PLATFORM_META, type TemplateContext } from "../types/platform.js";
+import { pathExists } from "../utils/file-writer.js";
+import {
+  type InstallArtifact,
+  constraintRegionArtifact,
+  fileArtifact,
+  hookRegistrationArtifacts,
+} from "../utils/install-manifest.js";
+import { resolvePlatformMeta } from "../utils/platform-paths.js";
 import {
   copyPlatformTemplates,
   resolveBundledSkills,
@@ -10,44 +18,98 @@ import {
   writeSkills,
 } from "./shared.js";
 
-function claudeSkillsExist(cwd: string): boolean {
-  const claudeSkillsDir = path.join(cwd, ".claude", "skills");
-  if (!existsSync(claudeSkillsDir)) return false;
-  try {
-    return readdirSync(claudeSkillsDir).some((d) => d.startsWith("ec-"));
-  } catch {
-    return false;
-  }
+async function claudeHarnessSkillsExist(cwd: string): Promise<boolean> {
+  return pathExists(path.join(cwd, ".claude", "skills", "ec-workflow", "SKILL.md"));
 }
 
-export async function configureQoder(cwd: string): Promise<void> {
-  const platform = "qoder";
-  const baseDir = detectQoderCnVariant(cwd) ? ".qodercn" : ".qoder";
-  const ctx: TemplateContext = {
-    ...PLATFORM_META[platform].templateContext,
-    platform_config_dir: baseDir,
-  };
-  const dest = path.join(cwd, baseDir);
+async function listFilesRecursive(dir: string): Promise<string[]> {
+  let entries: Dirent[];
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return [];
+    }
+    throw error;
+  }
 
-  await copyPlatformTemplates("qoder", dest, ["hooks"], ctx);
-  await writeSharedHooks(path.join(dest, "hooks"), platform);
+  const files: string[] = [];
+  for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+    const entryPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...(await listFilesRecursive(entryPath)));
+      continue;
+    }
+    if (entry.isFile()) {
+      files.push(entryPath);
+    }
+  }
+  return files;
+}
+
+async function existingManagedSkillArtifacts(
+  skillsDir: string,
+  skillNames: string[],
+  platform: "qoder",
+): Promise<InstallArtifact[]> {
+  const artifacts: InstallArtifact[] = [];
+  for (const skillName of skillNames) {
+    for (const filePath of await listFilesRecursive(path.join(skillsDir, skillName))) {
+      artifacts.push(fileArtifact(filePath, "skill", platform));
+    }
+  }
+  return artifacts;
+}
+
+export async function configureQoder(cwd: string): Promise<InstallArtifact[]> {
+  const platform = "qoder";
+  const meta = resolvePlatformMeta(cwd, platform);
+  const ctx = meta.templateContext;
+  const dest = path.join(cwd, ctx.platform_config_dir);
+  const hookConfigPath = path.join(cwd, meta.hookConfigFile);
+  const artifacts: InstallArtifact[] = [];
+
+  const platformFiles = await copyPlatformTemplates("qoder", dest, ["hooks"], ctx);
+  artifacts.push(
+    ...platformFiles
+      .filter((filePath) => filePath !== hookConfigPath)
+      .map((filePath) =>
+        fileArtifact(
+          filePath,
+          filePath.startsWith(path.join(cwd, meta.agentsDir)) ? "agent" : "platform-config",
+          platform,
+        ),
+      ),
+  );
+  artifacts.push(...(await hookRegistrationArtifacts(hookConfigPath, platform)));
+  artifacts.push(
+    ...(await writeSharedHooks(path.join(dest, "hooks"), platform)).map((filePath) =>
+      fileArtifact(filePath, "hook", platform),
+    ),
+  );
 
   // Qoder scans both .qoder/skills/ and .claude/skills/ at runtime.
   // Skip writing to .qoder/skills/ when Claude Code skills already exist to avoid duplicates.
-  if (!claudeSkillsExist(cwd)) {
-    await writeSkills(
-      path.join(dest, "skills"),
-      await resolveSkills(ctx),
-      await resolveBundledSkills(ctx),
+  const skills = await resolveSkills(ctx);
+  const bundledSkills = await resolveBundledSkills(ctx);
+  if (!(await claudeHarnessSkillsExist(cwd))) {
+    artifacts.push(
+      ...(await writeSkills(path.join(dest, "skills"), skills, bundledSkills)).map((filePath) =>
+        fileArtifact(filePath, "skill", platform),
+      ),
+    );
+  } else {
+    artifacts.push(
+      ...(await existingManagedSkillArtifacts(
+        path.join(dest, "skills"),
+        [...skills.map((skill) => skill.name), ...bundledSkills.map((skill) => skill.name)],
+        platform,
+      )),
     );
   }
 
-  await writeMainConstraint(cwd, platform);
-}
+  artifacts.push(constraintRegionArtifact(await writeMainConstraint(cwd, platform), platform));
 
-export function detectQoderCnVariant(cwd: string): boolean {
-  if (process.env.EC_QODER_VARIANT === "cn" || process.env.QODER_VARIANT === "cn") {
-    return true;
-  }
-  return existsSync(path.join(cwd, ".qodercn"));
+  return artifacts;
 }
+export { detectQoderCnVariant } from "../utils/platform-paths.js";
