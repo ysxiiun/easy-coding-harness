@@ -6,6 +6,13 @@
 - `y`：常规功能升级
 - `z`：日常 bug 修复
 
+## 0.3.1
+
+- 修复确认执行后首行状态栏仍显示上一阶段的问题：`UserPromptSubmit` hook 在明确确认输入下先执行合法状态迁移，再重新读取最新状态渲染状态栏。
+- `WAITING_CONFIRM -> IMPLEMENT` 和 `VERIFICATION -> MEMORY_SHORT` 采用状态前置策略，避免真实动作已经开始但 `task.json.status` 仍停留在旧阶段。
+- ec-workflow 强化统一规则：所有阶段推进必须先通过 state API 持久化下一阶段，再执行该阶段真实动作；hook 已完成前置迁移时不得重复写入。
+- README 中 CHANGELOG 超链接改为 GitHub `master` 文件地址，便于 npm 页面和外部用户访问。
+
 ## 0.3.0
 
 - 补充 `repository` / `homepage` / `bugs` 包元数据，并把 README 中的 CHANGELOG 链接改为 GitLab 绝对地址，修复 npm 页面相对链接跳转到 404 的问题。

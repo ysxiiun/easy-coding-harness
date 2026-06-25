@@ -112,6 +112,12 @@ routing matches, and switching happens again.
 - **Never skip a stage.** ANALYSIS cannot jump to VERIFICATION; IMPLEMENT cannot start before
   WAITING_CONFIRM passes. No exception for "simple" tasks — simple tasks have short analyses,
   not skipped ones.
+- **State before action.** Every stage advance is a two-step protocol: first persist the
+  next stage through the state API, then run that stage's real work. Do not start analysis,
+  implementation, review, verification, memory writing, closeout, or task switching while
+  `task.json.status` still names the previous stage. After every state API call, treat the
+  returned snapshot/read-after-write state as authoritative for the next action and for the
+  status line.
 - **ANALYSIS entry gate.** When entering ANALYSIS, your FIRST TWO tool calls must be:
   (1) Read `.easy-coding/templates/dev-spec-skeleton.md`, then (2) Write its exact content
   to the task's dev-spec.md. This is a mechanical copy, not a generation task. Do not read
@@ -127,9 +133,15 @@ routing matches, and switching happens again.
   AND the user asked for autonomous execution. `auto_mode` ONLY waives this confirmation step;
   it carries NO scope or delivery-form decision. Never cite `auto_mode` (or "the user already
   decided in INIT") to justify narrowing scope or downgrading a code task to a report.
+  On confirmation, the harness hook may have already advanced the task to IMPLEMENT before
+  this reply is generated. If the breadcrumb/state is still WAITING_CONFIRM, call the state
+  API to transition to IMPLEMENT immediately; only after the read-after-write state says
+  IMPLEMENT may you dispatch ec-implementing.
 - **On every transition** call the state API immediately (not at turn end):
   `{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py transition --session-file <P> --stage <STAGE> --agent <agent-id>`.
   Do not hand-edit `status`, `stage_history`, `last_agent`, `current_task`, or session files.
+  If the target stage is already present because a hook preflight completed it, do not issue a
+  duplicate transition; use the latest snapshot and continue with the target stage's action.
 - **Hook enforcement.** The `inject-workflow-state` hook validates every stage transition
   against the state machine. If you see `[ILLEGAL-TRANSITION:...]` in the injected context,
   you MUST revert the task's status to the previous valid stage and explain why the
@@ -145,6 +157,9 @@ routing matches, and switching happens again.
 - **Archive only after user acceptance.** VERIFICATION passing does not complete the task.
   After the user accepts, call state API transitions in order:
   MEMORY_SHORT → MEMORY_LONG → COMPLETE. Do not jump directly from VERIFICATION to COMPLETE.
+  For each archive step, transition first and run the corresponding action second:
+  after MEMORY_SHORT is persisted, write the short memory; after MEMORY_LONG is persisted,
+  handle the `memory_long` instruction; after COMPLETE is persisted, produce the final summary.
   When transitioning to MEMORY_LONG, pass the state API snapshot to ec-memory and treat its
   `memory_long` object as authoritative: `action == "no-op"` advances to COMPLETE without
   reading or writing long memory; `action == "distill"` runs distillation for `trim_count`

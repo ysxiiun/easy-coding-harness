@@ -325,6 +325,248 @@ describe("configureClaude", () => {
     expect(session.current_task).toBeNull();
   });
 
+  it("generated hooks preflight WAITING_CONFIRM confirmation before rendering IMPLEMENT", async () => {
+    await configureClaude(tempDir);
+    await writeRuntimeScaffold(tempDir, ["claude-code"]);
+    await mkdir(path.join(tempDir, ".easy-coding", "sessions"), { recursive: true });
+    await mkdir(path.join(tempDir, ".easy-coding", "tasks", "06-25-confirm"), { recursive: true });
+    await writeFile(
+      path.join(tempDir, ".easy-coding", "sessions", `${process.pid}.json`),
+      JSON.stringify(
+        {
+          current_task: "06-25-confirm",
+          created_at: new Date().toISOString(),
+          last_seen_task: "06-25-confirm",
+          last_seen_stage: "WAITING_CONFIRM",
+          last_agent: "claude-code",
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    await writeFile(
+      path.join(tempDir, ".easy-coding", "tasks", "06-25-confirm", "task.json"),
+      JSON.stringify(
+        {
+          type: "feature",
+          title: "Confirm task",
+          status: "WAITING_CONFIRM",
+          created_at: "2026-06-25T00:00:00Z",
+          created_by: "claude-code",
+          last_agent: "claude-code",
+          stage_history: [{ stage: "WAITING_CONFIRM", agent: "claude-code" }],
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    const hook = path.join(tempDir, ".claude", "hooks", "inject-workflow-state.py");
+    const stdout = execFileSync("python3", [hook], {
+      cwd: tempDir,
+      input: JSON.stringify({ cwd: tempDir, prompt: "确认，开始执行" }),
+      encoding: "utf8",
+    });
+
+    expect(stdout).toContain("> **Easy Coding** · `06-25-confirm` · `IMPLEMENT`");
+    expect(stdout).toContain("[workflow-state:IMPLEMENT]");
+    const task = JSON.parse(
+      await readFile(
+        path.join(tempDir, ".easy-coding", "tasks", "06-25-confirm", "task.json"),
+        "utf8",
+      ),
+    );
+    expect(task.status).toBe("IMPLEMENT");
+    expect(task.stage_history.map((entry: { stage: string }) => entry.stage)).toEqual([
+      "WAITING_CONFIRM",
+      "IMPLEMENT",
+    ]);
+    const session = JSON.parse(
+      await readFile(path.join(tempDir, ".easy-coding", "sessions", `${process.pid}.json`), "utf8"),
+    );
+    expect(session.last_seen_stage).toBe("IMPLEMENT");
+  });
+
+  it("generated hooks do not preflight WAITING_CONFIRM revision requests", async () => {
+    await configureClaude(tempDir);
+    await writeRuntimeScaffold(tempDir, ["claude-code"]);
+    await mkdir(path.join(tempDir, ".easy-coding", "sessions"), { recursive: true });
+    await mkdir(path.join(tempDir, ".easy-coding", "tasks", "06-25-revise"), { recursive: true });
+    await writeFile(
+      path.join(tempDir, ".easy-coding", "sessions", `${process.pid}.json`),
+      JSON.stringify(
+        {
+          current_task: "06-25-revise",
+          created_at: new Date().toISOString(),
+          last_seen_task: "06-25-revise",
+          last_seen_stage: "WAITING_CONFIRM",
+          last_agent: "claude-code",
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    await writeFile(
+      path.join(tempDir, ".easy-coding", "tasks", "06-25-revise", "task.json"),
+      JSON.stringify(
+        {
+          type: "feature",
+          title: "Revise task",
+          status: "WAITING_CONFIRM",
+          created_at: "2026-06-25T00:00:00Z",
+          created_by: "claude-code",
+          last_agent: "claude-code",
+          stage_history: [{ stage: "WAITING_CONFIRM", agent: "claude-code" }],
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    const hook = path.join(tempDir, ".claude", "hooks", "inject-workflow-state.py");
+    const stdout = execFileSync("python3", [hook], {
+      cwd: tempDir,
+      input: JSON.stringify({ cwd: tempDir, prompt: "先修改一下方案，不要执行" }),
+      encoding: "utf8",
+    });
+
+    expect(stdout).toContain("> **Easy Coding** · `06-25-revise` · `WAITING_CONFIRM`");
+    expect(stdout).toContain("[workflow-state:WAITING_CONFIRM]");
+    const task = JSON.parse(
+      await readFile(
+        path.join(tempDir, ".easy-coding", "tasks", "06-25-revise", "task.json"),
+        "utf8",
+      ),
+    );
+    expect(task.status).toBe("WAITING_CONFIRM");
+    expect(task.stage_history.map((entry: { stage: string }) => entry.stage)).toEqual([
+      "WAITING_CONFIRM",
+    ]);
+  });
+
+  it("generated hooks preflight accepted verification before rendering MEMORY_SHORT", async () => {
+    await configureClaude(tempDir);
+    await writeRuntimeScaffold(tempDir, ["claude-code"]);
+    await mkdir(path.join(tempDir, ".easy-coding", "sessions"), { recursive: true });
+    await mkdir(path.join(tempDir, ".easy-coding", "tasks", "06-25-verify"), { recursive: true });
+    await writeFile(
+      path.join(tempDir, ".easy-coding", "sessions", `${process.pid}.json`),
+      JSON.stringify(
+        {
+          current_task: "06-25-verify",
+          created_at: new Date().toISOString(),
+          last_seen_task: "06-25-verify",
+          last_seen_stage: "VERIFICATION",
+          last_agent: "claude-code",
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    await writeFile(
+      path.join(tempDir, ".easy-coding", "tasks", "06-25-verify", "task.json"),
+      JSON.stringify(
+        {
+          type: "feature",
+          title: "Verify task",
+          status: "VERIFICATION",
+          created_at: "2026-06-25T00:00:00Z",
+          created_by: "claude-code",
+          last_agent: "claude-code",
+          stage_history: [{ stage: "VERIFICATION", agent: "claude-code" }],
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    const hook = path.join(tempDir, ".claude", "hooks", "inject-workflow-state.py");
+    const stdout = execFileSync("python3", [hook], {
+      cwd: tempDir,
+      input: JSON.stringify({ cwd: tempDir, user_prompt: "验收通过，可以归档" }),
+      encoding: "utf8",
+    });
+
+    expect(stdout).toContain("> **Easy Coding** · `06-25-verify` · `MEMORY_SHORT`");
+    expect(stdout).toContain("[workflow-state:MEMORY_SHORT]");
+    const task = JSON.parse(
+      await readFile(
+        path.join(tempDir, ".easy-coding", "tasks", "06-25-verify", "task.json"),
+        "utf8",
+      ),
+    );
+    expect(task.status).toBe("MEMORY_SHORT");
+    expect(task.stage_history.map((entry: { stage: string }) => entry.stage)).toEqual([
+      "VERIFICATION",
+      "MEMORY_SHORT",
+    ]);
+  });
+
+  it("generated hooks do not preflight non-confirmation stages", async () => {
+    await configureClaude(tempDir);
+    await writeRuntimeScaffold(tempDir, ["claude-code"]);
+    await mkdir(path.join(tempDir, ".easy-coding", "sessions"), { recursive: true });
+    await mkdir(path.join(tempDir, ".easy-coding", "tasks", "06-25-review"), { recursive: true });
+    await writeFile(
+      path.join(tempDir, ".easy-coding", "sessions", `${process.pid}.json`),
+      JSON.stringify(
+        {
+          current_task: "06-25-review",
+          created_at: new Date().toISOString(),
+          last_seen_task: "06-25-review",
+          last_seen_stage: "REVIEW",
+          last_agent: "claude-code",
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    await writeFile(
+      path.join(tempDir, ".easy-coding", "tasks", "06-25-review", "task.json"),
+      JSON.stringify(
+        {
+          type: "feature",
+          title: "Review task",
+          status: "REVIEW",
+          created_at: "2026-06-25T00:00:00Z",
+          created_by: "claude-code",
+          last_agent: "claude-code",
+          stage_history: [{ stage: "REVIEW", agent: "claude-code" }],
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    const hook = path.join(tempDir, ".claude", "hooks", "inject-workflow-state.py");
+    const stdout = execFileSync("python3", [hook], {
+      cwd: tempDir,
+      input: JSON.stringify({ cwd: tempDir, prompt: "确认，继续执行" }),
+      encoding: "utf8",
+    });
+
+    expect(stdout).toContain("> **Easy Coding** · `06-25-review` · `REVIEW`");
+    expect(stdout).toContain("[workflow-state:REVIEW]");
+    const task = JSON.parse(
+      await readFile(
+        path.join(tempDir, ".easy-coding", "tasks", "06-25-review", "task.json"),
+        "utf8",
+      ),
+    );
+    expect(task.status).toBe("REVIEW");
+    expect(task.stage_history.map((entry: { stage: string }) => entry.stage)).toEqual([
+      "REVIEW",
+    ]);
+  });
+
   it("state API creates a task and advances it through legal transitions", async () => {
     await configureClaude(tempDir);
     await writeRuntimeScaffold(tempDir, ["claude-code"]);

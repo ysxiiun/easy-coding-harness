@@ -135,7 +135,7 @@ easy-coding upgrade
 - `y`：常规功能升级
 - `z`：日常 bug 修复
 
-完整更新日志见 [CHANGELOG.md](https://gitlab.alibaba-inc.com/shixin.ysx/easy-coding-harness/-/blob/master/CHANGELOG.md)。
+完整更新日志见 [CHANGELOG.md](https://github.com/ysxiiun/easy-coding-harness/blob/master/CHANGELOG.md)。
 
 ## 开发者命令
 
