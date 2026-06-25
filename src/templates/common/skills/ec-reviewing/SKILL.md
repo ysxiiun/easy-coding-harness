@@ -1,6 +1,6 @@
 ---
 name: ec-reviewing
-description: REVIEW-stage skill. Use when ec-workflow enters REVIEW. Reviews changed files across correctness, RULES compliance, completeness, tests, and security; returns a graded verdict (accept/fix/replan/blocked) with file-and-line evidence; dispatches multi-dimension sub-agents when the change set is large.
+description: REVIEW-stage skill. Use when ec-workflow enters REVIEW. Reviews changed files across correctness, RULES compliance, completeness, tests, and security; returns a graded verdict (accept/fix/replan/blocked) with file-and-line evidence; dispatches multi-dimension sub-agents for every review regardless of change-set size.
 ---
 
 # ec-reviewing — graded, evidence-backed review

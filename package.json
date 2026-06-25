@@ -1,7 +1,15 @@
 {
   "name": "easy-coding-harness",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "CLI scaffold for installing Easy Coding harness files into agent-native directories.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://gitlab.alibaba-inc.com/shixin.ysx/easy-coding-harness.git"
+  },
+  "homepage": "https://gitlab.alibaba-inc.com/shixin.ysx/easy-coding-harness#readme",
+  "bugs": {
+    "url": "https://gitlab.alibaba-inc.com/shixin.ysx/easy-coding-harness/-/issues"
+  },
   "type": "module",
   "bin": {
     "easy-coding": "./dist/cli.js"

@@ -27,6 +27,9 @@ VALID_TRANSITIONS: dict[str, set[str]] = {
     "CLOSED": set(),
 }
 
+DEFAULT_SHORT_TERM_MAX = 10
+DEFAULT_SHORT_TERM_KEEP = 5
+
 
 class StateError(Exception):
     pass
@@ -59,6 +62,94 @@ def load_json(path: Path) -> dict | None:
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
+
+
+def parse_positive_int(value: str) -> int | None:
+    normalized = value.split("#", 1)[0].strip().strip("'\"")
+    try:
+        parsed = int(normalized)
+    except ValueError:
+        return None
+    return parsed if parsed >= 0 else None
+
+
+def read_memory_config(root: Path) -> dict[str, int]:
+    config = {
+        "short_term_max": DEFAULT_SHORT_TERM_MAX,
+        "short_term_keep": DEFAULT_SHORT_TERM_KEEP,
+    }
+    path = root / ".easy-coding" / "config.yaml"
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return config
+
+    in_memory = False
+    memory_indent = 0
+    for raw_line in lines:
+        without_comment = raw_line.split("#", 1)[0].rstrip()
+        stripped = without_comment.strip()
+        if not stripped:
+            continue
+        indent = len(without_comment) - len(without_comment.lstrip(" "))
+        if stripped == "memory:":
+            in_memory = True
+            memory_indent = indent
+            continue
+        if in_memory and indent <= memory_indent:
+            in_memory = False
+        if not in_memory or ":" not in stripped:
+            continue
+        key, value = stripped.split(":", 1)
+        if key not in config:
+            continue
+        parsed = parse_positive_int(value)
+        if parsed is not None:
+            config[key] = parsed
+    return config
+
+
+def count_short_memories(root: Path) -> int:
+    short_dir = root / ".easy-coding" / "memory" / "short"
+    if not short_dir.is_dir():
+        return 0
+    count = 0
+    for entry in short_dir.glob("*.md"):
+        try:
+            if is_schema_v2_short_memory(entry.read_text(encoding="utf-8")):
+                count += 1
+        except OSError:
+            continue
+    return count
+
+
+def is_schema_v2_short_memory(content: str) -> bool:
+    lines = content.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return False
+    for line in lines[1:]:
+        stripped = line.strip()
+        if stripped == "---":
+            return False
+        if not stripped.startswith("memory_schema:"):
+            continue
+        _, value = stripped.split(":", 1)
+        return parse_positive_int(value) == 2
+    return False
+
+
+def build_memory_long_instruction(root: Path) -> dict:
+    config = read_memory_config(root)
+    short_count = count_short_memories(root)
+    action = "distill" if short_count > config["short_term_max"] else "no-op"
+    trim_count = max(0, short_count - config["short_term_keep"]) if action == "distill" else 0
+    return {
+        "short_count": short_count,
+        "short_term_max": config["short_term_max"],
+        "short_term_keep": config["short_term_keep"],
+        "action": action,
+        "trim_count": trim_count,
+    }
 
 
 def write_json(path: Path, data: dict) -> None:
@@ -331,7 +422,10 @@ def transition_task(
             session["last_seen_stage"] = stage
             session["last_agent"] = agent
         write_session(root, session, session_file)
-    return snapshot_state(root, session_file, session)
+    snapshot = snapshot_state(root, session_file, session)
+    if stage == "MEMORY_LONG":
+        snapshot["memory_long"] = build_memory_long_instruction(root)
+    return snapshot
 
 
 def close_current_task(

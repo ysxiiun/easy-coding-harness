@@ -155,10 +155,13 @@ Decompose the work into units, then append ONE `plan` record to
 {"type":"plan","strategy":"parallel","units":[{"id":"U1","title":"...","type":"backend","files":["..."],"depends_on":[],"rules_sections":["naming","error-handling"],"abstract_modules":["user-service"]}],"parallel_groups":[{"level":0,"units":["U1","U2"]},{"level":1,"units":["U3"]}]}
 ```
 
-Strategy selection (drives whether ec-implementing spawns sub-agents):
-- `single` — one unit. Main agent implements directly.
-- `sequential` — multiple units with a hard dependency chain.
-- `parallel` — two or more independent units. ec-implementing MUST use sub-agents.
+Strategy selection (drives ec-implementing's sub-agent orchestration shape — every strategy
+dispatches sub-agents; none implements inline):
+- `single` — one unit. ec-implementing dispatches one sub-agent.
+- `sequential` — multiple units with a hard dependency chain. ec-implementing dispatches
+  sub-agents one at a time in dependency order.
+- `parallel` — two or more independent units. ec-implementing dispatches sub-agents per level
+  concurrently.
 
 Each unit carries `rules_sections` and `abstract_modules` so ec-implementing can build a
 precise task card without the sub-agent re-reading the whole repo. `depends_on` sets the

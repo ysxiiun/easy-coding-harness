@@ -85,7 +85,7 @@ any stage --[user abort via ec-task-close]--> CLOSED
 | REVIEW | ec-reviewing | multi-dimension code review | verdict = accept |
 | VERIFICATION | ec-verification | hard gate: lint/typecheck/test + coverage | all pass AND user accepts |
 | MEMORY_SHORT | ec-memory | archive: short memory entry | written |
-| MEMORY_LONG | ec-memory | archive: long memory distillation | written |
+| MEMORY_LONG | ec-memory | archive: long memory distillation (conditional — no-op when short memory is under threshold) | state API `memory_long` instruction handled |
 | COMPLETE | ec-workflow | clear current_task, set task status, summary | terminal |
 | CLOSED | ec-task-close | user abort; no memory flow | terminal |
 
@@ -145,6 +145,10 @@ routing matches, and switching happens again.
 - **Archive only after user acceptance.** VERIFICATION passing does not complete the task.
   After the user accepts, call state API transitions in order:
   MEMORY_SHORT → MEMORY_LONG → COMPLETE. Do not jump directly from VERIFICATION to COMPLETE.
+  When transitioning to MEMORY_LONG, pass the state API snapshot to ec-memory and treat its
+  `memory_long` object as authoritative: `action == "no-op"` advances to COMPLETE without
+  reading or writing long memory; `action == "distill"` runs distillation for `trim_count`
+  older short-memory entries.
 - **COMPLETE closeout:** call the state API with `--stage COMPLETE`. The state API clears
   session `current_task` for terminal tasks, so the next hook injection returns to Ready.
   Then output a summary (what was done, files changed, key decisions).

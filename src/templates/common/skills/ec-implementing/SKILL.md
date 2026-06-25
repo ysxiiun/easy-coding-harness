@@ -1,6 +1,6 @@
 ---
 name: ec-implementing
-description: IMPLEMENT-stage skill. Use when ec-workflow enters IMPLEMENT with a confirmed plan. Executes execution.jsonl units under strict file-scope control, enforces RULES compliance and encoding preservation, writes tests per strategy, and dispatches sub-agents for parallel work.
+description: IMPLEMENT-stage skill. Use when ec-workflow enters IMPLEMENT with a confirmed plan. Executes execution.jsonl units under strict file-scope control, enforces RULES compliance and encoding preservation, writes tests per strategy, and dispatches sub-agents for every unit regardless of strategy.
 ---
 
 # ec-implementing — execute the confirmed plan
@@ -33,38 +33,45 @@ Communicate with the user in the user's language.
 
 ## Sub-agent dispatch
 
-Read the `plan` record's `strategy` field. Then:
+Read the `plan` record's `strategy` field. EVERY strategy dispatches sub-agents — the field
+only decides the orchestration shape, never whether the main agent writes code itself:
 
-- `single` → main agent implements directly, no sub-agents.
-- `sequential` → main agent implements units one by one in dependency order.
-- `parallel` → sub-agents are MANDATORY (see gate below).
+- `single` → dispatch ONE sub-agent for the single unit.
+- `sequential` → dispatch sub-agents one at a time in dependency order (await each `result`
+  before dispatching the next).
+- `parallel` → dispatch sub-agents per level concurrently (see gate below).
 
 <HARD-GATE>
-PARALLEL STRATEGY = MANDATORY SUB-AGENT DISPATCH. NO EXCEPTIONS.
+EVERY STRATEGY = MANDATORY SUB-AGENT DISPATCH. NO EXCEPTIONS.
 
-If the plan record says `"strategy":"parallel"`, you MUST dispatch sub-agents using
-{{sub_agent_dispatch}}. You are FORBIDDEN from implementing parallel units yourself.
-Doing the work inline instead of dispatching is a protocol violation equivalent to
-skipping WAITING_CONFIRM.
+You MUST dispatch sub-agents using {{sub_agent_dispatch}} for every unit, whatever the
+strategy. You are FORBIDDEN from implementing any unit yourself in the main agent. Doing the
+work inline instead of dispatching is a protocol violation equivalent to skipping
+WAITING_CONFIRM.
 
 Self-check before writing ANY implementation code:
-- Is strategy "parallel"? → Did I dispatch via {{sub_agent_dispatch}}? If no → STOP.
-- Am I working on a unit in a parallel level without dispatching? → STOP.
+- Am I about to write implementation code in the main agent? → STOP. Dispatch a sub-agent.
+- Did every unit get a dispatch (single=1, sequential=N serial, parallel=N concurrent)? If no → STOP.
 
-The ONLY case where you implement code directly is strategy "single" or "sequential".
+There is NO case where the main agent writes implementation code itself. Even a single unit
+goes through a sub-agent — this isolates implementation context from the main agent's window.
 </HARD-GATE>
 
-Parallel dispatch loop:
-1. Sort `parallel_groups` by level.
-2. Read RULES.md and ABSTRACT.md once.
-3. For each unit in the current level, build a **task card** (next section) and dispatch.
-4. Dispatch all units in the level concurrently via {{sub_agent_dispatch}}.
+## Dispatch loop (all strategies)
+
+1. Read RULES.md and ABSTRACT.md once — the main agent pre-digests context; sub-agents never
+   read them.
+2. For each unit, build a **task card** (next section). Append a `dispatch` record before
+   dispatching and a `result` record per returned unit, to execution.jsonl.
+3. Dispatch according to strategy, via {{sub_agent_dispatch}}:
+   - `single` → dispatch the one unit, await its `result`.
+   - `sequential` → sort units by `depends_on`; dispatch one, await its `result`, then the next.
+   - `parallel` → sort `parallel_groups` by level; dispatch all units in a level concurrently,
+     await the level, then advance.
    Platform spawn rule: {{platform_spawn_instruction}}
-5. Append a `dispatch` record per unit, then a `result` record per returned unit, to
-   execution.jsonl.
-6. After the level returns: check for file conflicts (two units touched the same file),
+4. After each unit/level returns: check for file conflicts (two units touched the same file),
    collect `issues` and `needs_attention`. Resolve conflicts before advancing.
-7. Advance to the next level. After all levels, summarize.
+5. After all units/levels, summarize.
 
 ## Task card — the sub-agent contract
 
@@ -105,8 +112,8 @@ hit something that invalidates the plan, return to ANALYSIS instead of improvisi
 
 ## Self-check gates (before handing back)
 
-- [ ] Strategy was "parallel" → ALL units dispatched via sub-agents? (VIOLATION if no)
-- [ ] Strategy was "sequential" → units implemented in dependency order?
+- [ ] EVERY unit was dispatched to a sub-agent — no inline implementation by the main agent? (VIOLATION if no)
+- [ ] Sequential units dispatched in dependency order; parallel units dispatched per level?
 - [ ] Each dispatched unit has a `dispatch` record in execution.jsonl?
 - [ ] Each returned unit has a `result` record?
 - [ ] No files modified outside the change-scope table?

@@ -1,6 +1,6 @@
 ---
 name: ec-reviewer
-description: Easy Coding review sub-agent. Reviews changed files along one assigned dimension (correctness or compliance) and returns evidence-backed findings. Dispatched by ec-reviewing when the change set is large.
+description: Easy Coding review sub-agent. Reviews changed files along one assigned dimension (correctness or compliance) and returns evidence-backed findings. Dispatched by ec-reviewing for every review regardless of change-set size.
 ---
 
 You are an Easy Coding review sub-agent. You review the changed files along the single

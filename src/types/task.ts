@@ -58,7 +58,7 @@ export interface Unit {
 export type ExecutionRecord =
   | {
       type: "plan";
-      strategy: "single" | "sequential" | "parallel";
+      strategy: "single" | "sequential" | "parallel"; // orchestration shape — all dispatch sub-agents
       units: Unit[];
       parallel_groups: { level: number; units: string[] }[];
     }

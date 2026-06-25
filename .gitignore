@@ -3,6 +3,10 @@ node_modules/
 dist/
 /templates/
 
+# Python 字节码缓存（hook 运行/测试时生成）
+__pycache__/
+*.pyc
+
 # 个人运行时状态（harness git 策略）
 .easy-coding/sessions/
 

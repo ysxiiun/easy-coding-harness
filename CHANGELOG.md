@@ -6,6 +6,15 @@
 - `y`：常规功能升级
 - `z`：日常 bug 修复
 
+## 0.3.0
+
+- 补充 `repository` / `homepage` / `bugs` 包元数据，并把 README 中的 CHANGELOG 链接改为 GitLab 绝对地址，修复 npm 页面相对链接跳转到 404 的问题。
+- README 改为使用导向说明，主线调整为安装、两阶段初始化、日常 `/ec-workflow` 入口、命令表、平台差异和真实 skill 清单。
+- MEMORY_LONG 门控改由 `easy_coding_state.py transition` 机械下发 `memory_long` 指令，避免短期记忆未超过阈值时被 prompt 误触发长期沉淀。
+- ec-memory 补充短期记忆消费后的删除步骤：成功蒸馏更早条目并更新长期索引后，删除已消费短期文件，仅保留最近 `short_term_keep` 条。
+- 实施 / 审查 / 验证三阶段统一强制子代理：IMPLEMENT 删除"主代理直接实现"分支，`single` / `sequential` / `parallel` 都派子代理（仅编排形态不同——单个串行执行也起子代理），保护主代理上下文不被实现细节污染；REVIEW / VERIFICATION 口径校齐，去掉"改动集大才派子代理"等矛盾表述。
+- 存量项目需要执行 `easy-coding upgrade` 才能拿到新的 hook 与 skill 模板。
+
 ## 0.2.1
 
 - 新增 `easy_coding_state.py` 运行时状态 API，统一收口当前任务指针、任务状态、阶段流转、关闭/完成、`repo_paths` 等读写入口。

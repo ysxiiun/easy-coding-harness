@@ -57,21 +57,25 @@ responsibility and only runs when the threshold is exceeded.
 ## MEMORY_LONG — distill durable knowledge (CONDITIONAL)
 
 <HARD-GATE>
-MEMORY_LONG IS A NO-OP WHEN SHORT MEMORY COUNT <= threshold.
+MEMORY_LONG IS CONTROLLED BY THE STATE API `memory_long` INSTRUCTION.
 
 Before performing ANY distillation work:
-1. Count `.md` files in `.easy-coding/memory/short/` (only files with schema-v2 frontmatter).
-2. Read `memory.short_term_max` from `.easy-coding/config.yaml` (default: 10).
-3. If count <= short_term_max: output "MEMORY_LONG: no-op (short memory count = {N},
+1. Read the `memory_long` object returned by the state API transition to MEMORY_LONG.
+   If it is not visible in context, re-run the same transition command for MEMORY_LONG to
+   re-emit the snapshot, then use that `memory_long` object.
+2. Treat `memory_long.action` as authoritative. Do NOT recount short memories yourself and
+   do NOT override the state API instruction with prompt reasoning.
+3. If `action == "no-op"`: output "MEMORY_LONG: no-op (short memory count = {short_count},
    threshold = {short_term_max})" and immediately hand back to ec-workflow to advance to
    COMPLETE. Do NOT read long memory files, do NOT attempt distillation, do NOT modify any file.
-4. If count > short_term_max: proceed with distillation below.
+4. If `action == "distill"`: distill exactly the older `trim_count` short-memory entries
+   and keep the latest `short_term_keep` entries.
 
 This gate is absolute. Even a single short memory entry below threshold does NOT trigger
 long-term compression regardless of any other signal.
 </HARD-GATE>
 
-### When count > threshold: distillation flow
+### When action == "distill": distillation flow
 
 Three-file long memory:
 - `MEMORY.md` — index of all entries with status (active | deprecated | superseded | deleted).
@@ -79,8 +83,8 @@ Three-file long memory:
 - `TECHNICAL.md` — architecture decisions, implementation patterns, gotchas.
 
 Distillation steps:
-1. Read `memory.short_term_keep` from config (default: 5). Keep the latest N entries;
-   the older entries become distillation candidates.
+1. Use `memory_long.short_term_keep` and `memory_long.trim_count`. Keep the latest
+   `short_term_keep` entries; the older `trim_count` entries become distillation candidates.
 2. Read the `target_long` of candidate short memories; route to business/technical.
 3. **Progressive loading** — read only the existing long entries matching this round's
    domain/tags/related_files. No unbounded whole-repo memory scan.
@@ -90,6 +94,10 @@ Distillation steps:
 5. **Retirement check**: for older entries decide delete (no value) / merge (semantic
    duplicate) / deprecate (was valid, now superseded).
 6. Update the `MEMORY.md` index to reflect every change.
+7. After the long-memory files and index are successfully written, delete the consumed
+   short-memory candidate files. Leave only the latest `short_term_keep` short memories.
+   This is sliding-window consumption after successful distillation, not destructive
+   deletion of durable long-term knowledge.
 
 ## ABSTRACT backfill / update
 
