@@ -6,6 +6,10 @@
 - `y`：常规功能升级
 - `z`：日常 bug 修复
 
+## 0.3.2
+
+- npm 包元数据切换到 GitHub：`repository`、`homepage` 和 `bugs.url` 均指向 `github.com/ysxiiun/easy-coding-harness`。
+
 ## 0.3.1
 
 - 修复确认执行后首行状态栏仍显示上一阶段的问题：`UserPromptSubmit` hook 在明确确认输入下先执行合法状态迁移，再重新读取最新状态渲染状态栏。
