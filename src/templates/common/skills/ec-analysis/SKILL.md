@@ -72,6 +72,7 @@ If the task spans repositories: declare them in the dev-spec (trigger repo + inv
 by **name**, never local paths). For each involved repo, read its ABSTRACT to understand the
 interface. Cache any local path the user provides through the state API only:
 `{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py set-repo-path --session-file <P> --repo <repo-name> --path <local-path>`.
+Use the returned `status_context` as the latest state source after this write.
 If a repo name cannot be located locally, ask the user for the path before proceeding.
 
 ## Analysis procedure (mandatory sequence)

@@ -61,7 +61,7 @@ replies are English.
    the task through the state API, which creates `task.json`, sets `status:"INIT"`, writes
    `stage_history`, and sets the session `current_task`:
    `{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py create-task --session-file <P> --task-id <MM-DD-task-slug> --type <type> --title "<one-line summary>" --agent <agent-id>`.
-   Then enter INIT.
+   Use the returned `status_context` as the current status source. Then enter INIT.
 
 ## State machine
 
@@ -100,7 +100,8 @@ When the user confirms switching from task A to task B:
 1. Task A's status is already persisted in its `task.json` — nothing extra to save.
 2. Set the current task through the state API:
    `{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py set-current --session-file <P> --task-id <task-b-id> --agent <agent-id>`.
-3. Read task B's `task.json` to determine its current stage.
+3. Use the returned `status_context` as the current status source, then read task B's
+   `task.json` to determine its current stage.
 4. Resume task B's stage via the appropriate stage skill.
 
 No data is lost — task A's dev-spec, execution.jsonl, and test-strategy.md stay intact on
@@ -140,6 +141,9 @@ routing matches, and switching happens again.
 - **On every transition** call the state API immediately (not at turn end):
   `{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py transition --session-file <P> --stage <STAGE> --agent <agent-id>`.
   Do not hand-edit `status`, `stage_history`, `last_agent`, `current_task`, or session files.
+  The command returns `status_line` and `status_context`; after any state-changing command,
+  discard older hook-injected status text and use this returned context as the authoritative
+  status source for the rest of the current turn.
   If the target stage is already present because a hook preflight completed it, do not issue a
   duplicate transition; use the latest snapshot and continue with the target stage's action.
 - **Hook enforcement.** The `inject-workflow-state` hook validates every stage transition
@@ -160,6 +164,8 @@ routing matches, and switching happens again.
   For each archive step, transition first and run the corresponding action second:
   after MEMORY_SHORT is persisted, write the short memory; after MEMORY_LONG is persisted,
   handle the `memory_long` instruction; after COMPLETE is persisted, produce the final summary.
+  At each transition, use the state API's returned `status_context` as the latest status
+  source before running the next action.
   When transitioning to MEMORY_LONG, pass the state API snapshot to ec-memory and treat its
   `memory_long` object as authoritative: `action == "no-op"` advances to COMPLETE without
   reading or writing long memory; `action == "distill"` runs distillation for `trim_count`

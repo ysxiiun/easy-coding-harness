@@ -82,7 +82,8 @@ On decline: exit with the gap list as a reference for the user to address manual
 gaps were fixed), run
 `{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py project-init-complete --agent <agent-id>`.
 This removes `pending_init_since` and clears the "Waiting init · Upgrade" status line so the
-user is no longer prompted on every session.
+user is no longer prompted on every session. Use the returned `status_context` as the current
+status source.
 
 ## Project mode detection (automatic — never ask the user)
 
@@ -138,7 +139,8 @@ agent must be able to see what was generated and on what evidence.
    fake entries.
 7. **Mark complete** — write the final `init_log` entry, then run
    `{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py project-init-complete --agent <agent-id>`.
-   Tell the user initialization is done and daily work goes through `{{skill_trigger}}ec-workflow`.
+   Use the returned `status_context`, then tell the user initialization is done and daily work
+   goes through `{{skill_trigger}}ec-workflow`.
 
 ## Startup project flow
 

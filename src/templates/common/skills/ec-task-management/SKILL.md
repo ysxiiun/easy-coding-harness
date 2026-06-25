@@ -25,6 +25,10 @@ If the user explicitly wants to start the task now, omit `--no-set-current`; oth
 the current workflow pointer untouched and tell them to run `{{skill_trigger}}ec-workflow`
 when ready.
 
+The command returns `status_line` and `status_context`. If the command sets or changes
+`current_task`, use the returned context as the authoritative status source for the rest of
+the current turn instead of older hook-injected status text.
+
 ## Boundaries
 
 - No workflow recovery — point the user to ec-workflow to resume or progress a task.

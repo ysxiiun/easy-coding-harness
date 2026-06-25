@@ -6,6 +6,13 @@
 - `y`：常规功能升级
 - `z`：日常 bug 修复
 
+## 0.3.3
+
+- 修复同一轮会话内状态栏仍显示旧状态的问题：`easy_coding_state.py` 的所有写状态命令现在都会在写入后立即回读 session/task，并返回最新 `status_line` 和 `status_context`。
+- `create-task`、`set-current`、`clear-current`、`transition`、`close-current`、`project-init-complete`、`set-repo-path` 输出统一携带最新状态上下文，覆盖新建任务、切换任务、阶段迁移、关闭任务和初始化完成等所有状态写路径。
+- 状态渲染逻辑收口到 state API，`easy_coding_status.py` 仅保留兼容导出，避免 hook 渲染和 state API 回读逻辑再次漂移。
+- skill 模板强化规则：任何状态写入命令返回后，必须使用返回的 `status_context` 作为当前轮的权威状态来源，丢弃旧的 hook 注入状态。
+
 ## 0.3.2
 
 - npm 包元数据切换到 GitHub：`repository`、`homepage` 和 `bugs.url` 均指向 `github.com/ysxiiun/easy-coding-harness`。

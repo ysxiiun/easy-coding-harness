@@ -22,6 +22,8 @@ when you recognize abandonment intent in the user's message.
    `{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py close-current --session-file <P> --reason "<reason>" --agent <agent-id>`.
    This sets `task.json.status` to `CLOSED`, records `closed_reason`, updates history, and
    clears session `current_task` so the next hook injection returns to Ready.
+   Use the returned `status_context` as the authoritative status source for the rest of the
+   current turn.
 4. **No memory flow.** Do not run MEMORY_SHORT/LONG. An incomplete task's memory is dirty data.
 5. **Linked tasks.** If the task has `spawned_from` or `spawned_tasks`, note the closure fact
    on the relation so a future agent understands the chain.

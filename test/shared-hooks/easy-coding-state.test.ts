@@ -110,7 +110,11 @@ function transitionMemoryLong(scriptPath: string) {
       encoding: "utf8",
     },
   );
-  return JSON.parse(output) as { memory_long: Record<string, unknown> };
+  return JSON.parse(output) as {
+    memory_long: Record<string, unknown>;
+    status_line: string;
+    status_context: string;
+  };
 }
 
 describe("easy_coding_state.py MEMORY_LONG instruction", () => {
@@ -126,6 +130,8 @@ describe("easy_coding_state.py MEMORY_LONG instruction", () => {
       action: "no-op",
       trim_count: 0,
     });
+    expect(snapshot.status_line).toContain("> **Easy Coding** · `06-23-memory` · `MEMORY_LONG`");
+    expect(snapshot.status_context).toContain("[workflow-state:MEMORY_LONG]");
   });
 
   it("returns distill instructions and trim count when threshold is exceeded", async () => {
@@ -140,5 +146,7 @@ describe("easy_coding_state.py MEMORY_LONG instruction", () => {
       action: "distill",
       trim_count: 7,
     });
+    expect(snapshot.status_line).toContain("> **Easy Coding** · `06-23-memory` · `MEMORY_LONG`");
+    expect(snapshot.status_context).toContain("[workflow-state:MEMORY_LONG]");
   });
 });

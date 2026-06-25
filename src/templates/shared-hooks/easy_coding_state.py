@@ -12,6 +12,27 @@ HELP_SUFFIX = (
     "Use `ec-workflow` to start or resume a task, "
     "`ec-brainstorming` to brainstorm, or `ec-task-management` to view tasks"
 )
+READY_LINE = (
+    "> **Easy Coding** · Ready · Use `ec-workflow` to start or resume a task, "
+    "`ec-brainstorming` to brainstorm, or `ec-task-management` to view tasks"
+)
+WAITING_INIT_LINE = "> **Easy Coding** · Waiting init · Use `ec-init` to initialize"
+
+MANDATORY_DEV_SPEC_HEADERS: list[str] = [
+    "## 技术方案",
+    "### 项目模式",
+    "### 任务类型",
+    "### 需求解析",
+    "### 现状",
+    "### 冲突摘要",
+    "### 待用户决策",
+    "### 影响面分析",
+    "### 改动范围",
+    "### 修改方案",
+    "### 实施拆解",
+    "### 测试策略",
+    "### 风险与注意事项",
+]
 
 VALID_TRANSITIONS: dict[str, set[str]] = {
     "idle": {"INIT"},
@@ -289,6 +310,126 @@ def snapshot_state(
         "project_init_required": is_project_init_required(root),
         "pending_init_version": get_pending_init_version(root),
     }
+
+
+def build_status_line(
+    root: Path,
+    session: dict,
+    agent: str | None = None,
+    session_file: str | Path | None = None,
+) -> str:
+    state = snapshot_state(root, session_file, session)
+    task_id = state["current_task"]
+    if task_id:
+        status = str(state["status"])
+        line = f"> **Easy Coding** · `{task_id}` · `{status}`"
+        last_agent = state.get("last_agent")
+        if agent and last_agent and last_agent != agent:
+            line += f" · Handoff -> `{last_agent}`"
+        if state["is_terminal"] or state["task_missing"]:
+            line += f" · {HELP_SUFFIX}"
+        return line
+
+    if is_project_init_required(root):
+        return WAITING_INIT_LINE
+
+    pending = get_pending_init_version(root)
+    if pending:
+        return (
+            f"> **Easy Coding** · Waiting init · "
+            f"Upgrade to v{pending} — run `ec-init` to adapt"
+        )
+
+    return READY_LINE
+
+
+def build_machine_breadcrumbs(
+    root: Path,
+    session: dict,
+    agent: str | None = None,
+    session_file: str | Path | None = None,
+) -> list[str]:
+    state = snapshot_state(root, session_file, session)
+    task_id = state["current_task"]
+    task = state["task"]
+    stage = str(state["status"]) if task else "idle"
+    resolved_session_file = str(state["session_file"])
+    lines = [f"[workflow-state:{stage}]", f"[easy-coding:session-file:{resolved_session_file}]"]
+
+    if task_id:
+        lines.append(f"[current-task:{task_id}]")
+        if state["task_missing"]:
+            lines.append(f"[easy-coding:current-task-missing:{task_id}]")
+        last_agent = state.get("last_agent")
+        if agent and last_agent and last_agent != agent:
+            lines.append(f"[easy-coding:handoff-from:{last_agent}]")
+
+    if is_project_init_required(root):
+        lines.append("[easy-coding:init-required]")
+    else:
+        pending = get_pending_init_version(root)
+        if pending:
+            lines.append(f"[easy-coding:upgrade-init-pending:{pending}]")
+
+    # Stage-specific reminders
+    if stage == "ANALYSIS" and task_id:
+        dev_spec = root / ".easy-coding" / "tasks" / str(task_id) / "dev-spec.md"
+        if dev_spec.exists():
+            try:
+                content = dev_spec.read_text(encoding="utf-8")
+                missing = [h for h in MANDATORY_DEV_SPEC_HEADERS if h not in content]
+                if missing:
+                    names = ",".join(h.lstrip("#").strip() for h in missing)
+                    lines.append(f"[easy-coding:analysis-template-drift:missing:{names}]")
+                else:
+                    lines.append("[easy-coding:analysis-template-ok]")
+            except OSError:
+                lines.append("[easy-coding:analysis-gate:skeleton-first-then-fill]")
+        else:
+            lines.append("[easy-coding:analysis-gate:skeleton-first-then-fill]")
+
+    # State machine validation
+    if task_id and task and task.get("status"):
+        current_stage = str(task["status"])
+        last_seen = session.get("last_seen_stage")
+        violation = record_seen_stage(root, str(task_id), current_stage, resolved_session_file)
+        if violation:
+            lines.append(f"[ILLEGAL-TRANSITION:{last_seen}->{current_stage}]")
+            lines.append(f"[easy-coding:transition-error:{violation}]")
+
+    return lines
+
+
+def build_status_context(
+    root: Path,
+    session: dict,
+    agent: str | None = None,
+    session_file: str | Path | None = None,
+) -> str:
+    return "\n".join(
+        [
+            build_status_line(root, session, agent, session_file),
+            *build_machine_breadcrumbs(root, session, agent, session_file),
+        ]
+    )
+
+
+def attach_status_context(
+    root: Path,
+    data: dict,
+    agent: str | None = None,
+    session_file: str | Path | None = None,
+) -> dict:
+    resolved_session_file = session_file or data.get("session_file")
+    session = load_session(root, resolved_session_file)
+    if session is None:
+        session = default_session()
+    context = build_status_context(root, session, agent, resolved_session_file)
+    first_line = context.splitlines()[0] if context else ""
+    enriched = dict(data)
+    enriched["status_line"] = first_line
+    enriched["status_context"] = context
+    return enriched
 
 
 def list_tasks(root: Path) -> list[dict]:
@@ -578,28 +719,75 @@ def main() -> int:
             emit({"tasks": list_tasks(root)})
         elif command == "create-task":
             emit(
-                create_task(
+                attach_status_context(
                     root,
-                    args.task_id,
-                    args.type,
-                    args.title,
+                    create_task(
+                        root,
+                        args.task_id,
+                        args.type,
+                        args.title,
+                        args.agent,
+                        not args.no_set_current,
+                        session_file,
+                    ),
                     args.agent,
-                    not args.no_set_current,
                     session_file,
                 )
             )
         elif command == "set-current":
-            emit(set_current_task(root, args.task_id, args.agent, session_file))
+            emit(
+                attach_status_context(
+                    root,
+                    set_current_task(root, args.task_id, args.agent, session_file),
+                    args.agent,
+                    session_file,
+                )
+            )
         elif command == "clear-current":
-            emit(clear_current_task(root, args.agent, session_file))
+            emit(
+                attach_status_context(
+                    root,
+                    clear_current_task(root, args.agent, session_file),
+                    args.agent,
+                    session_file,
+                )
+            )
         elif command == "transition":
-            emit(transition_task(root, args.stage, args.agent, args.task_id, session_file))
+            emit(
+                attach_status_context(
+                    root,
+                    transition_task(root, args.stage, args.agent, args.task_id, session_file),
+                    args.agent,
+                    session_file,
+                )
+            )
         elif command == "close-current":
-            emit(close_current_task(root, args.reason, args.agent, session_file))
+            emit(
+                attach_status_context(
+                    root,
+                    close_current_task(root, args.reason, args.agent, session_file),
+                    args.agent,
+                    session_file,
+                )
+            )
         elif command == "project-init-complete":
-            emit(project_init_complete(root, args.agent))
+            emit(
+                attach_status_context(
+                    root,
+                    project_init_complete(root, args.agent),
+                    args.agent,
+                    session_file,
+                )
+            )
         elif command == "set-repo-path":
-            emit(set_repo_path(root, args.repo, args.path, args.task_id, session_file))
+            emit(
+                attach_status_context(
+                    root,
+                    set_repo_path(root, args.repo, args.path, args.task_id, session_file),
+                    None,
+                    session_file,
+                )
+            )
         return 0
     except StateError as error:
         print(json.dumps({"error": str(error)}, ensure_ascii=False), file=sys.stderr)

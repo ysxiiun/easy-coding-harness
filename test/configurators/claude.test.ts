@@ -39,10 +39,10 @@ describe("configureClaude", () => {
     expect(hook).toContain("build_status_context");
     expect(
       await readFile(path.join(tempDir, ".claude", "hooks", "easy_coding_status.py"), "utf8"),
-    ).toContain("READY_LINE");
+    ).toContain("build_status_context");
     expect(
       await readFile(path.join(tempDir, ".claude", "hooks", "easy_coding_state.py"), "utf8"),
-    ).toContain("create-task");
+    ).toContain("READY_LINE");
 
     const main = await readFile(path.join(tempDir, "CLAUDE.md"), "utf8");
     expect(main).toContain("easy-coding-harness generated");
@@ -573,7 +573,7 @@ describe("configureClaude", () => {
 
     const stateApi = path.join(tempDir, ".claude", "hooks", "easy_coding_state.py");
     const sessionFile = ".easy-coding/sessions/custom-session.json";
-    execFileSync(
+    const createStdout = execFileSync(
       "python3",
       [
         stateApi,
@@ -591,6 +591,16 @@ describe("configureClaude", () => {
       ],
       { cwd: tempDir, encoding: "utf8" },
     );
+    const createOutput = JSON.parse(createStdout) as {
+      status: string;
+      status_line: string;
+      status_context: string;
+    };
+    expect(createOutput.status).toBe("INIT");
+    expect(createOutput.status_line).toContain("> **Easy Coding** · `06-12-api` · `INIT`");
+    expect(createOutput.status_context).toContain("[workflow-state:INIT]");
+    expect(createOutput.status_context).toContain("[current-task:06-12-api]");
+
     const stages = [
       "ANALYSIS",
       "WAITING_CONFIRM",
@@ -602,7 +612,7 @@ describe("configureClaude", () => {
       "COMPLETE",
     ];
     for (const stage of stages) {
-      execFileSync(
+      const transitionStdout = execFileSync(
         "python3",
         [
           stateApi,
@@ -616,6 +626,28 @@ describe("configureClaude", () => {
         ],
         { cwd: tempDir, encoding: "utf8" },
       );
+      const transitionOutput = JSON.parse(transitionStdout) as {
+        status: string;
+        status_line: string;
+        status_context: string;
+      };
+      if (stage === "COMPLETE") {
+        expect(transitionOutput.status).toBe("idle");
+        expect(transitionOutput.status_line).toContain("> **Easy Coding** · Ready");
+        expect(transitionOutput.status_context).toContain("[workflow-state:idle]");
+      } else {
+        expect(transitionOutput.status).toBe(stage);
+        expect(transitionOutput.status_line).toContain(
+          `> **Easy Coding** · \`06-12-api\` · \`${stage}\``,
+        );
+        expect(transitionOutput.status_context).toContain(`[workflow-state:${stage}]`);
+      }
+      if (stage === "ANALYSIS") {
+        expect(transitionOutput.status_line).not.toContain("Ready");
+        expect(transitionOutput.status_context).toContain(
+          "[easy-coding:analysis-gate:skeleton-first-then-fill]",
+        );
+      }
     }
 
     const task = JSON.parse(
