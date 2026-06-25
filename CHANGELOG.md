@@ -13,6 +13,7 @@
 - MEMORY_LONG 门控改由 `easy_coding_state.py transition` 机械下发 `memory_long` 指令，避免短期记忆未超过阈值时被 prompt 误触发长期沉淀。
 - ec-memory 补充短期记忆消费后的删除步骤：成功蒸馏更早条目并更新长期索引后，删除已消费短期文件，仅保留最近 `short_term_keep` 条。
 - 实施 / 审查 / 验证三阶段统一强制子代理：IMPLEMENT 删除"主代理直接实现"分支，`single` / `sequential` / `parallel` 都派子代理（仅编排形态不同——单个串行执行也起子代理），保护主代理上下文不被实现细节污染；REVIEW / VERIFICATION 口径校齐，去掉"改动集大才派子代理"等矛盾表述。
+- 新增 `easy-coding update` 命令：更新全局 CLI 到最新发布版；存量项目仍按需单独执行 `easy-coding upgrade`。
 - 存量项目需要执行 `easy-coding upgrade` 才能拿到新的 hook 与 skill 模板。
 
 ## 0.2.1

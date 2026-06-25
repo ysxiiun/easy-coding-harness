@@ -4,6 +4,7 @@ import { addAgent } from "./commands/add-agent.js";
 import { clear } from "./commands/clear.js";
 import { init } from "./commands/init.js";
 import { status } from "./commands/status.js";
+import { update } from "./commands/update.js";
 import { upgrade } from "./commands/upgrade.js";
 import { PACKAGE_NAME, VERSION } from "./constants/version.js";
 import { checkForUpgrade } from "./utils/compare-versions.js";
@@ -49,6 +50,14 @@ program
   .option("--dry-run", "Preview changes without applying")
   .option("-y, --yes", "Skip confirmation")
   .action(withErrorHandling(upgrade));
+
+program
+  .command("update")
+  .description("Refresh the global CLI to the latest published version")
+  .option("--tag <tag>", "npm dist-tag or version to install", "latest")
+  .option("--dry-run", "Preview the install command without running it")
+  .option("-y, --yes", "Skip confirmation")
+  .action(withErrorHandling(update));
 
 program
   .command("status")

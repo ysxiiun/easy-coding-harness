@@ -78,6 +78,7 @@ any stage --[user abort via ec-task-close]--> CLOSED
 | `easy-coding init` | 首次接入项目，安装所选平台的 skills、hooks、agents、主约束和运行时骨架 |
 | `easy-coding add-agent` | 给已接入项目追加 Claude Code、Codex 或 Qoder 支持 |
 | `easy-coding upgrade` | CLI 升级后同步项目内生成文件，生成区覆盖，用户资产保留 |
+| `easy-coding update` | 更新全局 CLI 到最新发布版 |
 | `easy-coding status` | 查看已安装平台、harness 版本、当前任务状态 |
 | `easy-coding clear` | 移除 harness 安装物，保留 tasks、spec、memory、project.yaml 等用户资产 |
 
@@ -155,4 +156,3 @@ npm run typecheck   # tsc --noEmit
 | `src/templates/` | skills、hooks、agents、主约束、运行时模板源 |
 | `src/types/` | 运行时状态和平台类型 |
 | `src/utils/` | 文件写入、配置、模板路径、gitignore、marked region 等工具 |
-
