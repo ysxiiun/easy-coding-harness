@@ -27,7 +27,23 @@ describe("configureClaude", () => {
       "utf8",
     );
     expect(skill).toContain("`/ec-init`");
+    expect(skill).toContain("claim-task --session-file");
+    expect(skill).toContain("handoff-task --session-file");
+    expect(skill).toContain("Current task pointer exists");
+    expect(skill).toContain("No current task pointer");
+    expect(skill).not.toContain("open the target agent");
+    expect(skill).not.toContain("next_agent");
     expect(skill).not.toContain("{{");
+
+    const taskManagementSkill = await readFile(
+      path.join(tempDir, ".claude", "skills", "ec-task-management", "SKILL.md"),
+      "utf8",
+    );
+    expect(taskManagementSkill).toContain("list-tasks --agent");
+    expect(taskManagementSkill).toContain("claim-task --session-file");
+    expect(taskManagementSkill).toContain("previous_agent");
+    expect(taskManagementSkill).toContain("take over");
+    expect(taskManagementSkill).not.toContain("{{");
 
     const settings = await readFile(path.join(tempDir, ".claude", "settings.json"), "utf8");
     expect(settings).toContain(".claude/hooks/session-start.py");

@@ -6,6 +6,13 @@
 - `y`：常规功能升级
 - `z`：日常 bug 修复
 
+## 0.4.0
+
+- 升级跨 agent 交接模型：交接记录只保存交接前 agent、阶段、摘要和时间，不再要求也不保存下一任 agent。
+- 新增 `handoff-task` / `claim-task` 状态 API，交接方可写入 handoff 并释放当前 session，新 agent 可显式 claim 任务并读取最新交接摘要。
+- `ec-task-management` 升级为任务面板：列出未完成任务并标注继续/接手，接手任务展示上一任 agent。
+- `ec-workflow` 路由调整：有当前任务指针时优先继续；无指针时按提示词匹配未完成任务，未命中或无提示词时展示可继续/接手任务列表。
+
 ## 0.3.4
 
 - 修复 Claude Code 中任务已进入 ANALYSIS 但回复没有状态栏的问题：Claude 的 `UserPromptSubmit` 现在会先运行幂等的 `session-start.py`，再运行 `inject-workflow-state.py`，确保每轮提示词都能拿到最新 `status_context`。

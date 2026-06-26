@@ -82,3 +82,8 @@ demand.
 continues. All platform-agnostic artifacts (dev-spec, execution.jsonl, task.json, memory)
 make cross-agent handoff lossless. `task.json.last_agent` records the last owner so a new
 agent knows a task was handed off rather than self-interrupted.
+
+Handoff is target-less. The leaving agent writes a `handoff` record with `from`, `stage`,
+`summary`, and `timestamp`, then releases its session pointer. It does not know or record the
+next agent. The receiving agent explicitly claims a task through the state API; that claim sets
+the new session pointer and updates `task.json.last_agent`.

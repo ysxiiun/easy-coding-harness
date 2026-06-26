@@ -242,6 +242,38 @@ def write_task(root: Path, task_id: str, task: dict) -> None:
     write_json(task_json_path(root, task_id), task)
 
 
+def execution_log_path(root: Path, task_id: str) -> Path:
+    assert_safe_task_id(task_id)
+    return root / ".easy-coding" / "tasks" / task_id / "execution.jsonl"
+
+
+def append_execution_record(root: Path, task_id: str, record: dict) -> None:
+    path = execution_log_path(root, task_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def latest_handoff_record(root: Path, task_id: str) -> dict | None:
+    path = execution_log_path(root, task_id)
+    if not path.exists():
+        return None
+    latest: dict | None = None
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(record, dict) and record.get("type") == "handoff":
+                latest = record
+    except OSError:
+        return None
+    return latest
+
+
 def assert_safe_task_id(task_id: str) -> None:
     path = Path(task_id)
     if not task_id or path.is_absolute() or "/" in task_id or "\\" in task_id or ".." in path.parts:
@@ -432,7 +464,15 @@ def attach_status_context(
     return enriched
 
 
-def list_tasks(root: Path) -> list[dict]:
+def task_claim_action(task: dict, agent: str | None) -> str | None:
+    status = str(task.get("status") or "PENDING")
+    if status in TERMINAL_STATUSES or not agent:
+        return None
+    last_agent = task.get("last_agent")
+    return "continue" if not last_agent or last_agent == agent else "takeover"
+
+
+def list_tasks(root: Path, agent: str | None = None) -> list[dict]:
     tasks_dir = root / ".easy-coding" / "tasks"
     if not tasks_dir.is_dir():
         return []
@@ -444,6 +484,8 @@ def list_tasks(root: Path) -> list[dict]:
         if not task:
             continue
         status = str(task.get("status") or "PENDING")
+        action = task_claim_action(task, agent)
+        last_agent = task.get("last_agent")
         items.append(
             {
                 "id": entry.name,
@@ -452,7 +494,10 @@ def list_tasks(root: Path) -> list[dict]:
                 "status": status,
                 "active": status not in TERMINAL_STATUSES,
                 "created_at": task.get("created_at"),
-                "last_agent": task.get("last_agent"),
+                "last_agent": last_agent,
+                "action": action,
+                "previous_agent": last_agent if action == "takeover" else None,
+                "latest_handoff": latest_handoff_record(root, entry.name),
             }
         )
     return items
@@ -485,6 +530,77 @@ def clear_current_task(root: Path, agent: str, session_file: str | Path | None =
     clear_session_pointer(session, agent)
     write_session(root, session, session_file)
     return snapshot_state(root, session_file, session)
+
+
+def handoff_task(
+    root: Path,
+    agent: str,
+    summary: str,
+    task_id: str | None = None,
+    session_file: str | Path | None = None,
+) -> dict:
+    if not summary.strip():
+        raise StateError("Handoff summary is required.")
+    session = ensure_session(root, session_file)
+    resolved_task_id = task_id or session.get("current_task")
+    if not resolved_task_id:
+        raise StateError("No current task is set.")
+    task = load_task(root, str(resolved_task_id))
+    if task is None:
+        raise StateError(f"Task not found: {resolved_task_id}")
+    stage = str(task.get("status") or "PENDING")
+    if stage in TERMINAL_STATUSES:
+        raise StateError(f"Cannot hand off terminal task: {resolved_task_id}")
+
+    record = {
+        "type": "handoff",
+        "from": agent,
+        "stage": stage,
+        "summary": summary.strip(),
+        "timestamp": now_iso(),
+    }
+    append_execution_record(root, str(resolved_task_id), record)
+    task["last_agent"] = agent
+    write_task(root, str(resolved_task_id), task)
+
+    if session.get("current_task") == resolved_task_id:
+        clear_session_pointer(session, agent)
+        write_session(root, session, session_file)
+
+    snapshot = snapshot_state(root, session_file, session)
+    snapshot["task_id"] = str(resolved_task_id)
+    snapshot["handoff"] = record
+    snapshot["action"] = "handoff"
+    return snapshot
+
+
+def claim_task(root: Path, task_id: str, agent: str, session_file: str | Path | None = None) -> dict:
+    task = load_task(root, task_id)
+    if task is None:
+        raise StateError(f"Task not found: {task_id}")
+    status = str(task.get("status") or "PENDING")
+    if status in TERMINAL_STATUSES:
+        raise StateError(f"Cannot claim terminal task: {task_id}")
+
+    previous_agent = task.get("last_agent")
+    action = "continue" if not previous_agent or previous_agent == agent else "takeover"
+    latest_handoff = latest_handoff_record(root, task_id)
+    task["last_agent"] = agent
+    write_task(root, task_id, task)
+
+    session = ensure_session(root, session_file)
+    session["current_task"] = task_id
+    session["last_seen_task"] = task_id
+    session["last_seen_stage"] = status
+    session["last_agent"] = agent
+    write_session(root, session, session_file)
+
+    snapshot = snapshot_state(root, session_file, session)
+    snapshot["task_id"] = task_id
+    snapshot["action"] = action
+    snapshot["previous_agent"] = previous_agent
+    snapshot["latest_handoff"] = latest_handoff
+    return snapshot
 
 
 def create_task(
@@ -675,7 +791,9 @@ def main() -> int:
     subcommands = parser.add_subparsers(dest="command")
 
     subcommands.add_parser("snapshot", parents=[common])
-    subcommands.add_parser("list-tasks", parents=[common])
+
+    list_tasks_parser = subcommands.add_parser("list-tasks", parents=[common])
+    list_tasks_parser.add_argument("--agent")
 
     create = subcommands.add_parser("create-task", parents=[common])
     create.add_argument("--task-id", required=True)
@@ -690,6 +808,15 @@ def main() -> int:
 
     clear_current = subcommands.add_parser("clear-current", parents=[common])
     clear_current.add_argument("--agent", required=True)
+
+    handoff = subcommands.add_parser("handoff-task", parents=[common])
+    handoff.add_argument("--agent", required=True)
+    handoff.add_argument("--summary", required=True)
+    handoff.add_argument("--task-id")
+
+    claim = subcommands.add_parser("claim-task", parents=[common])
+    claim.add_argument("--task-id", required=True)
+    claim.add_argument("--agent", required=True)
 
     transition = subcommands.add_parser("transition", parents=[common])
     transition.add_argument("--stage", required=True)
@@ -716,7 +843,7 @@ def main() -> int:
         if command == "snapshot":
             emit(snapshot_state(root, session_file))
         elif command == "list-tasks":
-            emit({"tasks": list_tasks(root)})
+            emit({"tasks": list_tasks(root, getattr(args, "agent", None))})
         elif command == "create-task":
             emit(
                 attach_status_context(
@@ -748,6 +875,24 @@ def main() -> int:
                 attach_status_context(
                     root,
                     clear_current_task(root, args.agent, session_file),
+                    args.agent,
+                    session_file,
+                )
+            )
+        elif command == "handoff-task":
+            emit(
+                attach_status_context(
+                    root,
+                    handoff_task(root, args.agent, args.summary, args.task_id, session_file),
+                    args.agent,
+                    session_file,
+                )
+            )
+        elif command == "claim-task":
+            emit(
+                attach_status_context(
+                    root,
+                    claim_task(root, args.task_id, args.agent, session_file),
                     args.agent,
                     session_file,
                 )

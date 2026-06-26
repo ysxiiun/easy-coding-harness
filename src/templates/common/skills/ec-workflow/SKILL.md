@@ -29,33 +29,32 @@ replies are English.
    Do NOT bulk-read ABSTRACT.md or long memory here; ec-analysis loads them on demand.
 3. **State check + Intent routing.** Read the hook-injected breadcrumbs (`[current-task:X]`,
    `[workflow-state:Y]`, `[easy-coding:session-file:P]`) to determine the active task,
-   stage, and session file, then decide based on whether the user's message carries a
-   task-related prompt beyond the bare skill trigger.
+   stage, and session file. Then call the task list API with the current agent id:
+   `{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py list-tasks --agent <agent-id>`.
+   Use only non-terminal tasks (`active == true`) for routing.
 
-   **No prompt (bare trigger):**
-   - `current_task` set with an active stage → resume that stage (see Resume and handoff).
-   - `current_task` null → scan `.easy-coding/tasks/` for tasks whose status is not in
-     {COMPLETE, CLOSED}. Found → list them, let the user pick one to resume or start new.
-     None → ready for a new task.
+   **Current task pointer exists:**
+   - The current task has priority. Resume it by default, even if the user only runs the bare
+     skill trigger.
+   - If the prompt clearly matches the current task, resume it with the prompt as additional
+     context.
+   - If the prompt clearly matches a different unfinished task, ask whether to switch to that
+     task. Show whether it is `continue` or `takeover`; for takeover show `previous_agent`.
+     On confirmation, claim the matched task (see Task switching).
+   - If the prompt clearly describes unrelated new work, ask whether to create a new task and
+     suspend the current one at its persisted stage.
 
-   **With prompt — intent routing:**
-   1. Collect all non-terminal tasks in `.easy-coding/tasks/`: read each task's folder name,
-      `task.json` fields (`title`, `type`, `status`). If a task passed ANALYSIS, also read
-      its dev-spec title line as extra matching signal.
-   2. Match the user's prompt against these identifiers (semantic match — the user saying
-      "继续做搜索" should match a task titled "添加搜索功能").
-   3. Route:
-      - Prompt matches `current_task` → resume with the prompt as additional context (the
-        user may be providing supplementary info, a revision request, or an answer to a
-        previous question).
-      - Prompt matches a different non-terminal task → ask the user: "Switch to «{matched
-        task title}»? Current task «{current task title}» will be suspended at {stage}."
-        On confirmation, perform a task switch (see Task switching below).
-      - Prompt matches no existing task AND `current_task` is set → ask the user: "Start a
-        new task? Current task «{current task title}» will be suspended at {stage}."
-        On confirmation, create the new task (step 4).
-      - Prompt matches no existing task AND `current_task` is null → create the new task
-        directly (step 4).
+   **No current task pointer:**
+   - If the prompt matches exactly one unfinished task, show that task and ask whether to
+     continue/take it over. For takeover show the previous agent and latest handoff summary.
+     On confirmation, claim it (see Task switching).
+   - If the prompt matches multiple unfinished tasks, list the matches with `continue` /
+     `takeover` labels and ask the user to choose one.
+   - If the prompt matches none, or there is no prompt beyond the bare skill trigger, list all
+     unfinished tasks with `continue` / `takeover` labels. For takeover entries, show the
+     previous agent. Let the user choose one to claim, or choose to start a new task.
+   - If there are no unfinished tasks, create a new task only when the user supplied a real
+     task prompt; otherwise report that the harness is ready for a new task.
 
 4. **New task.** When creating a task (from step 3), create
    the task through the state API, which creates `task.json`, sets `status:"INIT"`, writes
@@ -98,10 +97,11 @@ any stage --[user abort via ec-task-close]--> CLOSED
 
 When the user confirms switching from task A to task B:
 1. Task A's status is already persisted in its `task.json` — nothing extra to save.
-2. Set the current task through the state API:
-   `{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py set-current --session-file <P> --task-id <task-b-id> --agent <agent-id>`.
+2. Claim the selected task through the state API:
+   `{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py claim-task --session-file <P> --task-id <task-b-id> --agent <agent-id>`.
 3. Use the returned `status_context` as the current status source, then read task B's
-   `task.json` to determine its current stage.
+   `task.json` to determine its current stage. If the result says `action:"takeover"`, tell
+   the user which previous agent owned the task.
 4. Resume task B's stage via the appropriate stage skill.
 
 No data is lost — task A's dev-spec, execution.jsonl, and test-strategy.md stay intact on
@@ -180,12 +180,12 @@ Hook breadcrumbs you may receive: `[workflow-state:X]`, `[current-task:Y]`,
 `[easy-coding:session-file:P]`, `[easy-coding:handoff-from:Z]`,
 `[easy-coding:init-required]`.
 
-Resuming an active task (whether from session restart, handoff, or task switch):
+Resuming an active task (whether from session restart, claim, handoff, or task switch):
 1. Read `task.json` and the dev-spec sections relevant to the current stage.
 2. Read the tail of `execution.jsonl` — the latest `plan` / `result` / `verify` / `handoff`
    records tell you exactly where work stopped.
-3. If `last_agent` differs from the current agent this is a cross-agent handoff: read the
-   latest `handoff` record first for the fast summary, then set `last_agent` to yourself.
+3. If the task was claimed from another agent, read the latest `handoff` record first for the
+   fast summary and tell the user which previous agent handed it off.
 4. Tell the user what is being resumed and from which stage, then continue.
 
 After a task switch, the same resume flow applies — the only difference is that `current_task`
@@ -193,13 +193,19 @@ was just changed by the switching procedure rather than being loaded from a prio
 
 Offering handoff — at WAITING_CONFIRM, after presenting the plan, offer exactly:
 1. Start implementation
-2. Hand off to another agent
+2. Write handoff and stop
 3. Revise the plan
-On option 2: append a `handoff` record to `execution.jsonl` —
-`{"type":"handoff","from":"<agent>","stage":"<stage>","summary":"<dense context: plan shape, key decisions, user emphases>","timestamp":"<ISO>"}` —
-update the task's `last_agent` in task.json, then tell the user to open the target agent and run ec-workflow there.
-Handoff is also legal at any other stage boundary on user request. The harness never
-switches agents by itself.
+On option 2, call:
+`{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py handoff-task --session-file <P> --agent <agent-id> --summary "<dense context: plan shape, key decisions, user emphases>"`.
+
+The handoff record is target-less:
+`{"type":"handoff","from":"<agent>","stage":"<stage>","summary":"<dense context>","timestamp":"<ISO>"}`.
+It records who handed the task off, not who will take it next. Do not ask the user to name
+the next agent, and do not invent or store a next-agent field. After writing handoff, stop
+owning the task; another agent can use ec-task-management or ec-workflow to claim it.
+
+Handoff is also legal at any other stage boundary on user request. The harness never switches
+agents by itself; the next agent claims the task explicitly.
 
 ## Status line
 
