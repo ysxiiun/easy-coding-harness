@@ -18,6 +18,16 @@
         "hooks": [
           {
             "type": "command",
+            "command": "{{PYTHON_CMD}} .claude/hooks/session-start.py",
+            "timeout": 15000
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
             "command": "{{PYTHON_CMD}} .claude/hooks/inject-workflow-state.py",
             "timeout": 15000
           }

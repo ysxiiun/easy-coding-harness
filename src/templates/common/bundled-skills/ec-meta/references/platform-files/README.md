@@ -46,11 +46,14 @@ Python runtime files are shared verbatim across platforms (only the JSON wrapper
 Wrapper differences:
 
 - **Claude Code**: full event set — `SessionStart`, `UserPromptSubmit`, `PreToolUse(Agent)`.
+  `session-start.py` also runs on `UserPromptSubmit` before `inject-workflow-state.py`, so
+  every prompt receives a fresh status context even if the native session event is not surfaced
+  to the model turn.
 - **Codex**: no `SessionStart` and no Agent tool. `session-start.py` and
   `inject-workflow-state.py` both hang off `UserPromptSubmit`; `inject-subagent-context.py`
   is skipped. Codex hooks also require user-level enablement (`[features] hooks = true`).
 - **Qoder**: like Claude Code (has Agent tool + Stop) but uses `UserPromptSubmit` for state
   injection. The `.qoder/settings.json` wrapper nests an extra `hooks` array.
 
-`session-start.py` is designed to be idempotent precisely because Codex/Qoder fire it on
-`UserPromptSubmit` rather than a real session-start event — repeated calls are safe.
+`session-start.py` is designed to be idempotent precisely because Claude/Codex/Qoder can fire it
+on `UserPromptSubmit` rather than only a real session-start event — repeated calls are safe.

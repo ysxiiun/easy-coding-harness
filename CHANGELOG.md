@@ -6,6 +6,12 @@
 - `y`：常规功能升级
 - `z`：日常 bug 修复
 
+## 0.3.4
+
+- 修复 Claude Code 中任务已进入 ANALYSIS 但回复没有状态栏的问题：Claude 的 `UserPromptSubmit` 现在会先运行幂等的 `session-start.py`，再运行 `inject-workflow-state.py`，确保每轮提示词都能拿到最新 `status_context`。
+- 保留 Claude 原有 `SessionStart` 启动初始化，同时对齐 Codex/Qoder 的每轮状态注入方式，避免原生会话事件未进入模型上下文时状态栏缺失。
+- 存量 Claude 项目需要执行 `easy-coding upgrade` 刷新 `.claude/settings.json` 后生效；Codex/Qoder 行为不变。
+
 ## 0.3.3
 
 - 修复同一轮会话内状态栏仍显示旧状态的问题：`easy_coding_state.py` 的所有写状态命令现在都会在写入后立即回读 session/task，并返回最新 `status_line` 和 `status_context`。

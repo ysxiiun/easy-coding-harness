@@ -31,6 +31,26 @@ describe("configureClaude", () => {
 
     const settings = await readFile(path.join(tempDir, ".claude", "settings.json"), "utf8");
     expect(settings).toContain(".claude/hooks/session-start.py");
+    const settingsJson = JSON.parse(settings) as {
+      hooks: Record<string, Array<{ hooks: Array<{ command: string; timeout: number }> }>>;
+    };
+    const sessionStartCommands = settingsJson.hooks.SessionStart.flatMap((group) =>
+      group.hooks.map((hook) => hook.command),
+    );
+    expect(sessionStartCommands).toEqual([
+      expect.stringContaining(".claude/hooks/session-start.py"),
+    ]);
+    const userPromptCommands = settingsJson.hooks.UserPromptSubmit.map((group) =>
+      group.hooks.map((hook) => hook.command),
+    );
+    expect(userPromptCommands).toEqual([
+      [expect.stringContaining(".claude/hooks/session-start.py")],
+      [expect.stringContaining(".claude/hooks/inject-workflow-state.py")],
+    ]);
+    const userPromptTimeouts = settingsJson.hooks.UserPromptSubmit.map((group) =>
+      group.hooks.map((hook) => hook.timeout),
+    );
+    expect(userPromptTimeouts).toEqual([[15000], [15000]]);
 
     const hook = await readFile(
       path.join(tempDir, ".claude", "hooks", "inject-workflow-state.py"),
@@ -229,6 +249,65 @@ describe("configureClaude", () => {
     expect(stdout).toContain("[workflow-state:IMPLEMENT]");
     expect(stdout).toContain("[current-task:06-10-demo]");
     expect(stdout).toContain("[easy-coding:handoff-from:codex]");
+  });
+
+  it("session-start can inject the active Claude status on UserPromptSubmit", async () => {
+    await configureClaude(tempDir);
+    await writeRuntimeScaffold(tempDir, ["claude-code"]);
+    await writeProjectInitTask(tempDir, ["claude-code"]);
+    await writeFile(
+      path.join(tempDir, ".easy-coding", "tasks", "project-init", "task.json"),
+      JSON.stringify({ type: "project-init", status: "COMPLETE" }, null, 2),
+      "utf8",
+    );
+    await mkdir(path.join(tempDir, ".easy-coding", "sessions"), { recursive: true });
+    await mkdir(path.join(tempDir, ".easy-coding", "tasks", "06-26-analysis"), {
+      recursive: true,
+    });
+    await writeFile(
+      path.join(tempDir, ".easy-coding", "sessions", `${process.pid}.json`),
+      JSON.stringify(
+        {
+          current_task: "06-26-analysis",
+          created_at: new Date().toISOString(),
+          last_seen_task: "06-26-analysis",
+          last_seen_stage: "ANALYSIS",
+          last_agent: "claude-code",
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    await writeFile(
+      path.join(tempDir, ".easy-coding", "tasks", "06-26-analysis", "task.json"),
+      JSON.stringify(
+        {
+          type: "bugfix",
+          title: "Claude status line",
+          status: "ANALYSIS",
+          created_at: "2026-06-26T00:00:00Z",
+          created_by: "claude-code",
+          last_agent: "claude-code",
+          stage_history: [{ stage: "ANALYSIS", agent: "claude-code" }],
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    const hook = path.join(tempDir, ".claude", "hooks", "session-start.py");
+    const stdout = execFileSync("python3", [hook], {
+      cwd: tempDir,
+      input: JSON.stringify({ cwd: tempDir, hook_event_name: "UserPromptSubmit" }),
+      encoding: "utf8",
+    });
+
+    expect(stdout).toContain('"hookEventName": "UserPromptSubmit"');
+    expect(stdout).toContain("> **Easy Coding** · `06-26-analysis` · `ANALYSIS`");
+    expect(stdout).toContain("[workflow-state:ANALYSIS]");
+    expect(stdout).toContain("[current-task:06-26-analysis]");
   });
 
   it("generated hooks show missing state when session points to missing task", async () => {
