@@ -37,6 +37,19 @@ easy-coding init
 easy-coding init --agent=claude-code,codex,qoder
 ```
 
+如果当前目录是 git supermodule 父仓（存在 `.gitmodules`），`init` 会安装父仓，并列出已检出的一级子仓供选择。父仓和每个选中子仓都会得到独立完整的 harness 运行时：
+
+```bash
+# 默认交互选择已检出的子仓；--yes 会全选
+easy-coding init --agent=claude-code,codex,qoder
+
+# 只安装父仓，不安装子仓
+easy-coding init --no-submodules
+
+# 只安装指定子仓；值可用 submodule path 或 name
+easy-coding init --submodules packages/a,packages/b
+```
+
 2. 打开目标 agent，运行项目知识初始化：
 
 ```text
@@ -71,16 +84,29 @@ any stage --[user abort via ec-task-close]--> CLOSED
 - `MEMORY_SHORT` 写入本次任务短期记忆。
 - `MEMORY_LONG` 只有短期记忆数量超过阈值时才沉淀长期记忆，否则 no-op。
 
+## Supermodule 模型
+
+在包含 `.gitmodules` 的父仓中，Easy Coding Harness 按 git 边界分层运行：
+
+- **安装边界**：父仓必装；已检出的一级子仓可选择安装。未检出的子仓会跳过并提示，不会自动执行 `git submodule update --init`。
+- **清理边界**：在父仓执行 `easy-coding clear` 会交互列出父仓和已初始化子仓；无参数交互和 `--yes` 默认只选父仓，子仓需要交互勾选或通过 `--submodules` 指定。
+- **运行边界**：跨仓任务在父仓根打开 agent，使用父仓 `.easy-coding` 的任务、状态、spec 和全景记忆；单仓任务进入对应子仓打开 agent，使用子仓自己的 `.easy-coding`。
+- **记忆边界**：父仓记录跨仓背景和协议；属于某个子仓的技术记忆写回该子仓 `.easy-coding/memory`，让子仓被单独 clone 时也能带走改动原因。
+- **提交边界**：跨仓改动采用两段式提交，先提交并推送各子仓，再提交父仓 gitlink 更新和父仓自身改动。
+- **拓扑记录**：每层 `config.yaml` 会写入 `supermodule.role`；父仓记录 `submodules`，子仓记录 `parent`。
+
+当前仅支持一级 submodule，不自动处理子仓里的二级 submodule。
+
 ## CLI 命令
 
 | 命令 | 用途 |
 | --- | --- |
-| `easy-coding init` | 首次接入项目，安装所选平台的 skills、hooks、agents、主约束和运行时骨架 |
-| `easy-coding add-agent` | 给已接入项目追加 Claude Code、Codex 或 Qoder 支持 |
-| `easy-coding upgrade` | CLI 升级后同步项目内生成文件，生成区覆盖，用户资产保留 |
+| `easy-coding init` | 首次接入项目，安装所选平台的 skills、hooks、agents、主约束和运行时骨架；supermodule 父仓支持 `--submodules` / `--no-submodules` |
+| `easy-coding add-agent` | 给已接入项目追加 Claude Code、Codex 或 Qoder 支持；supermodule 父仓可按已初始化子仓分层追加 |
+| `easy-coding upgrade` | CLI 升级后同步项目内生成文件，生成区覆盖，用户资产保留；supermodule 父仓会同步升级已初始化子仓 |
 | `easy-coding update` | 更新全局 CLI 到最新发布版 |
 | `easy-coding status` | 查看已安装平台、harness 版本、当前任务状态 |
-| `easy-coding clear` | 移除 harness 安装物，保留 tasks、spec、memory、project.yaml 等用户资产 |
+| `easy-coding clear` | 移除 harness 安装物，保留 tasks、spec、memory、project.yaml 等用户资产；supermodule 父仓支持交互选择、`--submodules` 和 `--no-submodules` |
 
 ## Skill 清单
 

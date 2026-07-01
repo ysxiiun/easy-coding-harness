@@ -1,0 +1,697 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Easy Coding Harness 介绍</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #eef1f5;
+      --paper: #ffffff;
+      --ink: #16202b;
+      --muted: #667085;
+      --line: #d8dee8;
+      --soft: #eef3f5;
+      --accent: #0b6b78;
+      --accent-ink: #0a4d57;
+      --accent-2: #7a5c13;
+      --gate: #b4441f;
+      --gate-soft: #fbeee8;
+      --shadow: 0 18px 42px rgba(17, 24, 39, 0.09);
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      line-height: 1.7;
+    }
+    .progress {
+      position: fixed;
+      z-index: 10;
+      inset: 0 0 auto;
+      height: 3px;
+      background: linear-gradient(90deg, var(--accent), #4fa3ae);
+      transform-origin: left;
+      transform: scaleX(0);
+    }
+    .shell {
+      width: min(1180px, calc(100% - 40px));
+      margin: 32px auto 56px;
+      display: grid;
+      grid-template-columns: 240px minmax(0, 1fr);
+      gap: 28px;
+      align-items: start;
+    }
+    .toc {
+      position: sticky;
+      top: 22px;
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.95);
+      box-shadow: 0 10px 28px rgba(17, 24, 39, 0.06);
+    }
+    .toc p {
+      margin: 0 0 10px;
+      font-size: 12px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+      font-weight: 700;
+    }
+    .toc a {
+      display: block;
+      margin: 7px 0;
+      padding: 4px 8px;
+      border-radius: 6px;
+      color: #40536a;
+      font-size: 13.5px;
+      text-decoration: none;
+      transition: background 140ms ease, color 140ms ease;
+    }
+    .toc a:hover { background: #eef7f8; color: var(--accent-ink); }
+    .document {
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--paper);
+      box-shadow: var(--shadow);
+    }
+    .hero {
+      padding: 46px 52px 36px;
+      background:
+        radial-gradient(circle at top right, rgba(11, 107, 120, 0.18), transparent 38%),
+        linear-gradient(135deg, #ffffff 0%, #eff6f7 100%);
+      border-bottom: 1px solid var(--line);
+    }
+    .eyebrow {
+      margin: 0 0 12px;
+      color: var(--accent-2);
+      font-size: 12.5px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+    }
+    .hero h1 {
+      margin: 0;
+      max-width: 880px;
+      font-size: 38px;
+      line-height: 1.16;
+    }
+    .hero .tagline {
+      margin: 16px 0 0;
+      max-width: 720px;
+      font-size: 17px;
+      color: #37475a;
+    }
+    .meta, .chip-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 12px;
+      margin-top: 20px;
+    }
+    .meta { color: var(--muted); font-size: 13px; gap: 6px 20px; }
+    .meta code { background: #e7eef0; padding: 2px 7px; border-radius: 5px; font-size: 12.5px; }
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      min-height: 28px;
+      padding: 4px 12px;
+      border: 1px solid rgba(11, 107, 120, 0.24);
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.72);
+      color: #164e59;
+      font-size: 13px;
+      font-weight: 650;
+    }
+    .content { padding: 12px 52px 54px; }
+    section { margin: 42px 0; scroll-margin-top: 24px; }
+    section > h2 {
+      margin: 0 0 6px;
+      font-size: 25px;
+      line-height: 1.25;
+      display: flex;
+      align-items: baseline;
+      gap: 12px;
+    }
+    section > h2 .idx {
+      font-size: 14px;
+      font-weight: 800;
+      color: var(--accent);
+      font-variant-numeric: tabular-nums;
+    }
+    .lead { max-width: 800px; color: #40536a; margin: 8px 0 20px; }
+    p { margin: 14px 0; }
+    code {
+      font-family: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+      font-size: 0.9em;
+    }
+    :not(pre) > code {
+      background: #eef2f4;
+      padding: 1.5px 6px;
+      border-radius: 5px;
+      color: #0c3a42;
+    }
+
+    .highlight {
+      margin: 20px 0;
+      padding: 22px 26px;
+      border-radius: 12px;
+      background: linear-gradient(135deg, #0b6b78 0%, #0a4d57 100%);
+      color: #eafaff;
+      font-size: 19px;
+      font-weight: 650;
+      line-height: 1.5;
+      box-shadow: 0 14px 30px rgba(10, 77, 87, 0.28);
+    }
+    .highlight strong { color: #ffffff; }
+
+    .pain-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+      gap: 14px;
+      margin: 20px 0;
+    }
+    .pain-card {
+      padding: 16px 18px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #fff;
+      transition: transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease;
+    }
+    .pain-card:hover {
+      transform: translateY(-2px);
+      border-color: rgba(11, 107, 120, 0.4);
+      box-shadow: 0 12px 26px rgba(17, 24, 39, 0.08);
+    }
+    .pain-card p { margin: 0; color: #33455a; font-size: 14.5px; }
+    .pain-card .fix {
+      display: inline-block;
+      margin-top: 12px;
+      padding: 3px 10px;
+      border-radius: 999px;
+      background: #eef7f8;
+      color: var(--accent-ink);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .idea-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 16px;
+      margin: 22px 0;
+    }
+    .idea-card {
+      position: relative;
+      padding: 22px 20px 20px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #fff;
+      transition: transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease;
+    }
+    .idea-card:hover {
+      transform: translateY(-3px);
+      border-color: rgba(11, 107, 120, 0.42);
+      box-shadow: 0 16px 30px rgba(17, 24, 39, 0.09);
+    }
+    .idea-card .num {
+      display: grid;
+      place-items: center;
+      width: 34px;
+      height: 34px;
+      border-radius: 9px;
+      background: var(--accent);
+      color: #fff;
+      font-weight: 800;
+      font-size: 15px;
+      margin-bottom: 12px;
+    }
+    .idea-card h3 { margin: 0 0 8px; font-size: 17px; }
+    .idea-card p { margin: 0; font-size: 14.5px; color: #40536a; }
+
+    .callout {
+      margin: 20px 0;
+      padding: 16px 20px;
+      border-left: 4px solid var(--accent);
+      border-radius: 0 10px 10px 0;
+      background: #f4fbfb;
+      color: #2c4650;
+    }
+    .callout.warn { border-left-color: var(--gate); background: var(--gate-soft); }
+    .callout strong { color: var(--accent-ink); }
+
+    /* pipeline */
+    .pipeline {
+      margin: 22px 0 10px;
+      padding: 24px 20px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: linear-gradient(180deg, #fbfdfd 0%, #f3f8f9 100%);
+    }
+    .flow {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: stretch;
+      gap: 8px;
+    }
+    .stage {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      min-width: 108px;
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      background: #fff;
+      font-size: 13px;
+      font-weight: 700;
+      color: #23404a;
+      text-align: center;
+    }
+    .stage small { display: block; font-weight: 500; color: var(--muted); font-size: 11px; margin-top: 2px; }
+    .stage.gate {
+      border-color: var(--gate);
+      background: var(--gate-soft);
+      color: var(--gate);
+      box-shadow: 0 0 0 1px rgba(180, 68, 31, 0.15);
+    }
+    .stage.memory { background: #f2f7f0; border-color: #c3d7bd; color: #3c5a34; }
+    .stage.done { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .arrow { align-self: center; color: #9aa9b5; font-weight: 800; }
+    .loops {
+      display: grid;
+      gap: 8px;
+      margin-top: 18px;
+    }
+    .loop-item {
+      display: flex;
+      gap: 10px;
+      align-items: baseline;
+      font-size: 13.5px;
+      color: #40536a;
+    }
+    .loop-tag {
+      flex: none;
+      padding: 2px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+      background: #fdeee7;
+      color: var(--gate);
+    }
+    .loop-tag.mem { background: #eef7ea; color: #3c5a34; }
+
+    .platform-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+      gap: 14px;
+      margin: 20px 0;
+    }
+    .platform-card {
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 11px;
+      background: #fff;
+    }
+    .platform-card h4 { margin: 0 0 10px; font-size: 15.5px; }
+    .platform-card .trigger {
+      display: inline-block;
+      padding: 3px 10px;
+      border-radius: 6px;
+      background: #16202b;
+      color: #7fe3d0;
+      font-family: "SF Mono", ui-monospace, Menlo, monospace;
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .platform-card ul { margin: 12px 0 0; padding-left: 18px; font-size: 13px; color: #40536a; }
+    .platform-card li { margin: 4px 0; }
+
+    .stepper { display: grid; gap: 12px; margin: 22px 0; }
+    .step {
+      display: grid;
+      grid-template-columns: 40px minmax(0, 1fr);
+      gap: 16px;
+      align-items: start;
+      padding: 16px 18px;
+      border: 1px solid var(--line);
+      border-radius: 11px;
+      background: #fff;
+    }
+    .step .dot {
+      display: grid;
+      place-items: center;
+      width: 36px;
+      height: 36px;
+      border-radius: 50%;
+      background: var(--accent);
+      color: #fff;
+      font-weight: 800;
+    }
+    .step h4 { margin: 0 0 8px; font-size: 16px; }
+    .step p { margin: 0 0 10px; font-size: 14px; color: #40536a; }
+
+    pre {
+      margin: 12px 0 0;
+      padding: 16px 18px;
+      overflow-x: auto;
+      border-radius: 9px;
+      background: #10202a;
+      color: #d7e6ea;
+      font-size: 13px;
+      line-height: 1.6;
+    }
+    pre code { background: none; padding: 0; color: inherit; }
+
+    .table-wrap {
+      overflow-x: auto;
+      margin: 18px 0;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+    }
+    table { width: 100%; min-width: 560px; border-collapse: collapse; font-size: 14px; }
+    th, td { padding: 12px 15px; border-bottom: 1px solid var(--soft); vertical-align: top; text-align: left; }
+    th { background: #edf7f8; color: #18343b; font-size: 13px; }
+    tr:last-child td { border-bottom: none; }
+    td code { white-space: nowrap; }
+
+    details {
+      margin: 16px 0;
+      padding: 14px 18px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #fbfcfd;
+    }
+    summary { cursor: pointer; font-weight: 700; color: #33455a; }
+    details pre { margin-top: 14px; }
+
+    footer.pageft {
+      margin-top: 44px;
+      padding-top: 20px;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    @media (max-width: 900px) {
+      .shell { width: min(100% - 24px, 760px); display: block; margin-top: 18px; }
+      .toc { position: static; margin-bottom: 16px; }
+      .hero, .content { padding-left: 24px; padding-right: 24px; }
+      .hero h1 { font-size: 29px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        scroll-behavior: auto !important;
+        animation: none !important;
+        transition: none !important;
+      }
+      .progress { transform: none; }
+    }
+    @media print {
+      body { background: #fff; font-size: 12px; }
+      .progress, .toc { display: none; }
+      .shell { width: 100%; display: block; margin: 0; }
+      .document { border: 0; box-shadow: none; }
+      .hero, .content { padding: 0; }
+      .highlight { color: #0a4d57; background: #eef7f8; box-shadow: none; }
+      .idea-card, .pain-card, .platform-card, .step, .pipeline, .table-wrap { break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+  <div class="progress" aria-hidden="true"></div>
+  <div class="shell">
+    <nav class="toc" aria-label="目录">
+      <p>目录</p>
+      <a href="#problem">它解决什么问题</a>
+      <a href="#philosophy">设计理念</a>
+      <a href="#highlights">特色亮点</a>
+      <a href="#usage">使用方法</a>
+    </nav>
+
+    <main class="document">
+      <header class="hero">
+        <p class="eyebrow">项目介绍 · 团队推广</p>
+        <h1>Easy Coding Harness</h1>
+        <p class="tagline">给 AI 编程套上一套工作流规范——让它有章可循，而不是全凭 agent 当时的发挥。</p>
+        <div class="chip-row">
+          <span class="chip">固定阶段状态机</span>
+          <span class="chip">两道硬门控</span>
+          <span class="chip">子代理隔离上下文</span>
+          <span class="chip">项目记忆分层</span>
+          <span class="chip">一份模板 · 三平台</span>
+          <span class="chip">Supermodule 分层</span>
+        </div>
+        <div class="meta">
+          <span>来源：<code>docs/introduction.md</code></span>
+          <span>版本：<code>0.5.0</code></span>
+          <span>适配：Claude Code · Codex · Qoder</span>
+        </div>
+      </header>
+
+      <article class="content">
+        <section id="problem">
+          <h2><span class="idx">01</span>它解决什么问题</h2>
+          <p class="lead">AI 写代码越来越能干，但放开手让它自己跑，几个老毛病会反复出现。每个痛点，harness 都有对应的机制去堵。</p>
+
+          <div class="pain-grid">
+            <div class="pain-card">
+              <p>需求还没对齐就开始写，方向错了返工一大片。</p>
+              <span class="fix">→ 计划确认硬门控</span>
+            </div>
+            <div class="pain-card">
+              <p>说"改完了"，但 lint、类型、测试根本没真跑过。</p>
+              <span class="fix">→ 验证硬门控</span>
+            </div>
+            <div class="pain-card">
+              <p>会话一长，上下文塞满实现细节，主线越聊越糊涂。</p>
+              <span class="fix">→ 子代理隔离</span>
+            </div>
+            <div class="pain-card">
+              <p>换一个 agent 接手，前因后果全断，得从头解释一遍。</p>
+              <span class="fix">→ 交接 / 记忆沉淀</span>
+            </div>
+            <div class="pain-card">
+              <p>团队里 Claude Code、Codex、Qoder 各用各的，规则各配一套。</p>
+              <span class="fix">→ 一份模板三平台</span>
+            </div>
+          </div>
+
+          <p>Easy Coding Harness 不是又一个编程工具，而是给 AI 编程套上的一套<strong>工作流规范</strong>。它把"什么时候必须停下来让人确认""哪些活儿必须验证过才算数""记忆怎么跨会话留下来"这些纪律，固化成 agent 装好即用的 skills、hooks 和约束文件。</p>
+
+          <div class="highlight">让 AI 编程<strong>有章可循</strong>，而不是全凭 agent 当时的发挥。</div>
+        </section>
+
+        <section id="philosophy">
+          <h2><span class="idx">02</span>设计理念</h2>
+          <p class="lead">四条世界观，讲的是"为什么这么设计"。</p>
+
+          <div class="idea-grid">
+            <div class="idea-card">
+              <div class="num">1</div>
+              <h3>纯部署，理解交给运行时</h3>
+              <p>CLI 只往 <code>.claude</code> / <code>.agents</code> / <code>.qoder</code> 铺文件，不读一行项目代码。项目理解留给装好后的 <code>ec-init</code> 现场完成。CLI 升级不碰你的项目知识，边界干净。</p>
+            </div>
+            <div class="idea-card">
+              <div class="num">2</div>
+              <h3>人机共创，关键节点设硬门控</h3>
+              <p>八阶段状态机里，<code>WAITING_CONFIRM</code> 和 <code>VERIFICATION</code> 两道闸门不可跳过。方向和验收由人拍板，机器别自作主张，把"嘴上说完成"堵死。</p>
+            </div>
+            <div class="idea-card">
+              <div class="num">3</div>
+              <h3>上下文卫生</h3>
+              <p>实现、审查、验证都派子代理去干。实现细节是上下文的噪声源，隔离在子代理里，主代理只拿结论，主线才能一直清醒。</p>
+            </div>
+            <div class="idea-card">
+              <div class="num">4</div>
+              <h3>记忆要沉淀，不能只活在当前会话</h3>
+              <p>任务中写短期记忆，攒够阈值才蒸馏成长期记忆。跨会话、跨仓库还记得住"当初为什么这么改"；量不够就是 no-op，不把琐碎信息固化成经验。</p>
+            </div>
+          </div>
+        </section>
+
+        <section id="highlights">
+          <h2><span class="idx">03</span>特色亮点</h2>
+          <p class="lead">三个落地武器，讲的是"具体给到什么"。</p>
+
+          <h3>一条能恢复、能交接的工作流</h3>
+          <p>任务状态持久化在 <code>.easy-coding/</code> 里，不绑死在某次会话上。中途切换、审查回退、换人接手，都接得回来。</p>
+
+          <div class="pipeline">
+            <div class="flow">
+              <div class="stage">INIT</div>
+              <span class="arrow">→</span>
+              <div class="stage">ANALYSIS</div>
+              <span class="arrow">→</span>
+              <div class="stage gate">WAITING<br>CONFIRM<small>计划确认门</small></div>
+              <span class="arrow">→</span>
+              <div class="stage">IMPLEMENT</div>
+              <span class="arrow">→</span>
+              <div class="stage">REVIEW</div>
+              <span class="arrow">→</span>
+              <div class="stage gate">VERIFICATION<small>验证门</small></div>
+              <span class="arrow">→</span>
+              <div class="stage memory">MEMORY<br>SHORT</div>
+              <span class="arrow">→</span>
+              <div class="stage memory">MEMORY<br>LONG</div>
+              <span class="arrow">→</span>
+              <div class="stage done">COMPLETE</div>
+            </div>
+            <div class="loops">
+              <div class="loop-item"><span class="loop-tag">repair loop</span><span>审查或验证发现问题，回到 IMPLEMENT 重新实现。</span></div>
+              <div class="loop-item"><span class="loop-tag">revision</span><span>需要重新对齐方案时，回到 WAITING_CONFIRM。</span></div>
+              <div class="loop-item"><span class="loop-tag mem">user acceptance</span><span>验证通过后由用户验收，再进入记忆归档链。</span></div>
+            </div>
+          </div>
+
+          <p>换个人、换个 agent 接手时，通过 handoff / claim 拿到上一任的阶段和交接摘要，不用重新解释。</p>
+
+          <details>
+            <summary>查看原始状态机（ASCII）</summary>
+            <pre><code>INIT -> ANALYSIS -> WAITING_CONFIRM -> IMPLEMENT -> REVIEW -> VERIFICATION
+                          ^                ^                      |
+                          |                +---- repair loop -----+
+                          +--- revision ---+                      |
+                                                        [user acceptance]
+                                                                  |
+                                          MEMORY_SHORT -> MEMORY_LONG -> COMPLETE</code></pre>
+          </details>
+
+          <h3>一份模板，喂三个平台</h3>
+          <p>三个平台用<strong>同一份</strong> skill 模板，靠安装时替换占位符适配各自的原生约定。不为每个平台各写一套规则，团队里不管谁用哪个 agent，遵循的是同一套纪律。</p>
+
+          <div class="platform-grid">
+            <div class="platform-card">
+              <h4>Claude Code</h4>
+              <span class="trigger">/ec-*</span>
+              <ul><li>目录 <code>.claude/skills/</code></li><li>约束 <code>CLAUDE.md</code></li></ul>
+            </div>
+            <div class="platform-card">
+              <h4>Codex</h4>
+              <span class="trigger">$ec-*</span>
+              <ul><li>目录 <code>.agents/skills/</code></li><li>约束 <code>AGENTS.md</code></li></ul>
+            </div>
+            <div class="platform-card">
+              <h4>Qoder</h4>
+              <span class="trigger">/ec-*</span>
+              <ul><li>目录 <code>.qoder/skills/</code></li><li>约束 <code>AGENTS.md</code></li></ul>
+            </div>
+          </div>
+
+          <h3>按 git 边界分层的 Supermodule 支持</h3>
+          <p>在带 <code>.gitmodules</code> 的父仓里，harness 按 git 边界分层运行，父仓和每个子仓各拿一套完整运行时。</p>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>边界</th><th>行为</th></tr></thead>
+              <tbody>
+                <tr><td>安装</td><td>父仓必装，已检出的子仓可选装；不会替你 <code>git submodule update --init</code>。</td></tr>
+                <tr><td>运行</td><td>跨仓任务在父仓根跑，用父仓全景记忆；单仓任务进子仓跑，用子仓自己的记忆。</td></tr>
+                <tr><td>记忆</td><td>属于某个子仓的技术记忆写回该子仓，单独 clone 也带得走改动原因。</td></tr>
+                <tr><td>提交</td><td>跨仓改动两段式提交，先各子仓、再父仓 gitlink。</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="callout warn"><strong>范围提示：</strong>当前支持到一级 submodule，不自动处理子仓里的二级 submodule。</div>
+        </section>
+
+        <section id="usage">
+          <h2><span class="idx">04</span>使用方法</h2>
+          <p class="lead">四步跑通，之后每个需求都从 <code>/ec-workflow</code> 进。</p>
+
+          <div class="stepper">
+            <div class="step">
+              <div class="dot">1</div>
+              <div>
+                <h4>安装 CLI</h4>
+                <p>0.x 内测阶段推荐 beta 通道，或源码安装。</p>
+                <pre><code># npm 内测环境（0.x 阶段推荐）
+npm install -g easy-coding-harness@beta
+
+# 或源码安装（开发者 / 内网）
+git clone &lt;repo&gt; &amp;&amp; cd easy-coding-harness &amp;&amp; ./install.sh
+
+easy-coding --version</code></pre>
+              </div>
+            </div>
+            <div class="step">
+              <div class="dot">2</div>
+              <div>
+                <h4>在项目里部署 harness</h4>
+                <p>在目标项目根目录运行。若当前目录是 supermodule 父仓，<code>init</code> 会列出已检出的子仓让你选。</p>
+                <pre><code>easy-coding init                                  # 默认装 Claude Code
+easy-coding init --agent=claude-code,codex,qoder  # 指定多个平台</code></pre>
+              </div>
+            </div>
+            <div class="step">
+              <div class="dot">3</div>
+              <div>
+                <h4>初始化项目知识</h4>
+                <p>打开目标 agent，运行 <code>/ec-init</code>。agent 会读项目，生成 <code>SOUL.md</code>、<code>RULES.md</code>、<code>ABSTRACT.md</code>、<code>TEST_STRATEGY.md</code> 等知识文件。这一步幂等，重复跑安全。</p>
+                <pre><code>/ec-init</code></pre>
+              </div>
+            </div>
+            <div class="step">
+              <div class="dot">4</div>
+              <div>
+                <h4>日常开发从统一入口进</h4>
+                <p><code>ec-workflow</code> 负责创建或恢复任务，然后按阶段自动调度分析、实现、审查、验证和记忆归档。你要做的就是在计划确认和验收两个节点上拍板。</p>
+                <pre><code>/ec-workflow 实现 xxx 功能</code></pre>
+              </div>
+            </div>
+          </div>
+
+          <h3>常用命令</h3>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>命令</th><th>用途</th></tr></thead>
+              <tbody>
+                <tr><td><code>easy-coding init</code></td><td>首次接入项目，部署所选平台的全部 harness 文件</td></tr>
+                <tr><td><code>easy-coding add-agent</code></td><td>给已接入项目追加某个平台支持</td></tr>
+                <tr><td><code>easy-coding upgrade</code></td><td>CLI 升级后同步项目内生成文件，用户资产保留</td></tr>
+                <tr><td><code>easy-coding update</code></td><td>更新全局 CLI 到最新发布版</td></tr>
+                <tr><td><code>easy-coding status</code></td><td>查看已安装平台、harness 版本、当前任务状态</td></tr>
+                <tr><td><code>easy-coding clear</code></td><td>移除 harness 安装物，保留 tasks、spec、memory 等用户资产</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="callout"><strong>一句话记住整个流程：</strong>装 CLI → <code>init</code> 铺文件 → <code>/ec-init</code> 让 agent 认识项目 → <code>/ec-workflow</code> 开始干活。之后每个需求都从 <code>/ec-workflow</code> 进，剩下的交给状态机。</div>
+        </section>
+
+        <footer class="pageft">
+          Easy Coding Harness · 团队内部介绍文档 · 源文件 docs/introduction.md · 触发符 Claude Code / Qoder 用 <code>/ec-*</code>，Codex 用 <code>$ec-*</code>
+        </footer>
+      </article>
+    </main>
+  </div>
+
+  <script>
+    const progress = document.querySelector('.progress');
+    const updateProgress = () => {
+      const scrollable = document.documentElement.scrollHeight - window.innerHeight;
+      const ratio = scrollable > 0 ? window.scrollY / scrollable : 0;
+      progress.style.transform = `scaleX(${Math.max(0, Math.min(1, ratio))})`;
+    };
+    updateProgress();
+    window.addEventListener('scroll', updateProgress, { passive: true });
+
+    // TOC active highlight
+    const links = Array.from(document.querySelectorAll('.toc a'));
+    const map = new Map(links.map(a => [a.getAttribute('href').slice(1), a]));
+    const obs = new IntersectionObserver((entries) => {
+      entries.forEach(e => {
+        if (e.isIntersecting) {
+          links.forEach(a => a.style.background = '');
+          const a = map.get(e.target.id);
+          if (a) { a.style.background = '#eef7f8'; a.style.color = '#0a4d57'; }
+        }
+      });
+    }, { rootMargin: '-20% 0px -70% 0px' });
+    document.querySelectorAll('section[id]').forEach(s => obs.observe(s));
+  </script>
+</body>
+</html>

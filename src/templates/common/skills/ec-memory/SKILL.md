@@ -45,6 +45,23 @@ conversation. Refer to SHORT_MEMORY_TEMPLATE.md for the complete section format.
 
 If the task was cross-repo, record the repo names involved and the collaboration reason.
 
+## Supermodule memory routing
+
+If the current project config contains `supermodule.role: super-parent`, archive memory by
+ownership:
+
+- Cross-repo business context, parent orchestration decisions, and multi-repo contracts stay
+  in the parent `.easy-coding/memory`.
+- Technical memory that belongs to one child repo must be written to that child's
+  `.easy-coding/memory`, not only to the parent. Use changed file paths and module ownership
+  to decide the child.
+- Only write child memory files during this routing. Do not edit child task, session, state,
+  or dev-spec files from the parent workflow.
+- If a touched child repo has no initialized `.easy-coding/memory` directory, keep the memory
+  in the parent and mark it as "original child: <path>; child not initialized".
+- When child memory is written, the later git flow must commit and push the child repo before
+  the parent gitlink update.
+
 **Immutability:** Short memories are write-once. Never edit an existing short memory file —
 create a new one instead. Short memories serve as both a recent-detail sliding window and a
 distillation buffer for long-term memory.

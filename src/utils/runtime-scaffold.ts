@@ -11,11 +11,16 @@ import {
 } from "../constants/paths.js";
 import { VERSION } from "../constants/version.js";
 import type { AgentPlatform } from "../types/platform.js";
+import type { SupermoduleConfig } from "../types/supermodule.js";
 import { createDefaultConfig, writeConfigYaml } from "./config-yaml.js";
 import { ensureDir, pathExists, readTextFile, writeTextFile } from "./file-writer.js";
 import { getTemplatePath } from "./template-paths.js";
 
-export async function writeRuntimeScaffold(cwd: string, agents: AgentPlatform[]): Promise<void> {
+export async function writeRuntimeScaffold(
+  cwd: string,
+  agents: AgentPlatform[],
+  opts: { supermodule?: SupermoduleConfig } = {},
+): Promise<void> {
   const easyCodingDir = path.join(cwd, EASY_CODING_DIR);
   await ensureDir(easyCodingDir);
 
@@ -24,7 +29,12 @@ export async function writeRuntimeScaffold(cwd: string, agents: AgentPlatform[])
     const projectName = path.basename(cwd);
     await writeConfigYaml(
       configPath,
-      createDefaultConfig({ projectName, harnessVersion: VERSION, agents }),
+      createDefaultConfig({
+        projectName,
+        harnessVersion: VERSION,
+        agents,
+        supermodule: opts.supermodule,
+      }),
     );
   }
 

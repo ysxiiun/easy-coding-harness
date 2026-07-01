@@ -9,6 +9,7 @@ import {
   hookRegistrationArtifacts,
 } from "../utils/install-manifest.js";
 import { resolvePlatformMeta } from "../utils/platform-paths.js";
+import type { ConfigureOptions } from "./index.js";
 import {
   copyPlatformTemplates,
   resolveBundledSkills,
@@ -61,7 +62,10 @@ async function existingManagedSkillArtifacts(
   return artifacts;
 }
 
-export async function configureQoder(cwd: string): Promise<InstallArtifact[]> {
+export async function configureQoder(
+  cwd: string,
+  opts: ConfigureOptions = {},
+): Promise<InstallArtifact[]> {
   const platform = "qoder";
   const meta = resolvePlatformMeta(cwd, platform);
   const ctx = meta.templateContext;
@@ -108,7 +112,9 @@ export async function configureQoder(cwd: string): Promise<InstallArtifact[]> {
     );
   }
 
-  artifacts.push(constraintRegionArtifact(await writeMainConstraint(cwd, platform), platform));
+  artifacts.push(
+    constraintRegionArtifact(await writeMainConstraint(cwd, platform, opts), platform),
+  );
 
   return artifacts;
 }

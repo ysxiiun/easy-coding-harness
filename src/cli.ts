@@ -35,6 +35,11 @@ program
   .command("init")
   .description("Initialize easy-coding harness in current project")
   .option("--agent <list>", "Comma-separated platforms: claude-code,codex,qoder")
+  .option(
+    "--submodules <list>",
+    "Comma-separated checked-out submodule paths or names to initialize",
+  )
+  .option("--no-submodules", "Initialize only the current directory when .gitmodules exists")
   .option("-y, --yes", "Skip prompts, use defaults")
   .action(withErrorHandling(init));
 
@@ -42,6 +47,8 @@ program
   .command("add-agent")
   .description("Add agent platform support to an existing project")
   .option("--agent <list>", "Comma-separated platforms to add")
+  .option("--submodules <list>", "Comma-separated initialized submodule paths or names to update")
+  .option("--no-submodules", "Add the agent only to the current directory")
   .action(withErrorHandling(addAgent));
 
 program
@@ -67,6 +74,8 @@ program
 program
   .command("clear")
   .description("Remove installed harness files (skills, hooks, config); keep tasks, spec, memory")
+  .option("--submodules <list>", "Comma-separated initialized submodule paths or names to clear")
+  .option("--no-submodules", "Clear only the current directory")
   .option("--dry-run", "Preview what would be removed without deleting")
   .option("-y, --yes", "Skip confirmation")
   .action(withErrorHandling(clear));

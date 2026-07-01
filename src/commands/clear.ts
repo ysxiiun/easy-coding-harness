@@ -29,10 +29,17 @@ import {
 import { removeMarkedRegion } from "../utils/marked-region.js";
 import { resolvePlatformMeta, resolveQoderVariantMetas } from "../utils/platform-paths.js";
 import { getTemplatePath } from "../utils/template-paths.js";
+import { refreshSupermoduleParent } from "./install-harness.js";
+import {
+  type CommandTarget,
+  resolveClearTargets,
+  resolveUpgradeTargets,
+} from "./supermodule-targets.js";
 
 export interface ClearOptions {
   dryRun?: boolean;
   yes?: boolean;
+  submodules?: string | false;
 }
 
 interface ClearPlan {
@@ -65,6 +72,12 @@ interface MutableClearPlan {
   emptyDirs: Set<string>;
 }
 
+interface TargetClearPlan {
+  target: CommandTarget;
+  agents: AgentPlatform[];
+  plan: ClearPlan;
+}
+
 const PLATFORM_TEMPLATE_DIR: Record<AgentPlatform, string> = {
   "claude-code": "claude",
   codex: "codex",
@@ -75,15 +88,13 @@ export async function clear(opts: ClearOptions): Promise<void> {
   renderBanner();
 
   const cwd = process.cwd();
-  const easyCodingDir = path.join(cwd, EASY_CODING_DIR);
-  if (!(await pathExists(easyCodingDir))) {
+  const targets = await resolveClearTargets(cwd, opts);
+  const targetPlans = await buildTargetClearPlans(targets);
+  if (targetPlans.length === 0) {
     throw new Error("No .easy-coding directory found in this project — nothing to clear.");
   }
 
-  const agents = await resolveInstalledAgents(cwd);
-  const plan = await buildClearPlan(cwd, agents);
-
-  console.log(renderPlan(cwd, agents, plan));
+  console.log(renderTargetPlans(targetPlans));
 
   if (opts.dryRun) {
     return;
@@ -100,8 +111,50 @@ export async function clear(opts: ClearOptions): Promise<void> {
     }
   }
 
-  await executeClearPlan(plan);
+  for (const targetPlan of targetPlans) {
+    await executeClearPlan(targetPlan.plan);
+  }
+  await refreshParentAfterChildClear(cwd, targetPlans);
   outro(chalk.green("Easy Coding harness removed. Run easy-coding init to reinstall."));
+}
+
+async function buildTargetClearPlans(targets: CommandTarget[]): Promise<TargetClearPlan[]> {
+  const plans: TargetClearPlan[] = [];
+  for (const target of targets) {
+    const easyCodingDir = path.join(target.dir, EASY_CODING_DIR);
+    if (!(await pathExists(easyCodingDir))) {
+      continue;
+    }
+    const agents = await resolveInstalledAgents(target.dir);
+    plans.push({
+      target,
+      agents,
+      plan: await buildClearPlan(target.dir, agents),
+    });
+  }
+  return plans;
+}
+
+async function refreshParentAfterChildClear(
+  cwd: string,
+  targetPlans: TargetClearPlan[],
+): Promise<void> {
+  if (targetPlans.some((targetPlan) => targetPlan.target.label === ".")) {
+    return;
+  }
+  if (!(await pathExists(path.join(cwd, EASY_CODING_DIR, CONFIG_FILE)))) {
+    return;
+  }
+
+  const [parent] = await resolveUpgradeTargets(cwd);
+  if (!parent || parent.label !== ".") {
+    return;
+  }
+  const config = await readConfigYaml(parent.configPath);
+  if (!Array.isArray(config.agents) || config.agents.length === 0) {
+    return;
+  }
+  await refreshSupermoduleParent(cwd, config.agents, parent.supermodule.submodules ?? []);
 }
 
 async function resolveInstalledAgents(cwd: string): Promise<AgentPlatform[]> {
@@ -689,4 +742,17 @@ function renderPlan(cwd: string, agents: AgentPlatform[], plan: ClearPlan): stri
     ),
   );
   return lines.join("\n");
+}
+
+function renderTargetPlans(targetPlans: TargetClearPlan[]): string {
+  if (targetPlans.length === 1) {
+    const [{ target, agents, plan }] = targetPlans;
+    return [`Target: ${target.label}`, renderPlan(target.dir, agents, plan)].join("\n");
+  }
+
+  return targetPlans
+    .map(({ target, agents, plan }) =>
+      [`Target: ${target.label}`, renderPlan(target.dir, agents, plan)].join("\n"),
+    )
+    .join("\n\n");
 }

@@ -37,7 +37,12 @@ with `.easy-coding/sessions/` always excluded. The CLI already added it to `.git
    `repo_paths`), the commit/push covers every involved repo. Read `repo_paths` from the
    current task state to locate each checkout, check changes, and commit/push them as one
    coherent change set — do not leave a sub-repo behind.
-4. **No false success.** Never claim a commit or push succeeded without reading the command
+4. **Supermodule two-step commits.** If the current repo has `.gitmodules`, or the current
+   task touches a git submodule path, treat each submodule as an independent git boundary:
+   commit and push child repos first, then commit and push the parent gitlink update. If a
+   child repo is on a detached HEAD, stop and ask the user to choose or create a branch before
+   committing there.
+5. **No false success.** Never claim a commit or push succeeded without reading the command
    output. A failed push reported as success is a serious error.
 
 ## Boundaries
@@ -45,3 +50,6 @@ with `.easy-coding/sessions/` always excluded. The CLI already added it to `.git
 - Do not touch session files, task status fields, or run stage transitions — git only.
 - Do not commit `.easy-coding/sessions/`.
 - Do not commit `spec/dev/` unless the user explicitly asks.
+- In a supermodule task launched from the parent root, parent `.easy-coding/` belongs to the
+  parent git. Child `.easy-coding/memory/` changes created by memory archive belong to the
+  owning child git and must be committed before the parent gitlink update.

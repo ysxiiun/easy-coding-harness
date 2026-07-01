@@ -8,7 +8,11 @@ const promptMocks = vi.hoisted(() => ({
 
 vi.mock("@clack/prompts", () => promptMocks);
 
-import { resolvePlatforms } from "../../src/commands/platforms.js";
+import {
+  parseSubmoduleList,
+  resolvePlatforms,
+  resolveSubmodules,
+} from "../../src/commands/platforms.js";
 
 beforeEach(() => {
   promptMocks.cancel.mockReset();
@@ -63,5 +67,26 @@ describe("resolvePlatforms", () => {
     expect(platforms).toEqual(["claude-code"]);
     expect(promptMocks.multiselect).not.toHaveBeenCalled();
     expect(promptMocks.confirm).not.toHaveBeenCalled();
+  });
+});
+
+describe("parseSubmoduleList", () => {
+  const available = [
+    { name: "core", path: "packages/core", url: "git@example.com:core.git" },
+    { name: "tools", path: "packages/tools", url: "git@example.com:tools.git" },
+  ];
+
+  it("selects submodules by path or name", () => {
+    expect(parseSubmoduleList("packages/core,tools", available)).toEqual(available);
+  });
+
+  it("rejects unknown submodules", () => {
+    expect(() => parseSubmoduleList("missing", available)).toThrow("Unknown or unavailable");
+  });
+
+  it("rejects explicit submodule selections when none are available", async () => {
+    await expect(resolveSubmodules({ submodules: "missing" }, [])).rejects.toThrow(
+      "Unknown or unavailable",
+    );
   });
 });

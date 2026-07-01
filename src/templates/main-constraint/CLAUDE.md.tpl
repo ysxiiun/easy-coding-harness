@@ -60,6 +60,7 @@ First run `/ec-init`; daily work goes through `/ec-workflow`.
   creates the project-init task — agent skills perform all project analysis.
 - Cross-repo references in git-tracked task artifacts use repo NAMES, never local paths.
   Cache local paths only through the state script so they land on the current task.
+{{supermodule_boundary}}
 
 <!-- ═══ end easy-coding-harness generated ═══ -->
 

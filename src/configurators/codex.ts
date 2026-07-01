@@ -6,6 +6,7 @@ import {
   fileArtifact,
   hookRegistrationArtifacts,
 } from "../utils/install-manifest.js";
+import type { ConfigureOptions } from "./index.js";
 import {
   copyPlatformTemplates,
   resolveBundledSkills,
@@ -15,7 +16,10 @@ import {
   writeSkills,
 } from "./shared.js";
 
-export async function configureCodex(cwd: string): Promise<InstallArtifact[]> {
+export async function configureCodex(
+  cwd: string,
+  opts: ConfigureOptions = {},
+): Promise<InstallArtifact[]> {
   const platform = "codex";
   const meta = PLATFORM_META[platform];
   const ctx = meta.templateContext;
@@ -57,7 +61,9 @@ export async function configureCodex(cwd: string): Promise<InstallArtifact[]> {
       ),
   );
   artifacts.push(...(await hookRegistrationArtifacts(hookConfigPath, platform)));
-  artifacts.push(constraintRegionArtifact(await writeMainConstraint(cwd, platform), platform));
+  artifacts.push(
+    constraintRegionArtifact(await writeMainConstraint(cwd, platform, opts), platform),
+  );
 
   return artifacts;
 }

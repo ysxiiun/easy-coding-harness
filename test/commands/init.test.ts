@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -81,5 +81,232 @@ describe("init command", () => {
     await mkdir(path.join(tempDir, ".easy-coding"), { recursive: true });
 
     await expect(init({ yes: true })).rejects.toThrow(".easy-coding exists but is not recognized");
+  });
+
+  it("rejects explicit --submodules in a non-supermodule repository", async () => {
+    await expect(init({ yes: true, submodules: "packages/a" })).rejects.toThrow(
+      "--submodules can only be used in a repository with .gitmodules.",
+    );
+
+    expect(await pathExists(path.join(tempDir, ".easy-coding", "config.yaml"))).toBe(false);
+  });
+
+  it("installs parent and checked-out submodules in a supermodule", async () => {
+    await writeFile(
+      path.join(tempDir, ".gitmodules"),
+      [
+        '[submodule "pkg-a"]',
+        "  Path = packages/a # checked out",
+        "  URL = git@example.com:pkg-a.git",
+        '[submodule "pkg-b"]',
+        "  path = packages/b # stale checkout",
+        "  url = git@example.com:pkg-b.git",
+        '[submodule "pkg-c"]',
+        "  path = packages/c",
+        "  url = git@example.com:pkg-c.git",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    const outsideSubmoduleDir = await mkdtemp(path.join(os.tmpdir(), "ec-init-linked-child-"));
+    await mkdir(path.join(tempDir, "packages", "a"), { recursive: true });
+    await writeFile(path.join(tempDir, "packages", "a", ".git"), "gitdir: ../../.git/modules/a\n", "utf8");
+    await mkdir(path.join(tempDir, "packages", "b"), { recursive: true });
+    await writeFile(path.join(tempDir, "packages", "b", ".DS_Store"), "placeholder\n", "utf8");
+    await writeFile(
+      path.join(outsideSubmoduleDir, ".git"),
+      "gitdir: ../../.git/modules/c\n",
+      "utf8",
+    );
+    await symlink(outsideSubmoduleDir, path.join(tempDir, "packages", "c"), "dir");
+
+    try {
+      await init({ yes: true });
+
+      const parentConfig = await readFile(
+        path.join(tempDir, ".easy-coding", "config.yaml"),
+        "utf8",
+      );
+      expect(parentConfig).toContain("role: super-parent");
+      expect(parentConfig).toContain("- packages/a");
+      expect(parentConfig).not.toContain("packages/b");
+      expect(parentConfig).not.toContain("packages/c");
+
+      const childConfig = await readFile(
+        path.join(tempDir, "packages", "a", ".easy-coding", "config.yaml"),
+        "utf8",
+      );
+      expect(childConfig).toContain("role: submodule-child");
+      expect(childConfig).toContain("parent: ../..");
+      expect(await pathExists(path.join(tempDir, "packages", "b", ".easy-coding"))).toBe(false);
+      expect(await pathExists(path.join(outsideSubmoduleDir, ".easy-coding"))).toBe(false);
+
+      const parentConstraint = await readFile(path.join(tempDir, "CLAUDE.md"), "utf8");
+      expect(parentConstraint).toContain("## Supermodule Boundary");
+      expect(parentConstraint).toContain("`packages/a`");
+      const childConstraint = await readFile(
+        path.join(tempDir, "packages", "a", "CLAUDE.md"),
+        "utf8",
+      );
+      expect(childConstraint).not.toContain("## Supermodule Boundary");
+    } finally {
+      await rm(outsideSubmoduleDir, { recursive: true, force: true });
+    }
+  });
+
+  it("respects --no-submodules in a supermodule", async () => {
+    await writeFile(
+      path.join(tempDir, ".gitmodules"),
+      ['[submodule "pkg-a"]', "  path = packages/a", "  url = git@example.com:pkg-a.git", ""].join(
+        "\n",
+      ),
+      "utf8",
+    );
+    await mkdir(path.join(tempDir, "packages", "a"), { recursive: true });
+    await writeFile(path.join(tempDir, "packages", "a", ".git"), "gitdir: ../../.git/modules/a\n", "utf8");
+
+    await init({ yes: true, submodules: false });
+
+    const parentConfig = await readFile(path.join(tempDir, ".easy-coding", "config.yaml"), "utf8");
+    expect(parentConfig).toContain("role: super-parent");
+    expect(parentConfig).toContain("submodules: []");
+    expect(await pathExists(path.join(tempDir, "packages", "a", ".easy-coding"))).toBe(false);
+  });
+
+  it("preserves existing child topology during --no-submodules re-entry", async () => {
+    await writeFile(
+      path.join(tempDir, ".gitmodules"),
+      ['[submodule "pkg-a"]', "  path = packages/a", "  url = git@example.com:pkg-a.git", ""].join(
+        "\n",
+      ),
+      "utf8",
+    );
+    await mkdir(path.join(tempDir, "packages", "a"), { recursive: true });
+    await writeFile(path.join(tempDir, "packages", "a", ".git"), "gitdir: ../../.git/modules/a\n", "utf8");
+
+    await init({ agent: "codex", yes: true });
+    await init({ yes: true, submodules: false });
+
+    const parentConfig = await readFile(path.join(tempDir, ".easy-coding", "config.yaml"), "utf8");
+    expect(parentConfig).toContain("- packages/a");
+    const parentConstraint = await readFile(path.join(tempDir, "AGENTS.md"), "utf8");
+    expect(parentConstraint).toContain("`packages/a`");
+    const childConfig = await readFile(
+      path.join(tempDir, "packages", "a", ".easy-coding", "config.yaml"),
+      "utf8",
+    );
+    expect(childConfig).toContain("role: submodule-child");
+  });
+
+  it("does not adopt a standalone child during --no-submodules init", async () => {
+    await writeFile(
+      path.join(tempDir, ".gitmodules"),
+      ['[submodule "pkg-a"]', "  path = packages/a", "  url = git@example.com:pkg-a.git", ""].join(
+        "\n",
+      ),
+      "utf8",
+    );
+    await mkdir(path.join(tempDir, "packages", "a"), { recursive: true });
+    await writeFile(path.join(tempDir, "packages", "a", ".git"), "gitdir: ../../.git/modules/a\n", "utf8");
+
+    process.chdir(path.join(tempDir, "packages", "a"));
+    await init({ agent: "codex", yes: true });
+    process.chdir(tempDir);
+
+    await init({ agent: "codex", yes: true, submodules: false });
+
+    const parentConfig = await readFile(path.join(tempDir, ".easy-coding", "config.yaml"), "utf8");
+    expect(parentConfig).toContain("submodules: []");
+    expect(parentConfig).not.toContain("- packages/a");
+    const parentConstraint = await readFile(path.join(tempDir, "AGENTS.md"), "utf8");
+    expect(parentConstraint).not.toContain("`packages/a`");
+    const childConfig = await readFile(
+      path.join(tempDir, "packages", "a", ".easy-coding", "config.yaml"),
+      "utf8",
+    );
+    expect(childConfig).toContain("role: standalone");
+  });
+
+  it("refreshes an already-installed child during default supermodule init", async () => {
+    await writeFile(
+      path.join(tempDir, ".gitmodules"),
+      ['[submodule "pkg-a"]', "  path = packages/a", "  url = git@example.com:pkg-a.git", ""].join(
+        "\n",
+      ),
+      "utf8",
+    );
+    await mkdir(path.join(tempDir, "packages", "a"), { recursive: true });
+    await writeFile(path.join(tempDir, "packages", "a", ".git"), "gitdir: ../../.git/modules/a\n", "utf8");
+
+    process.chdir(path.join(tempDir, "packages", "a"));
+    await init({ agent: "codex", yes: true });
+    let childConfig = await readFile(
+      path.join(tempDir, "packages", "a", ".easy-coding", "config.yaml"),
+      "utf8",
+    );
+    expect(childConfig).toContain("role: standalone");
+
+    process.chdir(tempDir);
+    await init({ agent: "codex", yes: true });
+
+    const parentConfig = await readFile(path.join(tempDir, ".easy-coding", "config.yaml"), "utf8");
+    expect(parentConfig).toContain("- packages/a");
+    childConfig = await readFile(
+      path.join(tempDir, "packages", "a", ".easy-coding", "config.yaml"),
+      "utf8",
+    );
+    expect(childConfig).toContain("role: submodule-child");
+    expect(childConfig).toContain("parent: ../..");
+  });
+
+  it("re-enters a supermodule init to add a newly selected child", async () => {
+    await writeFile(
+      path.join(tempDir, ".gitmodules"),
+      [
+        '[submodule "pkg-a"]',
+        "  path = packages/a",
+        "  url = git@example.com:pkg-a.git",
+        '[submodule "pkg-b"]',
+        "  path = packages/b",
+        "  url = git@example.com:pkg-b.git",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    await mkdir(path.join(tempDir, "packages", "a"), { recursive: true });
+    await mkdir(path.join(tempDir, "packages", "b"), { recursive: true });
+    await writeFile(path.join(tempDir, "packages", "a", ".git"), "gitdir: ../../.git/modules/a\n", "utf8");
+    await writeFile(path.join(tempDir, "packages", "b", ".git"), "gitdir: ../../.git/modules/b\n", "utf8");
+
+    process.chdir(path.join(tempDir, "packages", "a"));
+    await init({ agent: "codex", yes: true });
+    let childAConfig = await readFile(
+      path.join(tempDir, "packages", "a", ".easy-coding", "config.yaml"),
+      "utf8",
+    );
+    expect(childAConfig).toContain("role: standalone");
+
+    process.chdir(tempDir);
+    await init({ agent: "codex", submodules: "packages/a" });
+    childAConfig = await readFile(
+      path.join(tempDir, "packages", "a", ".easy-coding", "config.yaml"),
+      "utf8",
+    );
+    expect(childAConfig).toContain("role: submodule-child");
+    expect(childAConfig).toContain("parent: ../..");
+    await init({ yes: true, submodules: "packages/b" });
+
+    const parentConfig = await readFile(path.join(tempDir, ".easy-coding", "config.yaml"), "utf8");
+    expect(parentConfig).toContain("- packages/a");
+    expect(parentConfig).toContain("- packages/b");
+    const childBConfig = await readFile(
+      path.join(tempDir, "packages", "b", ".easy-coding", "config.yaml"),
+      "utf8",
+    );
+    expect(childBConfig).toContain("  - codex");
+
+    const parentConstraint = await readFile(path.join(tempDir, "AGENTS.md"), "utf8");
+    expect(parentConstraint).toContain("`packages/a`");
+    expect(parentConstraint).toContain("`packages/b`");
   });
 });

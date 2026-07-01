@@ -3,6 +3,7 @@ import path from "node:path";
 import { GENERATED_REGION_END, GENERATED_REGION_START } from "../constants/paths.js";
 import type { AgentPlatform, TemplateContext } from "../types/platform.js";
 import { PLATFORM_META } from "../types/platform.js";
+import type { SupermoduleBoundary } from "../types/supermodule.js";
 import {
   ensureDir,
   isDirectory,
@@ -158,9 +159,16 @@ export async function copyPlatformTemplates(
   return copyTemplateDirectory(source, destination, ctx, new Set(skipDirs));
 }
 
-export async function writeMainConstraint(cwd: string, platform: AgentPlatform): Promise<string> {
+export async function writeMainConstraint(
+  cwd: string,
+  platform: AgentPlatform,
+  opts: { supermodule?: SupermoduleBoundary } = {},
+): Promise<string> {
   const meta = PLATFORM_META[platform];
-  const ctx = meta.templateContext;
+  const ctx: TemplateContext = {
+    ...meta.templateContext,
+    supermodule_boundary: renderSupermoduleBoundary(opts.supermodule),
+  };
   const templateName = `${meta.mainConstraint}.tpl`;
   const template = await readTextFile(getTemplatePath("main-constraint", templateName));
   const generated = resolvePlaceholders(template, ctx, `main-constraint/${templateName}`);
@@ -181,6 +189,30 @@ export async function writeMainConstraint(cwd: string, platform: AgentPlatform):
     await writeTextFile(destination, generated);
   }
   return destination;
+}
+
+function renderSupermoduleBoundary(boundary?: SupermoduleBoundary): string {
+  if (!boundary || boundary.submodulePaths.length === 0) {
+    return "";
+  }
+
+  const submodules = boundary.submodulePaths.map((submodulePath) => `- \`${submodulePath}\``);
+  return [
+    "",
+    "## Supermodule Boundary",
+    "",
+    "This directory is a git supermodule root. The following subdirectories are independent",
+    "submodule harness roots with their own git boundaries and Easy Coding runtime:",
+    "",
+    ...submodules,
+    "",
+    "- Cross-repo work launched from this root uses the parent `.easy-coding` task, session, state, and spec as the source of truth.",
+    "- Child `.easy-coding` directories are not parent workflow state sources.",
+    "- During memory archive, technical memory that belongs to a child repo is written only to that child's `.easy-coding/memory`; do not write child task/session/state files from the parent.",
+    "- Commit submodule changes in two steps: push each child repo first, then commit and push the parent gitlink update.",
+    "- Parent memory should keep cross-repo context; child technical details should follow the owning child repo.",
+    "",
+  ].join("\n");
 }
 
 async function copyTemplateDirectory(

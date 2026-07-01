@@ -6,6 +6,15 @@
 - `y`：常规功能升级
 - `z`：日常 bug 修复
 
+## 0.5.0
+
+- 新增 supermodule 支持：`easy-coding init` 会识别 `.gitmodules`，父仓必装，已检出的一级子仓可按交互或参数选择分层安装。
+- 新增 `--submodules <list>` / `--no-submodules` 参数，支持 `init`、`add-agent` 和 `clear` 精确控制子仓范围；`--yes` 在 init 中默认选择全部已检出子仓，clear 默认只处理父仓。
+- `config.yaml` 新增 `supermodule.role`、`submodules` / `parent` 拓扑字段，父仓主约束会注入 supermodule 边界声明。
+- `add-agent` 和 `upgrade` 支持父仓 + 已初始化子仓分层处理，普通仓库无 `.gitmodules` 时保持原单目录行为。
+- `ec-git` 增加 submodule 两段提交纪律，`ec-memory` 增加父仓任务下子仓技术记忆分流规则。
+- README 补充 supermodule 安装、运行、提交与记忆边界说明。
+
 ## 0.4.0
 
 - 升级跨 agent 交接模型：交接记录只保存交接前 agent、阶段、摘要和时间，不再要求也不保存下一任 agent。

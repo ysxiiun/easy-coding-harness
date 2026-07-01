@@ -2,7 +2,13 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { addAgentsToConfig, updateHarnessVersion, yamlHasAgent } from "../../src/utils/config-yaml.js";
+import {
+  addAgentsToConfig,
+  createDefaultConfig,
+  updateHarnessVersion,
+  updateSupermoduleConfig,
+  yamlHasAgent,
+} from "../../src/utils/config-yaml.js";
 
 let tempDir: string;
 let configPath: string;
@@ -54,5 +60,20 @@ describe("config-yaml", () => {
     expect(yamlHasAgent(content, "claude-code")).toBe(true);
     expect(yamlHasAgent(content, "codex")).toBe(true);
     expect(content.match(/claude-code/g)).toHaveLength(1);
+  });
+
+  it("creates and updates supermodule topology", async () => {
+    const config = createDefaultConfig({
+      projectName: "demo",
+      harnessVersion: "1.0.0",
+      agents: ["claude-code"],
+      supermodule: { role: "super-parent", submodules: ["packages/a"] },
+    });
+    expect(config.supermodule).toEqual({ role: "super-parent", submodules: ["packages/a"] });
+
+    await updateSupermoduleConfig(configPath, { role: "submodule-child", parent: "../.." });
+    const content = await readFile(configPath, "utf8");
+    expect(content).toContain("role: submodule-child");
+    expect(content).toContain("parent: ../..");
   });
 });

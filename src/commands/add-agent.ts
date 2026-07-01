@@ -1,50 +1,84 @@
-import path from "node:path";
 import { outro } from "@clack/prompts";
 import chalk from "chalk";
-import { CONFIGURATORS } from "../configurators/index.js";
-import { CONFIG_FILE, EASY_CODING_DIR } from "../constants/paths.js";
 import { VERSION } from "../constants/version.js";
 import { renderBanner } from "../ui/banner.js";
-import { addAgentsToConfig, readConfigYaml } from "../utils/config-yaml.js";
+import {
+  addAgentsToConfig,
+  readConfigYaml,
+  updateSupermoduleConfig,
+} from "../utils/config-yaml.js";
 import { pathExists } from "../utils/file-writer.js";
 import { ensureEasyCodingSessionsIgnored } from "../utils/gitignore.js";
 import { type InstallArtifact, writeInstallManifest } from "../utils/install-manifest.js";
 import { writeRuntimeScaffold } from "../utils/runtime-scaffold.js";
 import { setPendingInitSince } from "../utils/task-json.js";
+import { configurePlatformsForDir, refreshSupermoduleParent } from "./install-harness.js";
 import { type PlatformOptions, resolvePlatforms } from "./platforms.js";
+import { resolveAddAgentTargets } from "./supermodule-targets.js";
 
 export async function addAgent(opts: PlatformOptions): Promise<void> {
   renderBanner();
 
   const cwd = process.cwd();
-  const configPath = path.join(cwd, EASY_CODING_DIR, CONFIG_FILE);
-  if (!(await pathExists(configPath))) {
+  const targets = await resolveAddAgentTargets(cwd, opts);
+  if (!(await pathExists(targets[0].configPath))) {
     throw new Error("No .easy-coding/config.yaml found. Run easy-coding init first.");
   }
 
-  const config = await readConfigYaml(configPath);
   const platforms = await resolvePlatforms(opts, ["claude-code"]);
-  const toInstall = platforms.filter((platform) => !config.agents.includes(platform));
+  const installedLabels: string[] = [];
+  const refreshedLabels: string[] = [];
 
-  if (toInstall.length === 0) {
+  for (const target of targets) {
+    if (!(await pathExists(target.configPath))) {
+      continue;
+    }
+    const config = await readConfigYaml(target.configPath);
+    const toInstall = platforms.filter((platform) => !config.agents.includes(platform));
+    const agents = [...config.agents, ...toInstall];
+
+    if (toInstall.length > 0) {
+      const artifacts: InstallArtifact[] = await configurePlatformsForDir(
+        target.dir,
+        toInstall,
+        target.boundary,
+      );
+      await writeRuntimeScaffold(target.dir, agents, {
+        supermodule: target.supermodule,
+      });
+      await writeInstallManifest(target.dir, {
+        harnessVersion: VERSION,
+        agents: toInstall,
+        artifacts,
+        mode: "merge",
+      });
+      await ensureEasyCodingSessionsIgnored(target.dir);
+      await addAgentsToConfig(target.configPath, toInstall);
+      await setPendingInitSince(target.dir, VERSION);
+
+      installedLabels.push(`${target.label}: ${toInstall.join(", ")}`);
+    }
+
+    if (target.supermodule.role === "super-parent") {
+      await refreshSupermoduleParent(target.dir, agents, target.supermodule.submodules ?? []);
+      refreshedLabels.push(target.label);
+      continue;
+    }
+
+    if (target.supermodule.role === "submodule-child") {
+      await updateSupermoduleConfig(target.configPath, target.supermodule);
+      refreshedLabels.push(target.label);
+    }
+  }
+
+  if (installedLabels.length === 0) {
+    if (refreshedLabels.length > 0) {
+      outro(chalk.green(`Supermodule topology refreshed:\n${refreshedLabels.join("\n")}`));
+      return;
+    }
     outro(chalk.yellow("All selected agent platforms are already installed."));
     return;
   }
 
-  const artifacts: InstallArtifact[] = [];
-  for (const platform of toInstall) {
-    artifacts.push(...(await CONFIGURATORS[platform](cwd)));
-  }
-  await writeRuntimeScaffold(cwd, [...config.agents, ...toInstall]);
-  await writeInstallManifest(cwd, {
-    harnessVersion: VERSION,
-    agents: toInstall,
-    artifacts,
-    mode: "merge",
-  });
-  await ensureEasyCodingSessionsIgnored(cwd);
-  await addAgentsToConfig(configPath, toInstall);
-  await setPendingInitSince(cwd, VERSION);
-
-  outro(chalk.green(`Added agent platforms: ${toInstall.join(", ")}`));
+  outro(chalk.green(`Added agent platforms:\n${installedLabels.join("\n")}`));
 }

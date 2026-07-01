@@ -209,6 +209,112 @@ describe("clear command", () => {
     );
   });
 
+  it("rejects explicit --submodules in a non-supermodule repository without clearing the parent", async () => {
+    await init({ agent: "codex", yes: true });
+
+    await expect(clear({ yes: true, submodules: "packages/a" })).rejects.toThrow(
+      "--submodules can only be used in a repository with .gitmodules.",
+    );
+
+    expect(await pathExists(path.join(tempDir, ".easy-coding", "config.yaml"))).toBe(true);
+  });
+
+  it("clears only the parent when --no-submodules is used in a supermodule", async () => {
+    await writeFile(
+      path.join(tempDir, ".gitmodules"),
+      ['[submodule "pkg-a"]', "  path = packages/a", "  url = git@example.com:pkg-a.git", ""].join(
+        "\n",
+      ),
+      "utf8",
+    );
+    await mkdir(path.join(tempDir, "packages", "a"), { recursive: true });
+    await writeFile(path.join(tempDir, "packages", "a", ".git"), "gitdir: ../../.git/modules/a\n", "utf8");
+    await init({ agent: "codex", submodules: "packages/a" });
+
+    await clear({ yes: true, submodules: false });
+
+    expect(await pathExists(path.join(tempDir, ".easy-coding", "config.yaml"))).toBe(false);
+    expect(
+      await pathExists(path.join(tempDir, "packages", "a", ".easy-coding", "config.yaml")),
+    ).toBe(true);
+  });
+
+  it("clears a supermodule parent runtime even when config.yaml is missing", async () => {
+    await writeFile(
+      path.join(tempDir, ".gitmodules"),
+      ['[submodule "pkg-a"]', "  path = packages/a", "  url = git@example.com:pkg-a.git", ""].join(
+        "\n",
+      ),
+      "utf8",
+    );
+    await mkdir(path.join(tempDir, ".easy-coding", "tasks", "task-1"), { recursive: true });
+    await writeFile(path.join(tempDir, ".easy-coding", "tasks", "task-1", "task.json"), "{}\n");
+    await configureCodex(tempDir);
+
+    await clear({ yes: true, submodules: false });
+
+    expect(await pathExists(path.join(tempDir, ".codex", "hooks", "session-start.py"))).toBe(
+      false,
+    );
+    expect(await pathExists(path.join(tempDir, ".codex", "hooks.json"))).toBe(false);
+    expect(
+      await pathExists(path.join(tempDir, ".easy-coding", "tasks", "task-1", "task.json")),
+    ).toBe(true);
+  });
+
+  it("clears the parent and selected initialized submodules", async () => {
+    await writeFile(
+      path.join(tempDir, ".gitmodules"),
+      [
+        '[submodule "pkg-a"]',
+        "  path = packages/a",
+        "  url = git@example.com:pkg-a.git",
+        '[submodule "pkg-b"]',
+        "  path = packages/b",
+        "  url = git@example.com:pkg-b.git",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    await mkdir(path.join(tempDir, "packages", "a"), { recursive: true });
+    await mkdir(path.join(tempDir, "packages", "b"), { recursive: true });
+    await writeFile(path.join(tempDir, "packages", "a", ".git"), "gitdir: ../../.git/modules/a\n", "utf8");
+    await writeFile(path.join(tempDir, "packages", "b", ".git"), "gitdir: ../../.git/modules/b\n", "utf8");
+    await init({ agent: "codex", submodules: "packages/a,packages/b" });
+
+    await clear({ yes: true, submodules: "packages/a" });
+
+    expect(await pathExists(path.join(tempDir, ".easy-coding", "config.yaml"))).toBe(false);
+    expect(
+      await pathExists(path.join(tempDir, "packages", "a", ".easy-coding", "config.yaml")),
+    ).toBe(false);
+    expect(
+      await pathExists(path.join(tempDir, "packages", "b", ".easy-coding", "config.yaml")),
+    ).toBe(true);
+  });
+
+  it("rejects an empty --submodules list without clearing the parent", async () => {
+    await writeFile(
+      path.join(tempDir, ".gitmodules"),
+      ['[submodule "pkg-a"]', "  path = packages/a", "  url = git@example.com:pkg-a.git", ""].join(
+        "\n",
+      ),
+      "utf8",
+    );
+    await mkdir(path.join(tempDir, "packages", "a"), { recursive: true });
+    await writeFile(path.join(tempDir, "packages", "a", ".git"), "gitdir: ../../.git/modules/a\n", "utf8");
+    await init({ agent: "codex", submodules: "packages/a" });
+
+    await expect(clear({ yes: true, submodules: "   " })).rejects.toThrow(
+      "No submodule specified.",
+    );
+
+    expect(await pathExists(path.join(tempDir, ".easy-coding", "config.yaml"))).toBe(true);
+    expect(
+      await pathExists(path.join(tempDir, "packages", "a", ".easy-coding", "config.yaml")),
+    ).toBe(true);
+  });
+
   it("rejects manifest paths that escape the project", async () => {
     await writeRuntimeState(
       ["version: 1", "harness_version: 0.2.0", "agents:", "  - codex", ""].join("\n"),

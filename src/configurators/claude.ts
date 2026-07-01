@@ -6,6 +6,7 @@ import {
   fileArtifact,
   hookRegistrationArtifacts,
 } from "../utils/install-manifest.js";
+import type { ConfigureOptions } from "./index.js";
 import {
   copyPlatformTemplates,
   resolveBundledSkills,
@@ -15,7 +16,10 @@ import {
   writeSkills,
 } from "./shared.js";
 
-export async function configureClaude(cwd: string): Promise<InstallArtifact[]> {
+export async function configureClaude(
+  cwd: string,
+  opts: ConfigureOptions = {},
+): Promise<InstallArtifact[]> {
   const platform = "claude-code";
   const meta = PLATFORM_META[platform];
   const ctx = meta.templateContext;
@@ -50,7 +54,9 @@ export async function configureClaude(cwd: string): Promise<InstallArtifact[]> {
       )
     ).map((filePath) => fileArtifact(filePath, "skill", platform)),
   );
-  artifacts.push(constraintRegionArtifact(await writeMainConstraint(cwd, platform), platform));
+  artifacts.push(
+    constraintRegionArtifact(await writeMainConstraint(cwd, platform, opts), platform),
+  );
 
   return artifacts;
 }

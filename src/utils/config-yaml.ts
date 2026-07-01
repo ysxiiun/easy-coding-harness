@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import YAML, { isScalar, isSeq, parseDocument } from "yaml";
 import type { AgentPlatform } from "../types/platform.js";
+import type { SupermoduleConfig } from "../types/supermodule.js";
 import { writeTextFile } from "./file-writer.js";
 
 export interface EasyCodingConfig {
@@ -22,6 +23,7 @@ export interface EasyCodingConfig {
     strict_confirm: boolean;
     auto_mode: boolean;
   };
+  supermodule?: SupermoduleConfig;
   [key: string]: unknown;
 }
 
@@ -29,8 +31,9 @@ export function createDefaultConfig(params: {
   projectName: string;
   harnessVersion: string;
   agents: AgentPlatform[];
+  supermodule?: SupermoduleConfig;
 }): EasyCodingConfig {
-  return {
+  const config: EasyCodingConfig = {
     version: 1,
     harness_version: params.harnessVersion,
     agents: params.agents,
@@ -50,6 +53,10 @@ export function createDefaultConfig(params: {
       auto_mode: false,
     },
   };
+  if (params.supermodule) {
+    config.supermodule = params.supermodule;
+  }
+  return config;
 }
 
 export function stringifyConfig(config: EasyCodingConfig): string {
@@ -98,6 +105,15 @@ export async function updateHarnessVersion(
 ): Promise<EasyCodingConfig> {
   return updateConfigYaml(filePath, (config) => {
     config.harness_version = version;
+  });
+}
+
+export async function updateSupermoduleConfig(
+  filePath: string,
+  supermodule: SupermoduleConfig,
+): Promise<EasyCodingConfig> {
+  return updateConfigYaml(filePath, (config) => {
+    config.supermodule = supermodule;
   });
 }
 

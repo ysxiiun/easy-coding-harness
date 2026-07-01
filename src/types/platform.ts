@@ -8,6 +8,7 @@ export interface TemplateContext {
   main_constraint_file: "CLAUDE.md" | "AGENTS.md";
   python_cmd: string;
   platform_config_dir: string;
+  supermodule_boundary: string;
 }
 
 export interface PlatformMeta {
@@ -50,6 +51,7 @@ export const PLATFORM_META: Record<AgentPlatform, PlatformMeta> = {
       main_constraint_file: "CLAUDE.md",
       python_cmd: pythonCmd,
       platform_config_dir: ".claude",
+      supermodule_boundary: "",
     },
   },
   codex: {
@@ -73,6 +75,7 @@ export const PLATFORM_META: Record<AgentPlatform, PlatformMeta> = {
       main_constraint_file: "AGENTS.md",
       python_cmd: pythonCmd,
       platform_config_dir: ".codex",
+      supermodule_boundary: "",
     },
   },
   qoder: {
@@ -97,6 +100,7 @@ export const PLATFORM_META: Record<AgentPlatform, PlatformMeta> = {
       main_constraint_file: "AGENTS.md",
       python_cmd: pythonCmd,
       platform_config_dir: ".qoder",
+      supermodule_boundary: "",
     },
   },
 };
