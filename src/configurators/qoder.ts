@@ -14,6 +14,7 @@ import {
   copyPlatformTemplates,
   resolveBundledSkills,
   resolveSkills,
+  withInstallPaths,
   writeMainConstraint,
   writeSharedHooks,
   writeSkills,
@@ -68,7 +69,7 @@ export async function configureQoder(
 ): Promise<InstallArtifact[]> {
   const platform = "qoder";
   const meta = resolvePlatformMeta(cwd, platform);
-  const ctx = meta.templateContext;
+  const ctx = withInstallPaths(cwd, meta.templateContext);
   const dest = path.join(cwd, ctx.platform_config_dir);
   const hookConfigPath = path.join(cwd, meta.hookConfigFile);
   const artifacts: InstallArtifact[] = [];

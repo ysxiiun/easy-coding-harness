@@ -15,6 +15,14 @@ import { pathExists } from "../../src/utils/file-writer.js";
 let tempDir: string;
 let originalCwd: string;
 
+function toPosixPath(filePath: string): string {
+  return filePath.split(path.sep).join("/");
+}
+
+function hookCommand(hooksDir: string, scriptName: string): string {
+  return `python3 "${toPosixPath(hooksDir)}"/${scriptName}`;
+}
+
 beforeEach(async () => {
   originalCwd = process.cwd();
   tempDir = await mkdtemp(path.join(os.tmpdir(), "ec-clear-"));
@@ -190,6 +198,36 @@ describe("clear command", () => {
     const remaining = await readFile(hooksPath, "utf8");
     expect(remaining).toContain(".codex/hooks/inject-subagent-context.py");
     expect(remaining).not.toContain(".codex/hooks/session-start.py");
+  });
+
+  it("preserves external hook registrations with managed hook filenames", async () => {
+    await init({ agent: "codex", yes: true });
+
+    const externalHooksDir = path.join(tempDir, "custom-hooks", ".codex", "hooks");
+    const externalCommand = hookCommand(externalHooksDir, "session-start.py");
+    const hooksPath = path.join(tempDir, ".codex", "hooks.json");
+    const hooks = JSON.parse(await readFile(hooksPath, "utf8"));
+    hooks.hooks.UserPromptSubmit.push({
+      hooks: [
+        {
+          type: "command",
+          command: externalCommand,
+          timeout: 5,
+        },
+      ],
+    });
+    await writeFile(hooksPath, `${JSON.stringify(hooks, null, 2)}\n`, "utf8");
+
+    await clear({ yes: true });
+
+    const remaining = JSON.parse(await readFile(hooksPath, "utf8"));
+    const commands = remaining.hooks.UserPromptSubmit.flatMap(
+      (group: { hooks: Array<{ command: string }> }) => group.hooks.map((hook) => hook.command),
+    );
+    expect(commands).toContain(externalCommand);
+    expect(commands).not.toContain(
+      hookCommand(path.join(tempDir, ".codex", "hooks"), "session-start.py"),
+    );
   });
 
   it("keeps modified manifest files instead of deleting them", async () => {

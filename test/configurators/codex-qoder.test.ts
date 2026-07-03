@@ -1,12 +1,24 @@
+import { execSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { configureCodex } from "../../src/configurators/codex.js";
 import { configureQoder } from "../../src/configurators/qoder.js";
+import { shellDoubleQuoteArg } from "../../src/configurators/shared.js";
 import { pathExists } from "../../src/utils/file-writer.js";
+import { writeInstallManifest } from "../../src/utils/install-manifest.js";
 
 let tempDir: string;
+const pythonCmd = process.platform === "win32" ? "python" : "python3";
+
+function toPosixPath(filePath: string): string {
+  return filePath.split(path.sep).join("/");
+}
+
+function hookCommand(root: string, baseDir: string, scriptName: string): string {
+  return `${pythonCmd} "${toPosixPath(path.join(root, baseDir, "hooks"))}"/${scriptName}`;
+}
 
 beforeEach(async () => {
   tempDir = await mkdtemp(path.join(os.tmpdir(), "ec-platforms-"));
@@ -15,6 +27,26 @@ beforeEach(async () => {
 afterEach(async () => {
   delete process.env.EC_QODER_VARIANT;
   await rm(tempDir, { recursive: true, force: true });
+});
+
+describe("shellDoubleQuoteArg", () => {
+  it("uses POSIX escaping outside Windows", () => {
+    expect(shellDoubleQuoteArg('/tmp/repo $HOME `echo bad` "quote"/hooks', "darwin")).toBe(
+      '"/tmp/repo \\$HOME \\`echo bad\\` \\"quote\\"/hooks"',
+    );
+  });
+
+  it("does not apply POSIX expansion escapes on Windows", () => {
+    expect(shellDoubleQuoteArg("C:/repo $HOME `echo bad`/hooks", "win32")).toBe(
+      '"C:/repo $HOME `echo bad`/hooks"',
+    );
+  });
+
+  it("rejects invalid Windows hook paths with double quotes", () => {
+    expect(() => shellDoubleQuoteArg('C:/repo "bad"/hooks', "win32")).toThrow(
+      "Windows hook paths cannot contain double quotes.",
+    );
+  });
 });
 
 describe("configureCodex", () => {
@@ -43,7 +75,19 @@ describe("configureCodex", () => {
     ).toBe(false);
 
     const hooks = await readFile(path.join(tempDir, ".codex", "hooks.json"), "utf8");
-    expect(hooks).toContain(".codex/hooks/session-start.py");
+    expect(hooks).toContain(".codex/hooks");
+    expect(hooks).toContain("session-start.py");
+    expect(hooks).not.toContain(`${pythonCmd} .codex/hooks/`);
+    const hooksJson = JSON.parse(hooks) as {
+      hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
+    };
+    const commands = hooksJson.hooks.UserPromptSubmit.flatMap((group) =>
+      group.hooks.map((hook) => hook.command),
+    );
+    expect(commands).toEqual([
+      hookCommand(tempDir, ".codex", "session-start.py"),
+      hookCommand(tempDir, ".codex", "inject-workflow-state.py"),
+    ]);
 
     const agent = await readFile(path.join(tempDir, ".codex", "agents", "ec-implementer.toml"), "utf8");
     expect(agent).toContain('name = "ec-implementer"');
@@ -59,6 +103,58 @@ describe("configureCodex", () => {
     expect(main).not.toContain("tasks``");
     expect(main).not.toContain("}```");
   });
+
+  it("preserves repeated spaces inside absolute hook paths when writing the manifest", async () => {
+    const spacedDir = path.join(tempDir, "repo  with  spaces");
+    await mkdir(spacedDir, { recursive: true });
+
+    const artifacts = await configureCodex(spacedDir);
+    await writeInstallManifest(spacedDir, {
+      harnessVersion: "0.5.1",
+      agents: ["codex"],
+      artifacts,
+    });
+
+    const manifest = JSON.parse(
+      await readFile(path.join(spacedDir, ".easy-coding", "install-manifest.json"), "utf8"),
+    );
+    const hookPaths = manifest.hook_registrations.map(
+      (registration: { hook_path: string | null }) => registration.hook_path,
+    );
+
+    expect(hookPaths).toContain(".codex/hooks/session-start.py");
+    expect(hookPaths).toContain(".codex/hooks/inject-workflow-state.py");
+  });
+
+  it("shell-escapes absolute hook paths with special characters", async () => {
+    const specialDir = path.join(tempDir, 'repo $HOME `echo bad` "quote"');
+    await mkdir(specialDir, { recursive: true });
+
+    const artifacts = await configureCodex(specialDir);
+
+    const hooksJson = JSON.parse(await readFile(path.join(specialDir, ".codex", "hooks.json"), "utf8")) as {
+      hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
+    };
+    const command = hooksJson.hooks.UserPromptSubmit[0].hooks[0].command;
+
+    expect(command).toContain("\\$HOME");
+    expect(command).toContain("\\`echo bad\\`");
+    expect(command).toContain('\\"quote\\"');
+    execSync(command, { cwd: specialDir, input: "{}", encoding: "utf8" });
+
+    await writeInstallManifest(specialDir, {
+      harnessVersion: "0.5.1",
+      agents: ["codex"],
+      artifacts,
+    });
+    const manifest = JSON.parse(
+      await readFile(path.join(specialDir, ".easy-coding", "install-manifest.json"), "utf8"),
+    );
+    const hookPaths = manifest.hook_registrations.map(
+      (registration: { hook_path: string | null }) => registration.hook_path,
+    );
+    expect(hookPaths).toContain(".codex/hooks/session-start.py");
+  });
 });
 
 describe("configureQoder", () => {
@@ -73,8 +169,24 @@ describe("configureQoder", () => {
     expect(skill).not.toContain("{{");
 
     const settings = await readFile(path.join(tempDir, ".qoder", "settings.json"), "utf8");
-    expect(settings).toContain(".qoder/hooks/session-start.py");
+    expect(settings).toContain(".qoder/hooks");
+    expect(settings).toContain("session-start.py");
+    expect(settings).not.toContain(`${pythonCmd} .qoder/hooks/`);
     expect(settings).not.toContain("{{");
+    const settingsJson = JSON.parse(settings) as {
+      hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
+    };
+    const commands = [
+      ...settingsJson.hooks.UserPromptSubmit.flatMap((group) =>
+        group.hooks.map((hook) => hook.command),
+      ),
+      ...settingsJson.hooks.PreToolUse.flatMap((group) => group.hooks.map((hook) => hook.command)),
+    ];
+    expect(commands).toEqual([
+      hookCommand(tempDir, ".qoder", "session-start.py"),
+      hookCommand(tempDir, ".qoder", "inject-workflow-state.py"),
+      hookCommand(tempDir, ".qoder", "inject-subagent-context.py"),
+    ]);
     expect(await pathExists(path.join(tempDir, ".qoder", "hooks", "easy_coding_status.py"))).toBe(
       true,
     );
@@ -91,7 +203,23 @@ describe("configureQoder", () => {
     await configureQoder(tempDir);
 
     const settings = await readFile(path.join(tempDir, ".qodercn", "settings.json"), "utf8");
-    expect(settings).toContain(".qodercn/hooks/session-start.py");
+    expect(settings).toContain(".qodercn/hooks");
+    expect(settings).toContain("session-start.py");
+    expect(settings).not.toContain(`${pythonCmd} .qodercn/hooks/`);
+    const settingsJson = JSON.parse(settings) as {
+      hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
+    };
+    const commands = [
+      ...settingsJson.hooks.UserPromptSubmit.flatMap((group) =>
+        group.hooks.map((hook) => hook.command),
+      ),
+      ...settingsJson.hooks.PreToolUse.flatMap((group) => group.hooks.map((hook) => hook.command)),
+    ];
+    expect(commands).toEqual([
+      hookCommand(tempDir, ".qodercn", "session-start.py"),
+      hookCommand(tempDir, ".qodercn", "inject-workflow-state.py"),
+      hookCommand(tempDir, ".qodercn", "inject-subagent-context.py"),
+    ]);
     expect(await pathExists(path.join(tempDir, ".qodercn", "hooks", "easy_coding_status.py"))).toBe(
       true,
     );

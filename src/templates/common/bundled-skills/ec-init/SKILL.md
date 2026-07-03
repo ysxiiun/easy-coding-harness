@@ -65,6 +65,13 @@ initialization standard. Check each item:
   and non-empty?
 - **Project profile**: `project.yaml` exists with `mode` and `test` fields (ec-init owns it;
   `config.yaml` is CLI-owned — not ec-init's concern)?
+- **Platform hook config freshness**: for each installed platform in `.easy-coding/config.yaml`,
+  read the platform hook config and verify managed Easy Coding hook commands use quoted absolute
+  paths to this project's platform hook scripts. If any managed hook command is still relative
+  (for example `python3 .claude/hooks/session-start.py`) or points outside this project, report
+  the exact config file and tell the user to run `easy-coding upgrade`; the upgrade command also
+  refreshes stale hook config when the project is already on the current harness version. Do not
+  edit the config yourself.
 
 **If all checks pass:** show "initialization is up to date" with a brief summary and exit.
 
@@ -170,6 +177,9 @@ agent must be able to see what was generated and on what evidence.
 
 - Never modify business source code, dependencies, or git state.
 - Never create workflow tasks or touch session files.
+- Never modify platform hook configuration (`.claude/settings.json`, `.codex/hooks.json`,
+  `.qoder/settings.json`, `.qodercn/settings.json`). These files are CLI-managed; if they look
+  stale or broken, tell the user to run `easy-coding upgrade`.
 - For COMPLETE projects: the compliance scan may propose supplementary initialization, but
   never overwrite existing knowledge files without explicit user confirmation. Missing files
   can be created; existing files are only updated via migration procedures (e.g., memory

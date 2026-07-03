@@ -145,7 +145,7 @@ export async function writeInstallManifest(
       const registration = {
         config_path: configPath,
         command: artifact.command,
-        hook_path: artifact.hookPath,
+        hook_path: artifact.hookPath ? normalizeHookPath(cwd, artifact.hookPath) : null,
         platform: artifact.platform,
       };
       hookRegistrations.set(`${configPath}\0${normalizeCommand(artifact.command)}`, registration);
@@ -289,9 +289,91 @@ function collectHookCommands(hooks: unknown): string[] {
   return commands;
 }
 
-function extractHookPathFromCommand(command: string): string | null {
-  const match = normalizeCommand(command).match(/(?:^|\s)(\S+\/hooks\/\S+\.py)(?:\s|$)/);
+export function extractHookPathFromCommand(command: string): string | null {
+  return extractQuotedHookPath(command) ?? extractUnquotedHookPath(command);
+}
+
+function extractQuotedHookPath(command: string): string | null {
+  for (let index = 0; index < command.length; index += 1) {
+    const quote = command[index];
+    if (quote !== '"' && quote !== "'") {
+      continue;
+    }
+    if (index > 0 && !/\s/.test(command[index - 1])) {
+      continue;
+    }
+
+    const parsed = parseQuotedToken(command, index, quote);
+    if (!parsed) {
+      continue;
+    }
+
+    const suffix = readPathSuffix(command, parsed.endIndex);
+    for (const candidate of [parsed.value + suffix, parsed.value]) {
+      if (isHookPythonPath(candidate)) {
+        return candidate;
+      }
+    }
+    index = parsed.endIndex;
+  }
+  return null;
+}
+
+function parseQuotedToken(
+  command: string,
+  startIndex: number,
+  quote: '"' | "'",
+): { value: string; endIndex: number } | null {
+  let value = "";
+  for (let index = startIndex + 1; index < command.length; index += 1) {
+    const char = command[index];
+    if (quote === '"' && char === "\\" && index + 1 < command.length) {
+      value += command[index + 1];
+      index += 1;
+      continue;
+    }
+    if (char === quote) {
+      return { value, endIndex: index + 1 };
+    }
+    value += char;
+  }
+  return null;
+}
+
+function readPathSuffix(command: string, startIndex: number): string {
+  if (command[startIndex] !== "/") {
+    return "";
+  }
+  let suffix = "";
+  for (let index = startIndex; index < command.length; index += 1) {
+    const char = command[index];
+    if (/\s/.test(char)) {
+      break;
+    }
+    suffix += char;
+  }
+  return suffix;
+}
+
+function extractUnquotedHookPath(command: string): string | null {
+  const match = command.match(/(?:^|\s)(\S+\/hooks\/\S+\.py)(?:\s|$)/);
   return match?.[1] ?? null;
+}
+
+function isHookPythonPath(candidate: string): boolean {
+  return /\/hooks\/\S+\.py$/.test(candidate);
+}
+
+function normalizeHookPath(cwd: string, hookPath: string): string {
+  const normalized = hookPath.replace(/\\/g, "/").replace(/^\.\//, "");
+  if (
+    path.isAbsolute(hookPath) ||
+    path.posix.isAbsolute(normalized) ||
+    path.win32.isAbsolute(hookPath)
+  ) {
+    return toProjectPath(cwd, hookPath);
+  }
+  return normalized;
 }
 
 function byPath<T extends { path: string }>(a: T, b: T): number {

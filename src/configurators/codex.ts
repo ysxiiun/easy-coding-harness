@@ -11,6 +11,7 @@ import {
   copyPlatformTemplates,
   resolveBundledSkills,
   resolveSkills,
+  withInstallPaths,
   writeMainConstraint,
   writeSharedHooks,
   writeSkills,
@@ -22,7 +23,7 @@ export async function configureCodex(
 ): Promise<InstallArtifact[]> {
   const platform = "codex";
   const meta = PLATFORM_META[platform];
-  const ctx = meta.templateContext;
+  const ctx = withInstallPaths(cwd, meta.templateContext);
   const hookConfigPath = path.join(cwd, meta.hookConfigFile);
   const artifacts: InstallArtifact[] = [];
 

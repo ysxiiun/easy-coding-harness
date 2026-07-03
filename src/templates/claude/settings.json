@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "{{PYTHON_CMD}} .claude/hooks/session-start.py",
+            "command": "{{PYTHON_CMD}} {{platform_hooks_dir_shell}}/session-start.py",
             "timeout": 30000
           }
         ]
@@ -18,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "{{PYTHON_CMD}} .claude/hooks/session-start.py",
+            "command": "{{PYTHON_CMD}} {{platform_hooks_dir_shell}}/session-start.py",
             "timeout": 15000
           }
         ]
@@ -28,7 +28,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "{{PYTHON_CMD}} .claude/hooks/inject-workflow-state.py",
+            "command": "{{PYTHON_CMD}} {{platform_hooks_dir_shell}}/inject-workflow-state.py",
             "timeout": 15000
           }
         ]
@@ -40,7 +40,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "{{PYTHON_CMD}} .claude/hooks/inject-subagent-context.py",
+            "command": "{{PYTHON_CMD}} {{platform_hooks_dir_shell}}/inject-subagent-context.py",
             "timeout": 15000
           }
         ]

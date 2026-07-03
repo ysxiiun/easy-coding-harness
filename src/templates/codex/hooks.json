@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "{{PYTHON_CMD}} .codex/hooks/session-start.py",
+            "command": "{{PYTHON_CMD}} {{platform_hooks_dir_shell}}/session-start.py",
             "timeout": 10
           }
         ]
@@ -14,7 +14,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "{{PYTHON_CMD}} .codex/hooks/inject-workflow-state.py",
+            "command": "{{PYTHON_CMD}} {{platform_hooks_dir_shell}}/inject-workflow-state.py",
             "timeout": 5
           }
         ]

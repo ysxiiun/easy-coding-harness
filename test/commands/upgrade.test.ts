@@ -1,3 +1,4 @@
+import { execSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -8,6 +9,79 @@ import { VERSION } from "../../src/constants/version.js";
 
 let tempDir: string;
 let originalCwd: string;
+const pythonCmd = process.platform === "win32" ? "python" : "python3";
+
+function expectAbsoluteHookCommand(command: string, platformDir: string, scriptName: string): void {
+  const match = command.match(new RegExp(`^${pythonCmd} "(.+)"/${scriptName}$`));
+  expect(match?.[1]).toBeTruthy();
+  expect(match?.[1]).toContain(`/${platformDir}/hooks`);
+  expect(path.isAbsolute(match?.[1] ?? "")).toBe(true);
+}
+
+async function setHarnessVersion(version: string): Promise<void> {
+  const configPath = path.join(tempDir, ".easy-coding", "config.yaml");
+  await writeFile(
+    configPath,
+    (await readFile(configPath, "utf8")).replace(/harness_version: .+/, `harness_version: ${version}`),
+    "utf8",
+  );
+}
+
+async function markProjectInitComplete(): Promise<void> {
+  const taskPath = path.join(tempDir, ".easy-coding", "tasks", "project-init", "task.json");
+  const task = JSON.parse(await readFile(taskPath, "utf8"));
+  task.status = "COMPLETE";
+  await writeFile(taskPath, `${JSON.stringify(task, null, 2)}\n`, "utf8");
+}
+
+async function rewriteClaudeHooksToLegacyRelativeCommands(): Promise<void> {
+  const settingsPath = path.join(tempDir, ".claude", "settings.json");
+  const settings = JSON.parse(await readFile(settingsPath, "utf8")) as {
+    hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
+  };
+  for (const groups of Object.values(settings.hooks)) {
+    for (const group of groups) {
+      for (const hook of group.hooks) {
+        const scriptName = path.basename(hook.command.replace(/["']/g, ""));
+        hook.command = `${pythonCmd} .claude/hooks/${scriptName}`;
+      }
+    }
+  }
+  await writeFile(settingsPath, `${JSON.stringify(settings, null, 2)}\n`, "utf8");
+}
+
+async function appendLegacyClaudeSessionStartToUserPromptSubmit(): Promise<void> {
+  const settingsPath = path.join(tempDir, ".claude", "settings.json");
+  const settings = JSON.parse(await readFile(settingsPath, "utf8")) as {
+    hooks: Record<string, Array<{ hooks: Array<{ command: string; timeout?: number; type?: string }> }>>;
+  };
+  settings.hooks.UserPromptSubmit[0].hooks.push({
+    type: "command",
+    command: `${pythonCmd} .claude/hooks/session-start.py`,
+    timeout: 15000,
+  });
+  await writeFile(settingsPath, `${JSON.stringify(settings, null, 2)}\n`, "utf8");
+}
+
+async function removeClaudeSessionStartEvent(): Promise<void> {
+  const settingsPath = path.join(tempDir, ".claude", "settings.json");
+  const settings = JSON.parse(await readFile(settingsPath, "utf8")) as {
+    hooks: Record<string, unknown>;
+  };
+  delete settings.hooks.SessionStart;
+  await writeFile(settingsPath, `${JSON.stringify(settings, null, 2)}\n`, "utf8");
+}
+
+async function moveClaudeSessionStartEventHookToUserPromptSubmit(): Promise<void> {
+  const settingsPath = path.join(tempDir, ".claude", "settings.json");
+  const settings = JSON.parse(await readFile(settingsPath, "utf8")) as {
+    hooks: Record<string, Array<{ hooks: Array<{ command: string; timeout?: number; type?: string }> }>>;
+  };
+  const sessionStartHook = settings.hooks.SessionStart[0].hooks[0];
+  settings.hooks.UserPromptSubmit[0].hooks.push({ ...sessionStartHook });
+  delete settings.hooks.SessionStart;
+  await writeFile(settingsPath, `${JSON.stringify(settings, null, 2)}\n`, "utf8");
+}
 
 beforeEach(async () => {
   originalCwd = process.cwd();
@@ -23,6 +97,133 @@ afterEach(async () => {
 });
 
 describe("upgrade command", () => {
+  it("refreshes stale hook commands even when the harness version is current", async () => {
+    await init({ agent: "claude-code", yes: true });
+    await markProjectInitComplete();
+    await rewriteClaudeHooksToLegacyRelativeCommands();
+
+    await upgrade({ yes: true });
+
+    const settings = JSON.parse(
+      await readFile(path.join(tempDir, ".claude", "settings.json"), "utf8"),
+    ) as {
+      hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
+    };
+    const command = settings.hooks.SessionStart[0].hooks[0].command;
+    expectAbsoluteHookCommand(command, ".claude", "session-start.py");
+    expect(JSON.stringify(settings)).not.toContain(`${pythonCmd} .claude/hooks/`);
+  });
+
+  it("refreshes stale managed hook commands left beside expected commands", async () => {
+    await init({ agent: "claude-code", yes: true });
+    await markProjectInitComplete();
+    await appendLegacyClaudeSessionStartToUserPromptSubmit();
+
+    await upgrade({ yes: true });
+
+    const settings = JSON.parse(
+      await readFile(path.join(tempDir, ".claude", "settings.json"), "utf8"),
+    ) as {
+      hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
+    };
+    expectAbsoluteHookCommand(settings.hooks.SessionStart[0].hooks[0].command, ".claude", "session-start.py");
+    expect(JSON.stringify(settings)).not.toContain(`${pythonCmd} .claude/hooks/`);
+  });
+
+  it("refreshes when one of Claude's duplicate session-start registrations is missing", async () => {
+    await init({ agent: "claude-code", yes: true });
+    await markProjectInitComplete();
+    await removeClaudeSessionStartEvent();
+
+    await upgrade({ yes: true });
+
+    const settings = JSON.parse(
+      await readFile(path.join(tempDir, ".claude", "settings.json"), "utf8"),
+    ) as {
+      hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
+    };
+    const commands = [
+      ...settings.hooks.SessionStart.flatMap((group) => group.hooks.map((hook) => hook.command)),
+      ...settings.hooks.UserPromptSubmit.flatMap((group) =>
+        group.hooks.map((hook) => hook.command),
+      ),
+    ];
+    const sessionStartCount = commands.filter((command) =>
+      command.endsWith("/session-start.py"),
+    ).length;
+
+    expectAbsoluteHookCommand(settings.hooks.SessionStart[0].hooks[0].command, ".claude", "session-start.py");
+    expect(sessionStartCount).toBe(2);
+  });
+
+  it("refreshes when Claude session-start registrations are present under the wrong event", async () => {
+    await init({ agent: "claude-code", yes: true });
+    await markProjectInitComplete();
+    await moveClaudeSessionStartEventHookToUserPromptSubmit();
+
+    await upgrade({ yes: true });
+
+    const settings = JSON.parse(
+      await readFile(path.join(tempDir, ".claude", "settings.json"), "utf8"),
+    ) as {
+      hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
+    };
+    const sessionStartCommands = settings.hooks.SessionStart.flatMap((group) =>
+      group.hooks.map((hook) => hook.command),
+    );
+    const userPromptCommands = settings.hooks.UserPromptSubmit.flatMap((group) =>
+      group.hooks.map((hook) => hook.command),
+    );
+
+    expectAbsoluteHookCommand(sessionStartCommands[0], ".claude", "session-start.py");
+    expect(userPromptCommands.filter((command) => command.endsWith("/session-start.py"))).toHaveLength(1);
+  });
+
+  it("refreshes 0.5.0 relative Claude hook commands and keeps ec-init adaptation pending", async () => {
+    await init({ agent: "claude-code", yes: true });
+    await setHarnessVersion("0.5.0");
+    await markProjectInitComplete();
+    await rewriteClaudeHooksToLegacyRelativeCommands();
+
+    await upgrade({ yes: true });
+
+    const settings = JSON.parse(
+      await readFile(path.join(tempDir, ".claude", "settings.json"), "utf8"),
+    ) as {
+      hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
+    };
+    const command = settings.hooks.SessionStart[0].hooks[0].command;
+    expectAbsoluteHookCommand(command, ".claude", "session-start.py");
+    expect(JSON.stringify(settings)).not.toContain(`${pythonCmd} .claude/hooks/`);
+
+    const nested = path.join(tempDir, ".easy-coding", "memory", "short");
+    const stdout = execSync(command, {
+      cwd: nested,
+      input: "{}",
+      encoding: "utf8",
+    });
+    expect(stdout).toContain("> **Easy Coding** · Waiting init · Upgrade to v0.5.1");
+    expect(stdout).toContain("[easy-coding:upgrade-init-pending:0.5.1]");
+
+    const task = JSON.parse(
+      await readFile(path.join(tempDir, ".easy-coding", "tasks", "project-init", "task.json"), "utf8"),
+    );
+    expect(task.pending_init_since).toBe(VERSION);
+  });
+
+  it("keeps the ec-init adaptation marker for older upgrades", async () => {
+    await init({ agent: "claude-code", yes: true });
+    await setHarnessVersion("0.4.0");
+    await markProjectInitComplete();
+
+    await upgrade({ yes: true });
+
+    const task = JSON.parse(
+      await readFile(path.join(tempDir, ".easy-coding", "tasks", "project-init", "task.json"), "utf8"),
+    );
+    expect(task.pending_init_since).toBe(VERSION);
+  });
+
   it("refreshes stale supermodule parent topology even when all targets are current", async () => {
     await writeFile(
       path.join(tempDir, ".gitmodules"),

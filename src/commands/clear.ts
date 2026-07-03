@@ -274,11 +274,14 @@ async function buildManifestClearPlan(
     if (!agentSet.has(registration.platform)) {
       continue;
     }
+    const managedHookPaths = registration.hook_path
+      ? managedHookPathsForRegistration(cwd, registration.hook_path)
+      : [];
     addHookConfigPrune(
       plan.pruneHookConfigs,
       plan.pruneHookCommands,
       manifestPath(cwd, registration.config_path),
-      registration.hook_path ? [registration.hook_path] : [],
+      managedHookPaths,
       [registration.command],
     );
   }
@@ -345,7 +348,7 @@ async function addTemplateClearEntries(
       plan.pruneHookConfigs,
       plan.pruneHookCommands,
       path.join(cwd, meta.hookConfigFile),
-      hookFileNames.map((name) => `${meta.templateContext.platform_config_dir}/hooks/${name}`),
+      managedHookPathsForTemplate(cwd, meta, hookFileNames),
       [],
     );
     plan.constraints.add(path.join(cwd, meta.mainConstraint));
@@ -417,6 +420,60 @@ function addHookConfigPrune(
     existingCommands.add(managedHookCommand);
   }
   pruneHookCommands.set(filePath, existingCommands);
+}
+
+function managedHookPathsForRegistration(cwd: string, hookPath: string): string[] {
+  const paths = [hookPath];
+  try {
+    paths.push(...managedHookPathTokens(manifestPath(cwd, hookPath)));
+  } catch {
+    if (path.isAbsolute(hookPath)) {
+      paths.push(...managedHookPathTokens(hookPath));
+    }
+  }
+  return paths;
+}
+
+function managedHookPathsForTemplate(
+  cwd: string,
+  meta: PlatformMeta,
+  hookFileNames: string[],
+): string[] {
+  const relativePaths = hookFileNames.map(
+    (name) => `${meta.templateContext.platform_config_dir}/hooks/${name}`,
+  );
+  const absolutePaths = hookFileNames.flatMap((name) =>
+    managedHookPathTokens(path.join(cwd, meta.hooksDir, name)),
+  );
+  return [...relativePaths, ...absolutePaths];
+}
+
+function managedHookPathTokens(filePath: string): string[] {
+  const tokens = new Set<string>();
+  for (const equivalentPath of equivalentAbsolutePaths(filePath)) {
+    const normalized = equivalentPath.replace(/\\/g, "/");
+    const dir = path.posix.dirname(normalized);
+    const basename = path.posix.basename(normalized);
+    tokens.add(normalized);
+    tokens.add(shellDoubleQuoteArg(normalized));
+    tokens.add(`${shellDoubleQuoteArg(dir)}/${basename}`);
+  }
+  return [...tokens];
+}
+
+function equivalentAbsolutePaths(filePath: string): string[] {
+  const normalized = path.resolve(filePath).replace(/\\/g, "/");
+  const equivalents = [normalized];
+  if (normalized.startsWith("/private/var/")) {
+    equivalents.push(normalized.replace(/^\/private\/var\//, "/var/"));
+  } else if (normalized.startsWith("/var/")) {
+    equivalents.push(normalized.replace(/^\/var\//, "/private/var/"));
+  }
+  return equivalents;
+}
+
+function shellDoubleQuoteArg(value: string): string {
+  return `"${value.replace(/(["\\$`])/g, "\\$1")}"`;
 }
 
 function createClearPlan(): MutableClearPlan {
@@ -642,7 +699,7 @@ function isManagedHook(
   if (normalizedManagedCommands.includes(normalizeCommand(command))) {
     return true;
   }
-  const normalizedCommand = command.replace(/\\/g, "/");
+  const normalizedCommand = command;
   return managedHookPaths.some((hookPath) =>
     commandContainsPathToken(normalizedCommand, hookPath.replace(/\\/g, "/")),
   );

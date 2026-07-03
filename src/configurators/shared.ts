@@ -56,6 +56,46 @@ export function resolvePlaceholders(
   return resolved;
 }
 
+export function withInstallPaths(cwd: string, ctx: TemplateContext): TemplateContext {
+  const hooksDir = toPosixPath(path.resolve(cwd, ctx.platform_config_dir, "hooks"));
+  return {
+    ...ctx,
+    platform_hooks_dir_abs: hooksDir,
+    platform_hooks_dir_shell: jsonStringContent(shellDoubleQuoteArg(hooksDir)),
+  };
+}
+
+export function renderHookCommand(
+  cwd: string,
+  ctx: TemplateContext,
+  scriptName: string,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  const hooksDir = toPosixPath(path.resolve(cwd, ctx.platform_config_dir, "hooks"));
+  return `${ctx.python_cmd} ${shellDoubleQuoteArg(hooksDir, platform)}/${scriptName}`;
+}
+
+export function shellDoubleQuoteArg(
+  value: string,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  if (platform === "win32") {
+    if (value.includes('"')) {
+      throw new Error("Windows hook paths cannot contain double quotes.");
+    }
+    return `"${value}"`;
+  }
+  return `"${value.replace(/(["\\$`])/g, "\\$1")}"`;
+}
+
+function toPosixPath(filePath: string): string {
+  return filePath.split(path.sep).join("/");
+}
+
+function jsonStringContent(value: string): string {
+  return JSON.stringify(value).slice(1, -1);
+}
+
 export async function resolveSkills(ctx: TemplateContext): Promise<SkillTemplate[]> {
   const skillsRoot = getTemplatePath("common", "skills");
   const entries = await readdir(skillsRoot);

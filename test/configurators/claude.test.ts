@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -9,6 +9,15 @@ import { writeRuntimeScaffold } from "../../src/utils/runtime-scaffold.js";
 import { writeProjectInitTask } from "../../src/utils/task-json.js";
 
 let tempDir: string;
+const pythonCmd = process.platform === "win32" ? "python" : "python3";
+
+function toPosixPath(filePath: string): string {
+  return filePath.split(path.sep).join("/");
+}
+
+function hookCommand(root: string, scriptName: string): string {
+  return `${pythonCmd} "${toPosixPath(path.join(root, ".claude", "hooks"))}"/${scriptName}`;
+}
 
 beforeEach(async () => {
   tempDir = await mkdtemp(path.join(os.tmpdir(), "ec-claude-"));
@@ -46,23 +55,23 @@ describe("configureClaude", () => {
     expect(taskManagementSkill).not.toContain("{{");
 
     const settings = await readFile(path.join(tempDir, ".claude", "settings.json"), "utf8");
-    expect(settings).toContain(".claude/hooks/session-start.py");
+    expect(settings).toContain(".claude/hooks");
+    expect(settings).toContain("session-start.py");
     const settingsJson = JSON.parse(settings) as {
       hooks: Record<string, Array<{ hooks: Array<{ command: string; timeout: number }> }>>;
     };
     const sessionStartCommands = settingsJson.hooks.SessionStart.flatMap((group) =>
       group.hooks.map((hook) => hook.command),
     );
-    expect(sessionStartCommands).toEqual([
-      expect.stringContaining(".claude/hooks/session-start.py"),
-    ]);
+    expect(sessionStartCommands).toEqual([hookCommand(tempDir, "session-start.py")]);
     const userPromptCommands = settingsJson.hooks.UserPromptSubmit.map((group) =>
       group.hooks.map((hook) => hook.command),
     );
     expect(userPromptCommands).toEqual([
-      [expect.stringContaining(".claude/hooks/session-start.py")],
-      [expect.stringContaining(".claude/hooks/inject-workflow-state.py")],
+      [hookCommand(tempDir, "session-start.py")],
+      [hookCommand(tempDir, "inject-workflow-state.py")],
     ]);
+    expect(settings).not.toContain(`${pythonCmd} .claude/hooks/`);
     const userPromptTimeouts = settingsJson.hooks.UserPromptSubmit.map((group) =>
       group.hooks.map((hook) => hook.timeout),
     );
@@ -159,6 +168,28 @@ describe("configureClaude", () => {
     expect(stdout).toContain("[easy-coding:init-required]");
     expect(stdout).not.toContain("/ec-init");
     expect(stdout).not.toContain("$ec-init");
+  });
+
+  it("configured hook commands run from Easy Coding memory subdirectories", async () => {
+    await configureClaude(tempDir);
+    await writeRuntimeScaffold(tempDir, ["claude-code"]);
+
+    const nested = path.join(tempDir, ".easy-coding", "memory", "short");
+    await mkdir(nested, { recursive: true });
+    const settings = JSON.parse(await readFile(path.join(tempDir, ".claude", "settings.json"), "utf8")) as {
+      hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
+    };
+    const command = settings.hooks.SessionStart[0].hooks[0].command;
+    const stdout = execSync(command, {
+      cwd: nested,
+      input: "{}",
+      encoding: "utf8",
+    });
+
+    expect(stdout).toContain(
+      "> **Easy Coding** · Ready · Use `ec-workflow` to start or resume a task, `ec-brainstorming` to brainstorm, or `ec-task-management` to view tasks",
+    );
+    expect(stdout).toContain("[workflow-state:idle]");
   });
 
   it("generated hooks show Ready when no task is loaded", async () => {

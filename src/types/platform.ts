@@ -8,6 +8,8 @@ export interface TemplateContext {
   main_constraint_file: "CLAUDE.md" | "AGENTS.md";
   python_cmd: string;
   platform_config_dir: string;
+  platform_hooks_dir_abs?: string;
+  platform_hooks_dir_shell?: string;
   supermodule_boundary: string;
 }
 
