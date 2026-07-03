@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import YAML, { isScalar, isSeq, parseDocument } from "yaml";
 import type { AgentPlatform } from "../types/platform.js";
@@ -9,6 +10,7 @@ export interface EasyCodingConfig {
   harness_version: string;
   agents: AgentPlatform[];
   project: {
+    id: string;
     name: string;
   };
   memory: {
@@ -32,12 +34,14 @@ export function createDefaultConfig(params: {
   harnessVersion: string;
   agents: AgentPlatform[];
   supermodule?: SupermoduleConfig;
+  projectId?: string;
 }): EasyCodingConfig {
   const config: EasyCodingConfig = {
     version: 1,
     harness_version: params.harnessVersion,
     agents: params.agents,
     project: {
+      id: params.projectId ?? createProjectId(),
       name: params.projectName,
     },
     memory: {
@@ -70,6 +74,17 @@ export async function writeConfigYaml(filePath: string, config: EasyCodingConfig
 export async function readConfigYaml(filePath: string): Promise<EasyCodingConfig> {
   const content = await readFile(filePath, "utf8");
   return YAML.parse(content) as EasyCodingConfig;
+}
+
+export async function readProjectIdIfExists(filePath: string): Promise<string | null> {
+  try {
+    const config = await readConfigYaml(filePath);
+    return typeof config.project?.id === "string" && config.project.id.trim()
+      ? config.project.id
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 export async function updateConfigYaml(
@@ -108,6 +123,20 @@ export async function updateHarnessVersion(
   });
 }
 
+export async function ensureProjectId(filePath: string): Promise<string> {
+  let projectId = "";
+  await updateConfigYaml(filePath, (config) => {
+    if (!config.project || typeof config.project !== "object") {
+      config.project = { id: createProjectId(), name: "" };
+    }
+    if (typeof config.project.id !== "string" || !config.project.id.trim()) {
+      config.project.id = createProjectId();
+    }
+    projectId = config.project.id;
+  });
+  return projectId;
+}
+
 export async function updateSupermoduleConfig(
   filePath: string,
   supermodule: SupermoduleConfig,
@@ -124,4 +153,8 @@ export function yamlHasAgent(documentContent: string, agent: AgentPlatform): boo
     return false;
   }
   return agents.items.some((item) => isScalar(item) && String(item.value) === agent);
+}
+
+export function createProjectId(): string {
+  return `ec-${randomUUID()}`;
 }

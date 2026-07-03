@@ -5,19 +5,26 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { configureCodex } from "../../src/configurators/codex.js";
 import { configureQoder } from "../../src/configurators/qoder.js";
-import { shellDoubleQuoteArg } from "../../src/configurators/shared.js";
+import { renderHookCommand, shellDoubleQuoteArg } from "../../src/configurators/shared.js";
+import { PLATFORM_META, type TemplateContext } from "../../src/types/platform.js";
 import { pathExists } from "../../src/utils/file-writer.js";
 import { writeInstallManifest } from "../../src/utils/install-manifest.js";
 
 let tempDir: string;
 const pythonCmd = process.platform === "win32" ? "python" : "python3";
 
-function toPosixPath(filePath: string): string {
-  return filePath.split(path.sep).join("/");
+function hookCommand(root: string, baseDir: string, scriptName: string): string {
+  return renderHookCommand(root, platformContext(baseDir), scriptName);
 }
 
-function hookCommand(root: string, baseDir: string, scriptName: string): string {
-  return `${pythonCmd} "${toPosixPath(path.join(root, baseDir, "hooks"))}"/${scriptName}`;
+function platformContext(baseDir: string): TemplateContext {
+  if (baseDir === ".codex") {
+    return PLATFORM_META.codex.templateContext;
+  }
+  return {
+    ...PLATFORM_META.qoder.templateContext,
+    platform_config_dir: baseDir,
+  };
 }
 
 beforeEach(async () => {
@@ -77,6 +84,7 @@ describe("configureCodex", () => {
     const hooks = await readFile(path.join(tempDir, ".codex", "hooks.json"), "utf8");
     expect(hooks).toContain(".codex/hooks");
     expect(hooks).toContain("session-start.py");
+    expect(hooks).not.toContain(tempDir);
     expect(hooks).not.toContain(`${pythonCmd} .codex/hooks/`);
     const hooksJson = JSON.parse(hooks) as {
       hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
@@ -104,7 +112,7 @@ describe("configureCodex", () => {
     expect(main).not.toContain("}```");
   });
 
-  it("preserves repeated spaces inside absolute hook paths when writing the manifest", async () => {
+  it("preserves relative hook paths when writing the manifest from launcher commands", async () => {
     const spacedDir = path.join(tempDir, "repo  with  spaces");
     await mkdir(spacedDir, { recursive: true });
 
@@ -126,7 +134,7 @@ describe("configureCodex", () => {
     expect(hookPaths).toContain(".codex/hooks/inject-workflow-state.py");
   });
 
-  it("shell-escapes absolute hook paths with special characters", async () => {
+  it("runs portable launcher hook commands from paths with special characters", async () => {
     const specialDir = path.join(tempDir, 'repo $HOME `echo bad` "quote"');
     await mkdir(specialDir, { recursive: true });
 
@@ -137,9 +145,8 @@ describe("configureCodex", () => {
     };
     const command = hooksJson.hooks.UserPromptSubmit[0].hooks[0].command;
 
-    expect(command).toContain("\\$HOME");
-    expect(command).toContain("\\`echo bad\\`");
-    expect(command).toContain('\\"quote\\"');
+    expect(command).not.toContain(specialDir);
+    expect(command).toContain(".codex/hooks/session-start.py");
     execSync(command, { cwd: specialDir, input: "{}", encoding: "utf8" });
 
     await writeInstallManifest(specialDir, {
@@ -171,6 +178,7 @@ describe("configureQoder", () => {
     const settings = await readFile(path.join(tempDir, ".qoder", "settings.json"), "utf8");
     expect(settings).toContain(".qoder/hooks");
     expect(settings).toContain("session-start.py");
+    expect(settings).not.toContain(tempDir);
     expect(settings).not.toContain(`${pythonCmd} .qoder/hooks/`);
     expect(settings).not.toContain("{{");
     const settingsJson = JSON.parse(settings) as {
@@ -205,6 +213,7 @@ describe("configureQoder", () => {
     const settings = await readFile(path.join(tempDir, ".qodercn", "settings.json"), "utf8");
     expect(settings).toContain(".qodercn/hooks");
     expect(settings).toContain("session-start.py");
+    expect(settings).not.toContain(tempDir);
     expect(settings).not.toContain(`${pythonCmd} .qodercn/hooks/`);
     const settingsJson = JSON.parse(settings) as {
       hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;

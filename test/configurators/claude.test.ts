@@ -4,6 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { configureClaude } from "../../src/configurators/claude.js";
+import { renderHookCommand } from "../../src/configurators/shared.js";
+import { PLATFORM_META } from "../../src/types/platform.js";
 import { pathExists } from "../../src/utils/file-writer.js";
 import { writeRuntimeScaffold } from "../../src/utils/runtime-scaffold.js";
 import { writeProjectInitTask } from "../../src/utils/task-json.js";
@@ -11,12 +13,8 @@ import { writeProjectInitTask } from "../../src/utils/task-json.js";
 let tempDir: string;
 const pythonCmd = process.platform === "win32" ? "python" : "python3";
 
-function toPosixPath(filePath: string): string {
-  return filePath.split(path.sep).join("/");
-}
-
 function hookCommand(root: string, scriptName: string): string {
-  return `${pythonCmd} "${toPosixPath(path.join(root, ".claude", "hooks"))}"/${scriptName}`;
+  return renderHookCommand(root, PLATFORM_META["claude-code"].templateContext, scriptName);
 }
 
 beforeEach(async () => {
@@ -57,6 +55,7 @@ describe("configureClaude", () => {
     const settings = await readFile(path.join(tempDir, ".claude", "settings.json"), "utf8");
     expect(settings).toContain(".claude/hooks");
     expect(settings).toContain("session-start.py");
+    expect(settings).not.toContain(tempDir);
     const settingsJson = JSON.parse(settings) as {
       hooks: Record<string, Array<{ hooks: Array<{ command: string; timeout: number }> }>>;
     };

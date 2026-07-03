@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   addAgentsToConfig,
   createDefaultConfig,
+  ensureProjectId,
   updateHarnessVersion,
   updateSupermoduleConfig,
   yamlHasAgent,
@@ -69,11 +70,23 @@ describe("config-yaml", () => {
       agents: ["claude-code"],
       supermodule: { role: "super-parent", submodules: ["packages/a"] },
     });
+    expect(config.project.id).toMatch(/^ec-[0-9a-f-]+$/);
     expect(config.supermodule).toEqual({ role: "super-parent", submodules: ["packages/a"] });
 
     await updateSupermoduleConfig(configPath, { role: "submodule-child", parent: "../.." });
     const content = await readFile(configPath, "utf8");
     expect(content).toContain("role: submodule-child");
     expect(content).toContain("parent: ../..");
+  });
+
+  it("adds a stable project id to existing configs", async () => {
+    const projectId = await ensureProjectId(configPath);
+    const secondProjectId = await ensureProjectId(configPath);
+    const content = await readFile(configPath, "utf8");
+
+    expect(projectId).toMatch(/^ec-[0-9a-f-]+$/);
+    expect(secondProjectId).toBe(projectId);
+    expect(content).toContain(`id: ${projectId}`);
+    expect(content).toContain("name: demo");
   });
 });

@@ -1,9 +1,15 @@
 import { readdir, stat } from "node:fs/promises";
 import path from "node:path";
-import { GENERATED_REGION_END, GENERATED_REGION_START } from "../constants/paths.js";
+import {
+  CONFIG_FILE,
+  EASY_CODING_DIR,
+  GENERATED_REGION_END,
+  GENERATED_REGION_START,
+} from "../constants/paths.js";
 import type { AgentPlatform, TemplateContext } from "../types/platform.js";
 import { PLATFORM_META } from "../types/platform.js";
 import type { SupermoduleBoundary } from "../types/supermodule.js";
+import { readProjectIdIfExists } from "../utils/config-yaml.js";
 import {
   ensureDir,
   isDirectory,
@@ -56,23 +62,45 @@ export function resolvePlaceholders(
   return resolved;
 }
 
-export function withInstallPaths(cwd: string, ctx: TemplateContext): TemplateContext {
-  const hooksDir = toPosixPath(path.resolve(cwd, ctx.platform_config_dir, "hooks"));
+export async function withProjectInstallPaths(
+  cwd: string,
+  ctx: TemplateContext,
+  projectId?: string,
+): Promise<TemplateContext> {
+  const resolvedProjectId =
+    projectId ?? (await readProjectIdIfExists(path.join(cwd, EASY_CODING_DIR, CONFIG_FILE)));
+  return withInstallPaths(cwd, ctx, resolvedProjectId ?? undefined);
+}
+
+export function withInstallPaths(
+  cwd: string,
+  ctx: TemplateContext,
+  projectId?: string,
+): TemplateContext {
   return {
     ...ctx,
-    platform_hooks_dir_abs: hooksDir,
-    platform_hooks_dir_shell: jsonStringContent(shellDoubleQuoteArg(hooksDir)),
+    platform_hook_session_start_command: jsonStringContent(
+      renderHookCommand(cwd, ctx, "session-start.py", process.platform, projectId),
+    ),
+    platform_hook_inject_workflow_state_command: jsonStringContent(
+      renderHookCommand(cwd, ctx, "inject-workflow-state.py", process.platform, projectId),
+    ),
+    platform_hook_inject_subagent_context_command: jsonStringContent(
+      renderHookCommand(cwd, ctx, "inject-subagent-context.py", process.platform, projectId),
+    ),
   };
 }
 
 export function renderHookCommand(
-  cwd: string,
+  _cwd: string,
   ctx: TemplateContext,
   scriptName: string,
   platform: NodeJS.Platform = process.platform,
+  projectId?: string,
 ): string {
-  const hooksDir = toPosixPath(path.resolve(cwd, ctx.platform_config_dir, "hooks"));
-  return `${ctx.python_cmd} ${shellDoubleQuoteArg(hooksDir, platform)}/${scriptName}`;
+  const launcher = `import base64;exec(base64.b64decode('${Buffer.from(HOOK_LAUNCHER_PYTHON).toString("base64")}').decode())`;
+  const rootIdArg = projectId ? ` ${shellDoubleQuoteArg(projectId, platform)}` : "";
+  return `${ctx.python_cmd} -c ${shellDoubleQuoteArg(launcher, platform)}${rootIdArg} ${ctx.platform_config_dir}/hooks/${scriptName}`;
 }
 
 export function shellDoubleQuoteArg(
@@ -88,13 +116,58 @@ export function shellDoubleQuoteArg(
   return `"${value.replace(/(["\\$`])/g, "\\$1")}"`;
 }
 
-function toPosixPath(filePath: string): string {
-  return filePath.split(path.sep).join("/");
-}
-
 function jsonStringContent(value: string): string {
   return JSON.stringify(value).slice(1, -1);
 }
+
+const HOOK_LAUNCHER_PYTHON = [
+  "import io,json,os,re,runpy,sys",
+  "from pathlib import Path",
+  "payload=sys.stdin.read()",
+  "try:",
+  "    data=json.loads(payload or '{}')",
+  "except Exception:",
+  "    data={}",
+  "expected_id=sys.argv[1] if len(sys.argv) > 2 else None",
+  "script_arg=sys.argv[2] if len(sys.argv) > 2 else (sys.argv[1] if len(sys.argv) > 1 else None)",
+  "def project_id(root):",
+  "    try:",
+  "        lines=(root / '.easy-coding' / 'config.yaml').read_text(encoding='utf-8').splitlines()",
+  "    except Exception:",
+  "        return None",
+  "    in_project=False",
+  "    for line in lines:",
+  "        if not in_project:",
+  "            if re.match(r'^project\\s*:\\s*(?:#.*)?$', line):",
+  "                in_project=True",
+  "            continue",
+  "        if not line.strip() or line.lstrip().startswith('#'):",
+  "            continue",
+  "        if not line.startswith((' ', '\\t')):",
+  "            return None",
+  '        match=re.match(r"\\s+id\\s*:\\s*[\'\\"]?([^\'\\"#\\s]+)", line)',
+  "        if match:",
+  "            return match.group(1)",
+  "    return None",
+  "def roots_from(raw):",
+  "    if not raw:",
+  "        return []",
+  "    start=Path(raw).resolve()",
+  "    return [candidate for candidate in (start, *start.parents) if (candidate / '.easy-coding').is_dir()]",
+  "sources=[os.environ.get('CLAUDE_PROJECT_DIR'), os.environ.get('QODER_PROJECT_DIR'), data.get('cwd'), os.getcwd()]",
+  "root=None",
+  "if expected_id:",
+  "    root=next((candidate for raw in sources for candidate in roots_from(raw) if project_id(candidate) == expected_id), None)",
+  "else:",
+  "    root=next((candidate for raw in sources for candidate in roots_from(raw)), None)",
+  "target=(root / script_arg) if root and script_arg else None",
+  "if target and target.is_file():",
+  "    os.chdir(root)",
+  "    data['cwd']=str(root)",
+  "    sys.stdin=io.StringIO(json.dumps(data))",
+  "    sys.path.insert(0, str(target.parent))",
+  "    runpy.run_path(str(target), run_name='__main__')",
+].join("\n");
 
 export async function resolveSkills(ctx: TemplateContext): Promise<SkillTemplate[]> {
   const skillsRoot = getTemplatePath("common", "skills");

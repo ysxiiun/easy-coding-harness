@@ -1,3 +1,4 @@
+import { execSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -83,6 +84,19 @@ describe("init command", () => {
     await expect(init({ yes: true })).rejects.toThrow(".easy-coding exists but is not recognized");
   });
 
+  it("does not mark a fresh install as installed when platform setup fails", async () => {
+    await writeFile(path.join(tempDir, ".claude"), "blocking file\n", "utf8");
+
+    await expect(init({ yes: true })).rejects.toThrow();
+    expect(await pathExists(path.join(tempDir, ".easy-coding", "config.yaml"))).toBe(false);
+
+    await rm(path.join(tempDir, ".claude"), { force: true });
+    await init({ yes: true });
+
+    expect(await pathExists(path.join(tempDir, ".easy-coding", "config.yaml"))).toBe(true);
+    expect(await pathExists(path.join(tempDir, ".claude", "settings.json"))).toBe(true);
+  });
+
   it("rejects explicit --submodules in a non-supermodule repository", async () => {
     await expect(init({ yes: true, submodules: "packages/a" })).rejects.toThrow(
       "--submodules can only be used in a repository with .gitmodules.",
@@ -152,6 +166,52 @@ describe("init command", () => {
     } finally {
       await rm(outsideSubmoduleDir, { recursive: true, force: true });
     }
+  });
+
+  it("binds parent hook commands to the parent root when fired from a child cwd", async () => {
+    await writeFile(
+      path.join(tempDir, ".gitmodules"),
+      ['[submodule "pkg-a"]', "  path = packages/a", "  url = git@example.com:pkg-a.git", ""].join(
+        "\n",
+      ),
+      "utf8",
+    );
+    const childDir = path.join(tempDir, "packages", "a");
+    await mkdir(childDir, { recursive: true });
+    await writeFile(path.join(childDir, ".git"), "gitdir: ../../.git/modules/a\n", "utf8");
+
+    await init({ yes: true });
+
+    const parentTaskPath = path.join(
+      tempDir,
+      ".easy-coding",
+      "tasks",
+      "project-init",
+      "task.json",
+    );
+    const parentTask = JSON.parse(await readFile(parentTaskPath, "utf8"));
+    parentTask.status = "COMPLETE";
+    await writeFile(parentTaskPath, `${JSON.stringify(parentTask, null, 2)}\n`, "utf8");
+
+    const parentSettings = JSON.parse(
+      await readFile(path.join(tempDir, ".claude", "settings.json"), "utf8"),
+    ) as {
+      hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
+    };
+    const command = parentSettings.hooks.SessionStart[0].hooks[0].command;
+    const childConfig = await readFile(path.join(childDir, ".easy-coding", "config.yaml"), "utf8");
+    const childProjectId = childConfig.match(/^\s+id:\s*(\S+)/m)?.[1];
+    expect(command).not.toContain(String(childProjectId));
+
+    const stdout = execSync(command, {
+      cwd: childDir,
+      input: JSON.stringify({ cwd: childDir }),
+      encoding: "utf8",
+    });
+    expect(stdout).toContain(
+      "> **Easy Coding** · Ready · Use `ec-workflow` to start or resume a task, `ec-brainstorming` to brainstorm, or `ec-task-management` to view tasks",
+    );
+    expect(stdout).not.toContain("Waiting init");
   });
 
   it("respects --no-submodules in a supermodule", async () => {

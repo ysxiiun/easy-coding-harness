@@ -6,11 +6,12 @@
 - `y`：常规功能升级
 - `z`：日常 bug 修复
 
-## 0.5.1
+## 0.5.2-beta.0
 
-- 修复 Claude Code hook 命令使用相对路径导致在子目录 cwd 下找不到 `.claude/hooks/*.py` 的问题；Claude、Codex、Qoder 的 hook 配置现在安装时渲染为带引号的绝对脚本路径。
-- `easy-coding upgrade` 可直接刷新存量 0.5.0 项目的 hook 配置并解决该问题；升级后 `ec-init` 合规扫描会校验 hook 配置是否已使用当前版本要求的绝对路径。
-- `easy-coding clear` 和 `install-manifest.json` 兼容新绝对 hook 命令，清理时仍按项目相对 hook 路径识别托管注册项。
+- 修复 Claude Code hook 命令使用直接相对路径导致在子目录 cwd 下找不到 `.claude/hooks/*.py` 的问题；Claude、Codex、Qoder 的 hook 配置现在使用可共享的 portable relative launcher，并绑定 `.easy-coding/config.yaml` 的 `project.id`，避免把本机仓库绝对路径写入可提交配置，同时防止 supermodule 父仓 hook 被子仓 cwd 错路由。
+- `easy-coding upgrade` 可直接刷新存量 0.5.0 项目和已安装 0.5.1 beta 绝对路径配置；同版本也会修复缺失、重复、事件错位或 stale 的托管 hook 注册。
+- `easy-coding clear` 和 `install-manifest.json` 兼容 portable launcher、旧直接相对命令和旧绝对 hook 命令，清理时仍按项目相对 hook 路径识别托管注册项。
+- npm `0.5.1` 已发布不可覆盖，本版本作为 beta 修复包发布，用于替代原 `0.5.1` beta。
 
 ## 0.5.0
 

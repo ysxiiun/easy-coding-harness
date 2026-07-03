@@ -5,17 +5,37 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { init } from "../../src/commands/init.js";
 import { upgrade } from "../../src/commands/upgrade.js";
+import { renderHookCommand, shellDoubleQuoteArg } from "../../src/configurators/shared.js";
 import { VERSION } from "../../src/constants/version.js";
+import { PLATFORM_META } from "../../src/types/platform.js";
+import { readConfigYaml } from "../../src/utils/config-yaml.js";
 
 let tempDir: string;
 let originalCwd: string;
 const pythonCmd = process.platform === "win32" ? "python" : "python3";
 
-function expectAbsoluteHookCommand(command: string, platformDir: string, scriptName: string): void {
-  const match = command.match(new RegExp(`^${pythonCmd} "(.+)"/${scriptName}$`));
-  expect(match?.[1]).toBeTruthy();
-  expect(match?.[1]).toContain(`/${platformDir}/hooks`);
-  expect(path.isAbsolute(match?.[1] ?? "")).toBe(true);
+async function expectPortableHookCommand(
+  command: string,
+  platformDir: string,
+  scriptName: string,
+): Promise<void> {
+  const config = await readConfigYaml(path.join(tempDir, ".easy-coding", "config.yaml"));
+  expect(command).toBe(
+    renderHookCommand(
+      tempDir,
+      PLATFORM_META["claude-code"].templateContext,
+      scriptName,
+      process.platform,
+      config.project.id,
+    ),
+  );
+  expect(command).toContain(`${platformDir}/hooks/${scriptName}`);
+  expect(command).not.toContain(tempDir);
+  expect(command).not.toBe(`${pythonCmd} ${platformDir}/hooks/${scriptName}`);
+}
+
+function absoluteHookCommand(platformDir: string, scriptName: string): string {
+  return `${pythonCmd} ${shellDoubleQuoteArg(path.join(tempDir, platformDir, "hooks"))}/${scriptName}`;
 }
 
 async function setHarnessVersion(version: string): Promise<void> {
@@ -42,12 +62,33 @@ async function rewriteClaudeHooksToLegacyRelativeCommands(): Promise<void> {
   for (const groups of Object.values(settings.hooks)) {
     for (const group of groups) {
       for (const hook of group.hooks) {
-        const scriptName = path.basename(hook.command.replace(/["']/g, ""));
+        const scriptName = extractHookScriptName(hook.command);
         hook.command = `${pythonCmd} .claude/hooks/${scriptName}`;
       }
     }
   }
   await writeFile(settingsPath, `${JSON.stringify(settings, null, 2)}\n`, "utf8");
+}
+
+async function rewriteClaudeHooksToPublishedAbsoluteCommands(): Promise<void> {
+  const settingsPath = path.join(tempDir, ".claude", "settings.json");
+  const settings = JSON.parse(await readFile(settingsPath, "utf8")) as {
+    hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
+  };
+  for (const groups of Object.values(settings.hooks)) {
+    for (const group of groups) {
+      for (const hook of group.hooks) {
+        hook.command = absoluteHookCommand(".claude", extractHookScriptName(hook.command));
+      }
+    }
+  }
+  await writeFile(settingsPath, `${JSON.stringify(settings, null, 2)}\n`, "utf8");
+}
+
+function extractHookScriptName(command: string): string {
+  const match = command.match(/([^/\s]+\.py)$/);
+  expect(match?.[1]).toBeTruthy();
+  return match?.[1] ?? "";
 }
 
 async function appendLegacyClaudeSessionStartToUserPromptSubmit(): Promise<void> {
@@ -110,8 +151,25 @@ describe("upgrade command", () => {
       hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
     };
     const command = settings.hooks.SessionStart[0].hooks[0].command;
-    expectAbsoluteHookCommand(command, ".claude", "session-start.py");
+    await expectPortableHookCommand(command, ".claude", "session-start.py");
     expect(JSON.stringify(settings)).not.toContain(`${pythonCmd} .claude/hooks/`);
+  });
+
+  it("refreshes published 0.5.1 absolute hook commands at the current version", async () => {
+    await init({ agent: "claude-code", yes: true });
+    await markProjectInitComplete();
+    await rewriteClaudeHooksToPublishedAbsoluteCommands();
+
+    await upgrade({ yes: true });
+
+    const settings = JSON.parse(
+      await readFile(path.join(tempDir, ".claude", "settings.json"), "utf8"),
+    ) as {
+      hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
+    };
+    const command = settings.hooks.SessionStart[0].hooks[0].command;
+    await expectPortableHookCommand(command, ".claude", "session-start.py");
+    expect(JSON.stringify(settings)).not.toContain(tempDir);
   });
 
   it("refreshes stale managed hook commands left beside expected commands", async () => {
@@ -126,7 +184,11 @@ describe("upgrade command", () => {
     ) as {
       hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
     };
-    expectAbsoluteHookCommand(settings.hooks.SessionStart[0].hooks[0].command, ".claude", "session-start.py");
+    await expectPortableHookCommand(
+      settings.hooks.SessionStart[0].hooks[0].command,
+      ".claude",
+      "session-start.py",
+    );
     expect(JSON.stringify(settings)).not.toContain(`${pythonCmd} .claude/hooks/`);
   });
 
@@ -152,7 +214,11 @@ describe("upgrade command", () => {
       command.endsWith("/session-start.py"),
     ).length;
 
-    expectAbsoluteHookCommand(settings.hooks.SessionStart[0].hooks[0].command, ".claude", "session-start.py");
+    await expectPortableHookCommand(
+      settings.hooks.SessionStart[0].hooks[0].command,
+      ".claude",
+      "session-start.py",
+    );
     expect(sessionStartCount).toBe(2);
   });
 
@@ -175,7 +241,7 @@ describe("upgrade command", () => {
       group.hooks.map((hook) => hook.command),
     );
 
-    expectAbsoluteHookCommand(sessionStartCommands[0], ".claude", "session-start.py");
+    await expectPortableHookCommand(sessionStartCommands[0], ".claude", "session-start.py");
     expect(userPromptCommands.filter((command) => command.endsWith("/session-start.py"))).toHaveLength(1);
   });
 
@@ -193,7 +259,7 @@ describe("upgrade command", () => {
       hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
     };
     const command = settings.hooks.SessionStart[0].hooks[0].command;
-    expectAbsoluteHookCommand(command, ".claude", "session-start.py");
+    await expectPortableHookCommand(command, ".claude", "session-start.py");
     expect(JSON.stringify(settings)).not.toContain(`${pythonCmd} .claude/hooks/`);
 
     const nested = path.join(tempDir, ".easy-coding", "memory", "short");
@@ -202,8 +268,8 @@ describe("upgrade command", () => {
       input: "{}",
       encoding: "utf8",
     });
-    expect(stdout).toContain("> **Easy Coding** · Waiting init · Upgrade to v0.5.1");
-    expect(stdout).toContain("[easy-coding:upgrade-init-pending:0.5.1]");
+    expect(stdout).toContain(`> **Easy Coding** · Waiting init · Upgrade to v${VERSION}`);
+    expect(stdout).toContain(`[easy-coding:upgrade-init-pending:${VERSION}]`);
 
     const task = JSON.parse(
       await readFile(path.join(tempDir, ".easy-coding", "tasks", "project-init", "task.json"), "utf8"),

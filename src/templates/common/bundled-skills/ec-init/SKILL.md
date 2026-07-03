@@ -66,10 +66,12 @@ initialization standard. Check each item:
 - **Project profile**: `project.yaml` exists with `mode` and `test` fields (ec-init owns it;
   `config.yaml` is CLI-owned — not ec-init's concern)?
 - **Platform hook config freshness**: for each installed platform in `.easy-coding/config.yaml`,
-  read the platform hook config and verify managed Easy Coding hook commands use quoted absolute
-  paths to this project's platform hook scripts. If any managed hook command is still relative
-  (for example `python3 .claude/hooks/session-start.py`) or points outside this project, report
-  the exact config file and tell the user to run `easy-coding upgrade`; the upgrade command also
+  read the platform hook config and verify managed Easy Coding hook commands use the portable
+  relative hook launcher bound to this project root's `project.id`. If `project.id` is missing,
+  or any managed hook command is an old direct relative command (for example
+  `python3 .claude/hooks/session-start.py`), an absolute local path, missing from its expected
+  event, registered under the wrong event, or not bound to the current `project.id`, report the
+  exact config file and tell the user to run `easy-coding upgrade`; the upgrade command also
   refreshes stale hook config when the project is already on the current harness version. Do not
   edit the config yourself.
 

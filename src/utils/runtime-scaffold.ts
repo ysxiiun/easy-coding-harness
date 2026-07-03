@@ -12,30 +12,39 @@ import {
 import { VERSION } from "../constants/version.js";
 import type { AgentPlatform } from "../types/platform.js";
 import type { SupermoduleConfig } from "../types/supermodule.js";
-import { createDefaultConfig, writeConfigYaml } from "./config-yaml.js";
+import {
+  createDefaultConfig,
+  createProjectId,
+  ensureProjectId,
+  writeConfigYaml,
+} from "./config-yaml.js";
 import { ensureDir, pathExists, readTextFile, writeTextFile } from "./file-writer.js";
 import { getTemplatePath } from "./template-paths.js";
 
 export async function writeRuntimeScaffold(
   cwd: string,
   agents: AgentPlatform[],
-  opts: { supermodule?: SupermoduleConfig } = {},
-): Promise<void> {
+  opts: { supermodule?: SupermoduleConfig; projectId?: string } = {},
+): Promise<string> {
   const easyCodingDir = path.join(cwd, EASY_CODING_DIR);
   await ensureDir(easyCodingDir);
 
   const configPath = path.join(easyCodingDir, CONFIG_FILE);
+  let projectId = opts.projectId ?? createProjectId();
   if (!(await pathExists(configPath))) {
     const projectName = path.basename(cwd);
     await writeConfigYaml(
       configPath,
       createDefaultConfig({
         projectName,
+        projectId,
         harnessVersion: VERSION,
         agents,
         supermodule: opts.supermodule,
       }),
     );
+  } else {
+    projectId = await ensureProjectId(configPath);
   }
 
   await ensureDir(path.join(easyCodingDir, "tasks"));
@@ -44,6 +53,7 @@ export async function writeRuntimeScaffold(
   await ensureDir(path.join(easyCodingDir, SPEC_DIR, DEV_SPEC_DIR));
   await writeMemoryScaffold(easyCodingDir);
   await writeTemplatesScaffold(easyCodingDir);
+  return projectId;
 }
 
 async function writeTemplatesScaffold(easyCodingDir: string): Promise<void> {

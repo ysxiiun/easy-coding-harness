@@ -8,8 +8,9 @@ export interface TemplateContext {
   main_constraint_file: "CLAUDE.md" | "AGENTS.md";
   python_cmd: string;
   platform_config_dir: string;
-  platform_hooks_dir_abs?: string;
-  platform_hooks_dir_shell?: string;
+  platform_hook_session_start_command?: string;
+  platform_hook_inject_workflow_state_command?: string;
+  platform_hook_inject_subagent_context_command?: string;
   supermodule_boundary: string;
 }
 

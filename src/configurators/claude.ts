@@ -11,7 +11,7 @@ import {
   copyPlatformTemplates,
   resolveBundledSkills,
   resolveSkills,
-  withInstallPaths,
+  withProjectInstallPaths,
   writeMainConstraint,
   writeSharedHooks,
   writeSkills,
@@ -23,7 +23,7 @@ export async function configureClaude(
 ): Promise<InstallArtifact[]> {
   const platform = "claude-code";
   const meta = PLATFORM_META[platform];
-  const ctx = withInstallPaths(cwd, meta.templateContext);
+  const ctx = await withProjectInstallPaths(cwd, meta.templateContext, opts.projectId);
   const dest = path.join(cwd, ".claude");
   const hookConfigPath = path.join(cwd, meta.hookConfigFile);
   const artifacts: InstallArtifact[] = [];

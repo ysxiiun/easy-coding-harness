@@ -10,6 +10,9 @@ import { upgrade } from "../../src/commands/upgrade.js";
 import { configureClaude } from "../../src/configurators/claude.js";
 import { configureCodex } from "../../src/configurators/codex.js";
 import { configureQoder } from "../../src/configurators/qoder.js";
+import { renderHookCommand } from "../../src/configurators/shared.js";
+import { PLATFORM_META } from "../../src/types/platform.js";
+import { readConfigYaml } from "../../src/utils/config-yaml.js";
 import { pathExists } from "../../src/utils/file-writer.js";
 
 let tempDir: string;
@@ -205,6 +208,7 @@ describe("clear command", () => {
 
     const externalHooksDir = path.join(tempDir, "custom-hooks", ".codex", "hooks");
     const externalCommand = hookCommand(externalHooksDir, "session-start.py");
+    const config = await readConfigYaml(path.join(tempDir, ".easy-coding", "config.yaml"));
     const hooksPath = path.join(tempDir, ".codex", "hooks.json");
     const hooks = JSON.parse(await readFile(hooksPath, "utf8"));
     hooks.hooks.UserPromptSubmit.push({
@@ -226,7 +230,13 @@ describe("clear command", () => {
     );
     expect(commands).toContain(externalCommand);
     expect(commands).not.toContain(
-      hookCommand(path.join(tempDir, ".codex", "hooks"), "session-start.py"),
+      renderHookCommand(
+        tempDir,
+        PLATFORM_META.codex.templateContext,
+        "session-start.py",
+        process.platform,
+        config.project.id,
+      ),
     );
   });
 

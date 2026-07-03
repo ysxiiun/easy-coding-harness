@@ -9,7 +9,7 @@ import type {
   SupermoduleBoundary,
   SupermoduleConfig,
 } from "../types/supermodule.js";
-import { updateSupermoduleConfig } from "../utils/config-yaml.js";
+import { createProjectId, updateSupermoduleConfig } from "../utils/config-yaml.js";
 import { ensureEasyCodingSessionsIgnored } from "../utils/gitignore.js";
 import { type InstallArtifact, writeInstallManifest } from "../utils/install-manifest.js";
 import { writeRuntimeScaffold } from "../utils/runtime-scaffold.js";
@@ -18,12 +18,12 @@ import { writeProjectInitTask } from "../utils/task-json.js";
 export async function configurePlatformsForDir(
   targetDir: string,
   platforms: AgentPlatform[],
-  boundary?: SupermoduleBoundary,
+  opts: { supermodule?: SupermoduleBoundary; projectId?: string } = {},
 ): Promise<InstallArtifact[]> {
   const artifacts: InstallArtifact[] = [];
 
   for (const platform of platforms) {
-    artifacts.push(...(await CONFIGURATORS[platform](targetDir, { supermodule: boundary })));
+    artifacts.push(...(await CONFIGURATORS[platform](targetDir, opts)));
   }
 
   return artifacts;
@@ -34,10 +34,14 @@ export async function installHarnessToDir(
   platforms: AgentPlatform[],
   ctx: InstallContext,
 ): Promise<InstallArtifact[]> {
-  const artifacts = await configurePlatformsForDir(targetDir, platforms, boundaryFromContext(ctx));
-
+  const projectId = createProjectId();
+  const artifacts = await configurePlatformsForDir(targetDir, platforms, {
+    supermodule: boundaryFromContext(ctx),
+    projectId,
+  });
   await writeRuntimeScaffold(targetDir, platforms, {
     supermodule: supermoduleConfigFromContext(ctx),
+    projectId,
   });
   await writeInstallManifest(targetDir, {
     harnessVersion: VERSION,

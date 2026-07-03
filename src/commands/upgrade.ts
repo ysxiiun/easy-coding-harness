@@ -144,13 +144,12 @@ export async function upgrade(opts: UpgradeOptions): Promise<void> {
   }
 
   for (const { target, config } of pending) {
-    const artifacts: InstallArtifact[] = await configurePlatformsForDir(
-      target.dir,
-      config.agents,
-      target.boundary,
-    );
-    await writeRuntimeScaffold(target.dir, config.agents, {
+    const projectId = await writeRuntimeScaffold(target.dir, config.agents, {
       supermodule: target.supermodule,
+    });
+    const artifacts: InstallArtifact[] = await configurePlatformsForDir(target.dir, config.agents, {
+      supermodule: target.boundary,
+      projectId,
     });
     await writeInstallManifest(target.dir, {
       harnessVersion: VERSION,
@@ -207,10 +206,7 @@ async function resolvePendingUpgradeTargets(
         `${target.label} harness version ${installedVersion} is newer than CLI ${VERSION}. Update the CLI first.`,
       );
     }
-    if (
-      relation === -1 ||
-      (relation === 0 && (await needsHookConfigRefresh(target, config.agents)))
-    ) {
+    if (relation === -1 || (relation === 0 && (await needsHookConfigRefresh(target, config)))) {
       pending.push({ target, config });
     }
   }
@@ -220,10 +216,14 @@ async function resolvePendingUpgradeTargets(
 
 async function needsHookConfigRefresh(
   target: CommandTarget,
-  agents: AgentPlatform[],
+  config: Awaited<ReturnType<typeof readConfigYaml>>,
 ): Promise<boolean> {
+  const projectId = typeof config.project?.id === "string" ? config.project.id.trim() : "";
+  if (!projectId) {
+    return true;
+  }
   const manifest = await readInstallManifest(target.dir);
-  for (const agent of agents) {
+  for (const agent of config.agents) {
     const meta = resolvePlatformMeta(target.dir, agent);
     const configPath = path.join(target.dir, meta.hookConfigFile);
     const content = await readTextIfExists(configPath);
@@ -240,7 +240,7 @@ async function needsHookConfigRefresh(
 
     const commandsByEvent = collectHookCommandsByEvent(parsed.hooks);
     const commands = [...commandsByEvent.values()].flat();
-    const expectedRegistrations = expectedHookRegistrations(target.dir, meta, agent);
+    const expectedRegistrations = expectedHookRegistrations(target.dir, meta, agent, projectId);
     const expectedCommandSet = new Set(
       expectedRegistrations.map((registration) => registration.command),
     );
@@ -274,10 +274,11 @@ function expectedHookRegistrations(
   cwd: string,
   meta: PlatformMeta,
   platform: AgentPlatform,
+  projectId: string,
 ): ExpectedHookRegistration[] {
   return EXPECTED_HOOK_REGISTRATION_SCRIPTS[platform].map(({ event, scriptName }) => ({
     event,
-    command: renderHookCommand(cwd, meta.templateContext, scriptName),
+    command: renderHookCommand(cwd, meta.templateContext, scriptName, process.platform, projectId),
   }));
 }
 

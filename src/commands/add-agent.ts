@@ -38,13 +38,12 @@ export async function addAgent(opts: PlatformOptions): Promise<void> {
     const agents = [...config.agents, ...toInstall];
 
     if (toInstall.length > 0) {
-      const artifacts: InstallArtifact[] = await configurePlatformsForDir(
-        target.dir,
-        toInstall,
-        target.boundary,
-      );
-      await writeRuntimeScaffold(target.dir, agents, {
+      const projectId = await writeRuntimeScaffold(target.dir, agents, {
         supermodule: target.supermodule,
+      });
+      const artifacts: InstallArtifact[] = await configurePlatformsForDir(target.dir, toInstall, {
+        supermodule: target.boundary,
+        projectId,
       });
       await writeInstallManifest(target.dir, {
         harnessVersion: VERSION,

@@ -7,6 +7,7 @@ import { configureQoder } from "./qoder.js";
 
 export interface ConfigureOptions {
   supermodule?: SupermoduleBoundary;
+  projectId?: string;
 }
 
 export type ConfigureFn = (cwd: string, opts?: ConfigureOptions) => Promise<InstallArtifact[]>;
