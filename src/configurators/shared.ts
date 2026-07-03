@@ -120,8 +120,12 @@ function jsonStringContent(value: string): string {
   return JSON.stringify(value).slice(1, -1);
 }
 
+// Keep hook dirs commit-clean: the launcher imports the shared hook modules, so
+// disable __pycache__/*.pyc generation before any import runs. Without this the
+// bytecode lands next to the committed hook scripts and pollutes shared repos.
 const HOOK_LAUNCHER_PYTHON = [
   "import io,json,os,re,runpy,sys",
+  "sys.dont_write_bytecode=True",
   "from pathlib import Path",
   "payload=sys.stdin.read()",
   "try:",

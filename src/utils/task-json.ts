@@ -9,7 +9,6 @@ import { pathExists, readTextFile, writeTextFile } from "./file-writer.js";
 export type ProjectInitSource = "fresh" | "legacy-easy-coding";
 
 export function createProjectInitTask(params: {
-  cwd: string;
   agents: AgentPlatform[];
   initSource?: ProjectInitSource;
   legacyAssets?: string[];
@@ -26,7 +25,6 @@ export function createProjectInitTask(params: {
     context: {
       agents_installed: params.agents,
       cli_version: VERSION,
-      project_path: params.cwd,
       init_source: params.initSource ?? "fresh",
       ...(params.legacyAssets ? { legacy_assets: params.legacyAssets } : {}),
       ...(params.legacyMissingHarnessFiles
@@ -73,13 +71,27 @@ export async function writeProjectInitTask(
   await writeTaskJson(
     getTaskJsonPath(cwd, PROJECT_INIT_TASK_ID),
     createProjectInitTask({
-      cwd,
       agents,
       initSource: options.initSource,
       legacyAssets: options.legacyAssets,
       legacyMissingHarnessFiles: options.legacyMissingHarnessFiles,
     }),
   );
+}
+
+// Older harness versions wrote an absolute project_path into the committed init
+// task, leaking each contributor's local checkout root across a shared repo. Strip
+// it on upgrade; idempotent and a no-op when the task or field is absent.
+export async function stripInitTaskProjectPath(cwd: string): Promise<boolean> {
+  const filePath = getTaskJsonPath(cwd, PROJECT_INIT_TASK_ID);
+  if (!(await pathExists(filePath))) return false;
+  const task = await readTaskJson(filePath);
+  if (!task.context || !("project_path" in task.context)) return false;
+  // Assign undefined instead of `delete` (biome noDelete); JSON.stringify drops the
+  // key on write, so the persisted task.json no longer carries project_path.
+  task.context.project_path = undefined;
+  await writeTaskJson(filePath, task);
+  return true;
 }
 
 export async function setPendingInitSince(cwd: string, version: string): Promise<void> {

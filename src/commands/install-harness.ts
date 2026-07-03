@@ -10,7 +10,7 @@ import type {
   SupermoduleConfig,
 } from "../types/supermodule.js";
 import { createProjectId, updateSupermoduleConfig } from "../utils/config-yaml.js";
-import { ensureEasyCodingSessionsIgnored } from "../utils/gitignore.js";
+import { ensureEasyCodingSessionsIgnored, ensureHookBytecodeIgnored } from "../utils/gitignore.js";
 import { type InstallArtifact, writeInstallManifest } from "../utils/install-manifest.js";
 import { writeRuntimeScaffold } from "../utils/runtime-scaffold.js";
 import { writeProjectInitTask } from "../utils/task-json.js";
@@ -54,6 +54,7 @@ export async function installHarnessToDir(
     legacyMissingHarnessFiles: ctx.legacyMissingHarnessFiles,
   });
   await ensureEasyCodingSessionsIgnored(targetDir);
+  await ensureHookBytecodeIgnored(targetDir);
 
   return artifacts;
 }

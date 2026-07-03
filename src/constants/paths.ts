@@ -14,6 +14,7 @@ export const DEV_SPEC_DIR = "dev";
 export const TEMPLATES_DIR = "templates";
 
 export const SESSIONS_GITIGNORE_ENTRY = ".easy-coding/sessions/";
+export const HOOK_BYTECODE_GITIGNORE_ENTRY = "__pycache__/";
 
 export const GENERATED_REGION_START =
   "<!-- ═══ easy-coding-harness generated (DO NOT EDIT BETWEEN MARKERS) ═══ -->";

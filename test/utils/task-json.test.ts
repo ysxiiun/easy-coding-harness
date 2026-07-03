@@ -4,8 +4,11 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   createProjectInitTask,
+  getTaskJsonPath,
   isActiveTask,
   listTasks,
+  readTaskJson,
+  stripInitTaskProjectPath,
   writeTaskJson,
 } from "../../src/utils/task-json.js";
 
@@ -24,7 +27,6 @@ describe("task-json", () => {
     await writeTaskJson(
       path.join(tempDir, ".easy-coding", "tasks", "project-init", "task.json"),
       createProjectInitTask({
-        cwd: tempDir,
         agents: ["claude-code"],
         now: new Date("2026-06-09T00:00:00Z"),
       }),
@@ -51,5 +53,36 @@ describe("task-json", () => {
       "06-09-demo",
       "project-init",
     ]);
+  });
+
+  it("omits the local absolute project_path from the init task", () => {
+    const task = createProjectInitTask({ agents: ["claude-code"] });
+    expect(task.context).toBeDefined();
+    expect(task.context).not.toHaveProperty("project_path");
+  });
+
+  it("strips a legacy project_path from an existing init task idempotently", async () => {
+    const filePath = getTaskJsonPath(tempDir, "project-init");
+    await writeTaskJson(filePath, {
+      type: "project-init",
+      status: "PENDING",
+      created_at: "2026-06-09T00:00:00Z",
+      created_by: "cli-init",
+      last_agent: "cli",
+      stage_history: [],
+      context: { cli_version: "0.5.1", project_path: "/Users/someone/local/repo" },
+      init_log: [],
+    });
+
+    expect(await stripInitTaskProjectPath(tempDir)).toBe(true);
+    expect(await stripInitTaskProjectPath(tempDir)).toBe(false);
+
+    const task = await readTaskJson(filePath);
+    expect(task.context).not.toHaveProperty("project_path");
+    expect(task.context?.cli_version).toBe("0.5.1");
+  });
+
+  it("no-ops stripInitTaskProjectPath when the init task is absent", async () => {
+    expect(await stripInitTaskProjectPath(tempDir)).toBe(false);
   });
 });

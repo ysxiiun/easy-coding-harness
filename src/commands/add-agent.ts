@@ -8,7 +8,7 @@ import {
   updateSupermoduleConfig,
 } from "../utils/config-yaml.js";
 import { pathExists } from "../utils/file-writer.js";
-import { ensureEasyCodingSessionsIgnored } from "../utils/gitignore.js";
+import { ensureEasyCodingSessionsIgnored, ensureHookBytecodeIgnored } from "../utils/gitignore.js";
 import { type InstallArtifact, writeInstallManifest } from "../utils/install-manifest.js";
 import { writeRuntimeScaffold } from "../utils/runtime-scaffold.js";
 import { setPendingInitSince } from "../utils/task-json.js";
@@ -52,6 +52,7 @@ export async function addAgent(opts: PlatformOptions): Promise<void> {
         mode: "merge",
       });
       await ensureEasyCodingSessionsIgnored(target.dir);
+      await ensureHookBytecodeIgnored(target.dir);
       await addAgentsToConfig(target.configPath, toInstall);
       await setPendingInitSince(target.dir, VERSION);
 

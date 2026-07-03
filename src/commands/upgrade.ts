@@ -12,7 +12,7 @@ import {
   updateSupermoduleConfig,
 } from "../utils/config-yaml.js";
 import { pathExists, readTextIfExists } from "../utils/file-writer.js";
-import { ensureEasyCodingSessionsIgnored } from "../utils/gitignore.js";
+import { ensureEasyCodingSessionsIgnored, ensureHookBytecodeIgnored } from "../utils/gitignore.js";
 import {
   type InstallArtifact,
   extractHookPathFromCommand,
@@ -21,7 +21,7 @@ import {
 } from "../utils/install-manifest.js";
 import { resolvePlatformMeta } from "../utils/platform-paths.js";
 import { writeRuntimeScaffold } from "../utils/runtime-scaffold.js";
-import { setPendingInitSince } from "../utils/task-json.js";
+import { setPendingInitSince, stripInitTaskProjectPath } from "../utils/task-json.js";
 import { configurePlatformsForDir, refreshSupermoduleParent } from "./install-harness.js";
 import { type CommandTarget, resolveUpgradeTargets } from "./supermodule-targets.js";
 
@@ -157,9 +157,11 @@ export async function upgrade(opts: UpgradeOptions): Promise<void> {
       artifacts,
     });
     await ensureEasyCodingSessionsIgnored(target.dir);
+    await ensureHookBytecodeIgnored(target.dir);
     await updateHarnessVersion(target.configPath, VERSION);
     await updateSupermoduleConfig(target.configPath, target.supermodule);
     await setPendingInitSince(target.dir, VERSION);
+    await stripInitTaskProjectPath(target.dir);
   }
 
   if (parentTopologyRefresh) {

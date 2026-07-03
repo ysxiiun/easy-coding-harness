@@ -6,6 +6,13 @@
 - `y`：常规功能升级
 - `z`：日常 bug 修复
 
+## 0.5.3
+
+- 根治 `task.json` 绝对路径泄漏：`.easy-coding/tasks/project-init/task.json` 不再写入本机仓库绝对路径。该 `project_path` 字段无任何消费方，直接移除，可提交产物彻底去本地化。
+- `easy-coding upgrade` 会自动剥离存量项目中遗留的 `project_path` 字段，让老项目也随升级变干净。
+- 根治 hook 编译产物：hook launcher 设置 `sys.dont_write_bytecode=True`，运行时不再在 `.claude/hooks/`、`.codex/hooks/`、`.qoder/hooks/` 旁生成 `__pycache__/*.pyc`；同时 `init` / `add-agent` / `upgrade` 会向项目 `.gitignore` 追加 `__pycache__/` 作为兜底防御。launcher 内容变化会触发 `upgrade` 刷新存量 hook 注册。
+- 版本自 `0.5.2-beta.0` 升级为 `0.5.3`，合并 beta.0 的全部 portable hook 修复。跳过 `0.5.2` 正式版：升级检测的 `compareVersions` 会截断预发布后缀，若发 `0.5.2` 会把已安装 `0.5.2-beta.0` 的项目误判为已最新而不提示本次迁移；递增到 `0.5.3` 可让 beta 用户正确检测到升级。
+
 ## 0.5.2-beta.0
 
 - 修复 Claude Code hook 命令使用直接相对路径导致在子目录 cwd 下找不到 `.claude/hooks/*.py` 的问题；Claude、Codex、Qoder 的 hook 配置现在使用可共享的 portable relative launcher，并绑定 `.easy-coding/config.yaml` 的 `project.id`，避免把本机仓库绝对路径写入可提交配置，同时防止 supermodule 父仓 hook 被子仓 cwd 错路由。
