@@ -6,6 +6,12 @@
 - `y`：常规功能升级
 - `z`：日常 bug 修复
 
+## 0.7.1-beta0
+
+- 修复裸唤起 `ec-task-management` 时只显示任务列表、未暴露 session 确认模式的问题：默认面板现在始终读取 session snapshot，并展示项目模式、session 覆盖和最终生效模式，即使没有未完成任务也不会省略。
+- 面板明确提供通过对话设置 `approve`、`guard`、`auto` 或恢复项目默认值的入口；裸唤起保持只读，不会自动修改 session。
+- Ready 状态、Claude/Codex/Qoder 主约束、安装测试和使用文档同步将 `ec-task-management` 标明为任务与 session 设置面板。
+
 ## 0.7.0
 
 - 新增 `behavior.confirm_mode`，提供 `approve`、`guard`（默认）和 `auto` 三种状态确认策略；session 中的覆盖值优先于项目配置。

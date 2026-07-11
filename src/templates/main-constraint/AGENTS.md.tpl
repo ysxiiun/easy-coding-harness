@@ -11,7 +11,7 @@ user in the user's language.
 Start every work reply with the single Markdown blockquote status line injected by the hook,
 then a blank line. Do not render the machine breadcrumbs to the user.
 
-- Ready: > **Easy Coding** · Ready · Use `ec-workflow` to start or resume a task, `ec-brainstorming` to brainstorm, or `ec-task-management` to view tasks
+- Ready: > **Easy Coding** · Ready · Use `ec-workflow` to start or resume a task, `ec-brainstorming` to brainstorm, or `ec-task-management` to manage tasks or session settings
 - Waiting init: > **Easy Coding** · Waiting init · Use `ec-init` to initialize
 - Active task: > **Easy Coding** · `{current-task}` · `{workflow-state}`
 - Handoff: > **Easy Coding** · `{current-task}` · `{workflow-state}` · Handoff -> `{source-agent}`
@@ -28,7 +28,7 @@ Trigger Easy Coding skills with your platform prefix — Codex: `$ec-*`, Qoder: 
 - `ec-brainstorming` — design exploration before building (hard design gate)
 - `ec-analysis` `ec-implementing` `ec-reviewing` `ec-verification` — workflow stages
 - `ec-memory` — short/long memory archive
-- `ec-task-management` — list/create tasks · `ec-task-close` — interrupt a task
+- `ec-task-management` — task/session panel: list/create tasks and view/change the session confirm mode · `ec-task-close` — interrupt a task
 - `ec-no-harness` — bypass only Easy Coding for the current session
 - `ec-git` — git discipline · `ec-meta` — understand/customize the harness
 

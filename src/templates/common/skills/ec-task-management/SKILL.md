@@ -3,13 +3,31 @@ name: ec-task-management
 description: Task and session panel for Easy Coding. Use when the user runs {{skill_trigger}}ec-task-management, asks to see/create/continue/take over tasks, or asks to view or change the current session confirm mode.
 ---
 
-# ec-task-management — the task panel
+# ec-task-management — the task and session panel
 
-A focused task panel: list unfinished tasks, create tasks, and let the user choose one task
-to continue or take over. Stage progression still belongs to ec-workflow; closure belongs
-to ec-task-close.
+A combined task and session panel: list unfinished tasks, create tasks, let the user choose one
+task to continue or take over, and manage the current session's confirm mode. Stage progression
+still belongs to ec-workflow; closure belongs to ec-task-close.
 
 Communicate with the user in the user's language.
+
+## Default panel contract
+
+A bare `{{skill_trigger}}ec-task-management` invocation means "show the full task and session
+panel", not just the unfinished task list. On every invocation:
+
+1. Call `list-tasks --agent <agent-id>`.
+2. Call `snapshot --session-file <P>`.
+3. Show the unfinished tasks and a separate "Session confirm mode" section containing:
+   - `project_confirm_mode`
+   - `session_confirm_mode` (`project default` when null)
+   - `effective_confirm_mode`
+4. Show the supported conversational changes in the user's language: set this session to
+   `approve`, `guard`, or `auto`, and restore the project default.
+
+Never omit the confirm-mode section, even when the unfinished task list is empty. A bare panel
+invocation is read-only: do not set or clear the session override until the user explicitly asks
+for a change.
 
 ## Capabilities
 
@@ -64,7 +82,7 @@ the current turn instead of older hook-injected status text.
 
 ### View or change this session's confirm mode
 
-Call `snapshot --session-file <P>` and show:
+Use the snapshot already required by the default panel and show:
 - `project_confirm_mode`
 - `session_confirm_mode` (`project default` when null)
 - `effective_confirm_mode`

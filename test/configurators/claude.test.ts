@@ -171,6 +171,13 @@ describe("configureClaude", () => {
     expect(taskManagementSkill).toContain("claim-task --session-file");
     expect(taskManagementSkill).toContain("previous_agent");
     expect(taskManagementSkill).toContain("take over");
+    expect(taskManagementSkill).toContain("show the full task and session\npanel");
+    expect(taskManagementSkill).toContain("snapshot --session-file <P>");
+    expect(taskManagementSkill).toContain(
+      "Never omit the confirm-mode section, even when the unfinished task list is empty",
+    );
+    expect(taskManagementSkill).toContain("set-confirm-mode --session-file <P>");
+    expect(taskManagementSkill).toContain("clear-confirm-mode --session-file <P>");
     expect(taskManagementSkill).not.toContain("{{");
 
     const settings = await readFile(path.join(tempDir, ".claude", "settings.json"), "utf8");
@@ -216,7 +223,7 @@ describe("configureClaude", () => {
     expect(main).toContain("easy-coding-harness generated");
     expect(main).toContain("single Markdown blockquote status line");
     expect(main).toContain(
-      "- Ready: > **Easy Coding** · Ready · Use `ec-workflow` to start or resume a task, `ec-brainstorming` to brainstorm, or `ec-task-management` to view tasks",
+      "- Ready: > **Easy Coding** · Ready · Use `ec-workflow` to start or resume a task, `ec-brainstorming` to brainstorm, or `ec-task-management` to manage tasks or session settings",
     );
     expect(main).not.toContain("[ Easy Coding ] ready");
     expect(main).not.toContain("tasks``");
@@ -326,7 +333,7 @@ describe("configureClaude", () => {
     });
 
     expect(stdout).toContain(
-      "> **Easy Coding** · Ready · Use `ec-workflow` to start or resume a task, `ec-brainstorming` to brainstorm, or `ec-task-management` to view tasks",
+      "> **Easy Coding** · Ready · Use `ec-workflow` to start or resume a task, `ec-brainstorming` to brainstorm, or `ec-task-management` to manage tasks or session settings",
     );
     expect(stdout).toContain("[workflow-state:idle]");
   });
@@ -343,7 +350,7 @@ describe("configureClaude", () => {
     });
 
     expect(stdout).toContain(
-      "> **Easy Coding** · Ready · Use `ec-workflow` to start or resume a task, `ec-brainstorming` to brainstorm, or `ec-task-management` to view tasks",
+      "> **Easy Coding** · Ready · Use `ec-workflow` to start or resume a task, `ec-brainstorming` to brainstorm, or `ec-task-management` to manage tasks or session settings",
     );
     expect(stdout).not.toContain("tasks`");
     expect(stdout).toContain("[workflow-state:idle]");

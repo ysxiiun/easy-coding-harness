@@ -12,11 +12,11 @@ import sys
 TERMINAL_STATUSES = {"COMPLETE", "CLOSED"}
 HELP_SUFFIX = (
     "Use `ec-workflow` to start or resume a task, "
-    "`ec-brainstorming` to brainstorm, or `ec-task-management` to view tasks"
+    "`ec-brainstorming` to brainstorm, or `ec-task-management` to manage tasks or session settings"
 )
 READY_LINE = (
     "> **Easy Coding** · Ready · Use `ec-workflow` to start or resume a task, "
-    "`ec-brainstorming` to brainstorm, or `ec-task-management` to view tasks"
+    "`ec-brainstorming` to brainstorm, or `ec-task-management` to manage tasks or session settings"
 )
 WAITING_INIT_LINE = "> **Easy Coding** · Waiting init · Use `ec-init` to initialize"
 

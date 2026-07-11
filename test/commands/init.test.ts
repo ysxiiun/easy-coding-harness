@@ -209,7 +209,7 @@ describe("init command", () => {
       encoding: "utf8",
     });
     expect(stdout).toContain(
-      "> **Easy Coding** · Ready · Use `ec-workflow` to start or resume a task, `ec-brainstorming` to brainstorm, or `ec-task-management` to view tasks",
+      "> **Easy Coding** · Ready · Use `ec-workflow` to start or resume a task, `ec-brainstorming` to brainstorm, or `ec-task-management` to manage tasks or session settings",
     );
     expect(stdout).not.toContain("Waiting init");
   });

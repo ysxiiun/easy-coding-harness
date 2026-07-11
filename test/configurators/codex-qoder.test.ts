@@ -72,6 +72,16 @@ describe("configureCodex", () => {
     );
     expect(noHarnessSkill).toContain("disable-harness --session-file");
     expect(noHarnessSkill).not.toContain("{{");
+    const taskManagementSkill = await readFile(
+      path.join(tempDir, ".agents", "skills", "ec-task-management", "SKILL.md"),
+      "utf8",
+    );
+    expect(taskManagementSkill).toContain("show the full task and session\npanel");
+    expect(taskManagementSkill).toContain("snapshot --session-file <P>");
+    expect(taskManagementSkill).toContain(
+      "Never omit the confirm-mode section, even when the unfinished task list is empty",
+    );
+    expect(taskManagementSkill).not.toContain("{{");
 
     expect(await pathExists(path.join(tempDir, ".codex", "hooks", "session-start.py"))).toBe(true);
     expect(await pathExists(path.join(tempDir, ".codex", "hooks", "easy_coding_status.py"))).toBe(
@@ -111,7 +121,7 @@ describe("configureCodex", () => {
     expect(main).toContain("Qoder: `/ec-*`");
     expect(main).toContain("single Markdown blockquote status line");
     expect(main).toContain(
-      "- Ready: > **Easy Coding** · Ready · Use `ec-workflow` to start or resume a task, `ec-brainstorming` to brainstorm, or `ec-task-management` to view tasks",
+      "- Ready: > **Easy Coding** · Ready · Use `ec-workflow` to start or resume a task, `ec-brainstorming` to brainstorm, or `ec-task-management` to manage tasks or session settings",
     );
     expect(main).not.toContain("[ Easy Coding ] ready");
     expect(main).not.toContain("tasks``");
@@ -180,6 +190,16 @@ describe("configureQoder", () => {
     );
     expect(skill).toContain("`/ec-init`");
     expect(skill).not.toContain("{{");
+    const taskManagementSkill = await readFile(
+      path.join(tempDir, ".qoder", "skills", "ec-task-management", "SKILL.md"),
+      "utf8",
+    );
+    expect(taskManagementSkill).toContain("show the full task and session\npanel");
+    expect(taskManagementSkill).toContain("snapshot --session-file <P>");
+    expect(taskManagementSkill).toContain(
+      "Never omit the confirm-mode section, even when the unfinished task list is empty",
+    );
+    expect(taskManagementSkill).not.toContain("{{");
 
     const settings = await readFile(path.join(tempDir, ".qoder", "settings.json"), "utf8");
     expect(settings).toContain(".qoder/hooks");

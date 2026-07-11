@@ -355,7 +355,7 @@ describe("upgrade command", () => {
   it("normalizes an equal-core prerelease harness version to the exact CLI version", async () => {
     await init({ agent: "codex" });
     await markProjectInitComplete();
-    await setHarnessVersion(`${VERSION}-beta.1`);
+    await setHarnessVersion(`${VERSION.split("-", 1)[0]}-0`);
 
     await upgrade({ yes: true });
 

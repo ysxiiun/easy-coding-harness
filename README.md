@@ -125,7 +125,7 @@ any stage --[user abort via ec-task-close]--> CLOSED
 | `ec-reviewing` | 多维度代码审查，输出 accept / fix / replan / blocked 结论 |
 | `ec-verification` | 执行 lint、typecheck、test 等验证硬门控，并处理验收修复循环 |
 | `ec-memory` | 写短期记忆，并在超过阈值时沉淀长期记忆 |
-| `ec-task-management` | 查看、创建、选择、恢复任务 |
+| `ec-task-management` | 任务与 session 面板：查看、创建、选择、恢复任务并管理当前会话确认模式 |
 | `ec-task-close` | 用户主动中断任务并关闭 |
 | `ec-no-harness` | 当前会话仅旁路 Easy Coding Harness，使用原生 Agent 能力 |
 | `ec-git` | 约束 git diff、commit、push、跨仓库提交等交付动作 |
