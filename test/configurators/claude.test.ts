@@ -95,13 +95,21 @@ describe("configureClaude", () => {
     expect(skill).toContain("Plain-text numbered choices are fallback only");
     expect(skill).toContain("Current task pointer exists");
     expect(skill).toContain("No current task pointer");
-    expect(skill).toContain("treat it as an upgrade-era automatic edge");
-    expect(skill).toContain("the user may enter REVIEW or skip directly to");
+    expect(skill).toContain("edge with `effective_confirm_mode`");
+    expect(skill).toContain("automatic code path chooses REVIEW");
     expect(skill).toContain("missing user-visible delivery keeps");
     expect(skill).not.toContain("before re-walking\n  REVIEW -> VERIFICATION");
     expect(skill).not.toContain("open the target agent");
     expect(skill).not.toContain("next_agent");
     expect(skill).not.toContain("{{");
+
+    const noHarnessSkill = await readFile(
+      path.join(tempDir, ".claude", "skills", "ec-no-harness", "SKILL.md"),
+      "utf8",
+    );
+    expect(noHarnessSkill).toContain("disable-harness --session-file");
+    expect(noHarnessSkill).toContain("does not disable the");
+    expect(noHarnessSkill).not.toContain("{{");
 
     const analysisSkill = await readFile(
       path.join(tempDir, ".claude", "skills", "ec-analysis", "SKILL.md"),
@@ -129,8 +137,8 @@ describe("configureClaude", () => {
     );
     expect(implementingSkill).toContain("output the complete `deliverable` to the user");
     expect(implementingSkill).toContain("Never replace,\n   truncate, or hide it");
-    expect(implementingSkill).toContain("Do not request or\n  enter REVIEW, VERIFICATION, or MEMORY");
-    expect(implementingSkill).toContain("`auto-transition --stage COMPLETE`");
+    expect(implementingSkill).toContain("request COMPLETE in approve mode or auto-transition");
+    expect(implementingSkill).toContain("followed the effective confirm mode");
 
     const implementerAgent = await readFile(
       path.join(tempDir, ".claude", "agents", "ec-implementer.md"),
@@ -215,10 +223,11 @@ describe("configureClaude", () => {
     expect(main).not.toContain("}```");
     expect(main).toContain("`/ec-init`");
     expect(main).toContain("`/ec-meta`");
+    expect(main).toContain("`/ec-no-harness`");
     expect(main).toContain("`pending_transition`");
-    expect(main).toContain("free-form Other through native UI");
+    expect(main).toContain("project `behavior.confirm_mode`");
     expect(main).toContain("`auto-transition`");
-    expect(main).toContain("IMPLEMENT additionally offers direct entry");
+    expect(main).toContain("Automatic code flow chooses IMPLEMENT -> REVIEW");
     expect(main).toContain("read-only task creates no test-strategy.md");
     expect(main).toContain("ask every unresolved decision during analysis");
 
@@ -227,7 +236,7 @@ describe("configureClaude", () => {
       "utf8",
     );
     expect(verificationSkill).toContain("request-transition --stage MEMORY");
-    expect(verificationSkill).toContain("the IMPLEMENT completion choice decides whether REVIEW");
+    expect(verificationSkill).toContain("guard/auto default to REVIEW");
     expect(verificationSkill).not.toContain("then re-REVIEW");
     expect(verificationSkill).not.toContain("MEMORY_SHORT");
     expect(verificationSkill).not.toContain("MEMORY_LONG");
@@ -264,6 +273,7 @@ describe("configureClaude", () => {
       "ec-init",
       "ec-memory",
       "ec-meta",
+      "ec-no-harness",
       "ec-reviewing",
       "ec-task-close",
       "ec-task-management",
@@ -339,6 +349,49 @@ describe("configureClaude", () => {
     expect(stdout).toContain("[workflow-state:idle]");
     expect(stdout).not.toContain("/ec-workflow");
     expect(stdout).not.toContain("$ec-workflow");
+  });
+
+  it("does not inject the Easy Coding sub-agent guard while this session bypasses the harness", async () => {
+    await configureClaude(tempDir);
+    await writeRuntimeScaffold(tempDir, ["claude-code"]);
+    await mkdir(path.join(tempDir, ".easy-coding", "sessions"), { recursive: true });
+
+    const sessionPath = path.join(
+      tempDir,
+      ".easy-coding",
+      "sessions",
+      `${process.pid}.json`,
+    );
+    const hook = path.join(tempDir, ".claude", "hooks", "inject-subagent-context.py");
+    const payload = JSON.stringify({ cwd: tempDir, hook_event_name: "PreToolUse" });
+
+    await writeFile(
+      sessionPath,
+      JSON.stringify({
+        current_task: null,
+        created_at: "2026-07-11T00:00:00Z",
+        harness_disabled: true,
+      }),
+      "utf8",
+    );
+    const bypassed = execFileSync("python3", [hook], {
+      cwd: tempDir,
+      input: payload,
+      encoding: "utf8",
+    });
+    expect(bypassed).toBe("");
+
+    await writeFile(
+      sessionPath,
+      JSON.stringify({ current_task: null, created_at: "2026-07-11T00:00:00Z" }),
+      "utf8",
+    );
+    const enabled = execFileSync("python3", [hook], {
+      cwd: tempDir,
+      input: payload,
+      encoding: "utf8",
+    });
+    expect(enabled).toContain("[easy-coding:subagent-guard]");
   });
 
   it("generated hooks do not infer a current task when the session is empty", async () => {
@@ -964,6 +1017,7 @@ describe("configureClaude", () => {
       "MEMORY",
       "COMPLETE",
     ];
+    const automaticStages = new Set(["ANALYSIS", "REVIEW", "VERIFICATION", "COMPLETE"]);
     for (const stage of stages) {
       if (stage === "COMPLETE") {
         await writeFile(
@@ -1006,7 +1060,7 @@ describe("configureClaude", () => {
         );
       }
       let transitionStdout: string;
-      if (stage === "ANALYSIS" || stage === "COMPLETE") {
+      if (automaticStages.has(stage)) {
         transitionStdout = execFileSync(
           "python3",
           [

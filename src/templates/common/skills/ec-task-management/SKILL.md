@@ -1,6 +1,6 @@
 ---
 name: ec-task-management
-description: Task panel for Easy Coding tasks. Use when the user runs {{skill_trigger}}ec-task-management, asks to see tasks, create a task, continue a task, or take over a task handed off by another agent.
+description: Task and session panel for Easy Coding. Use when the user runs {{skill_trigger}}ec-task-management, asks to see/create/continue/take over tasks, or asks to view or change the current session confirm mode.
 ---
 
 # ec-task-management — the task panel
@@ -61,6 +61,28 @@ when ready.
 The command returns `status_line` and `status_context`. If the command sets or changes
 `current_task`, use the returned context as the authoritative status source for the rest of
 the current turn instead of older hook-injected status text.
+
+### View or change this session's confirm mode
+
+Call `snapshot --session-file <P>` and show:
+- `project_confirm_mode`
+- `session_confirm_mode` (`project default` when null)
+- `effective_confirm_mode`
+
+When the user asks to change the current session, use native choice UI when available and offer
+exactly `approve`, `guard` (recommended default), and `auto`. The native free-form Other input
+may receive `restore project default`; do not invent a fourth button when the UI is limited to
+three choices.
+
+Set an override through the state API, never by editing the session JSON:
+`{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py set-confirm-mode --session-file <P> --mode <approve|guard|auto> --agent <agent-id>`.
+
+Restore project configuration through:
+`{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py clear-confirm-mode --session-file <P> --agent <agent-id>`.
+
+Use the returned snapshot as authoritative and report the effective mode. Preserve any existing
+`pending_transition`; when it becomes automatic, ec-workflow consumes its original target via
+`auto-transition` instead of losing the completed stage outcome.
 
 ## Boundaries
 

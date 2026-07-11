@@ -69,20 +69,21 @@ easy-coding init --submodules packages/a,packages/b
 ## 工作流
 
 ```text
-INIT --[auto]--> ANALYSIS -> IMPLEMENT -> REVIEW -> VERIFICATION -> MEMORY --[auto]--> COMPLETE
+INIT --[always auto]--> ANALYSIS -> IMPLEMENT -> REVIEW -> VERIFICATION -> MEMORY --[always auto]--> COMPLETE
                                     \----------------> VERIFICATION
-                                    \--[read-only auto]------------------------------> COMPLETE
+                                    \--[read-only, mode-aware]-----------------------> COMPLETE
                  ^            ^          |             |
                  +-- replan ---+          +--- fix -----+
                               ^                         |
                               +------- repair ----------+
-user-decision edge --[confirm / handoff / Other]--> target stage
+edge behavior --[approve / guard / auto]--> target stage
 any stage --[user abort via ec-task-close]--> CLOSED
 ```
 
-- `INIT → ANALYSIS` 与完成记忆处理后的 `MEMORY → COMPLETE` 自动流转，不生成 `pending_transition`，也不展示确认或交接。
-- 其余用户关联边通过 `pending_transition` 等待明确确认；代码 IMPLEMENT 完成后可选择进入 REVIEW、跳过 REVIEW 直接进入 VERIFICATION，或交接给其他智能体。
-- 显式 `doc` / `analysis` / `report` 只读任务不生成 `test-strategy.md`；IMPLEMENT 留下匹配的 dispatch/result 并展示完整报告后自动进入 COMPLETE，不执行 REVIEW、VERIFICATION 或 MEMORY，也不写任务记忆。
+- 生效确认模式优先级为 session 覆盖 > 项目 `behavior.confirm_mode` > `guard` 默认值。
+- `approve` 除 `INIT → ANALYSIS`、`MEMORY → COMPLETE` 外逐边确认；`guard` 只确认 `ANALYSIS → IMPLEMENT`、`VERIFICATION → MEMORY`；`auto` 自动执行全部合法工作流边。任何模式下关闭任务都必须显式执行。
+- `guard` / `auto` 的代码主链在 IMPLEMENT 后默认进入 REVIEW；`approve` 可明确跳过 REVIEW 进入 VERIFICATION。确认模式不绕过状态合法性、方案产物或验证门控。
+- 显式 `doc` / `analysis` / `report` 只读任务不生成 `test-strategy.md`；展示完整报告后按生效模式进入 COMPLETE，不执行 REVIEW、VERIFICATION 或 MEMORY，也不写任务记忆。
 - `VERIFICATION` 是验证硬门控，未实际运行的 lint、typecheck、test 不算通过。
 - `MEMORY` 先写入本次任务短期记忆，再执行长期记忆阈值门禁；未超过阈值时长期沉淀为 no-op。
 
@@ -107,6 +108,7 @@ any stage --[user abort via ec-task-close]--> CLOSED
 | `easy-coding add-agent` | 给已接入项目追加 Claude Code、Codex 或 Qoder 支持；supermodule 父仓可按已初始化子仓分层追加 |
 | `easy-coding upgrade` | CLI 升级后同步项目内生成文件，生成区覆盖，用户资产保留；supermodule 父仓会同步升级已初始化子仓 |
 | `easy-coding update` | 更新全局 CLI 到最新发布版 |
+| `easy-coding config` | 交互修改当前项目的 `confirm_mode` |
 | `easy-coding status` | 查看已安装平台、harness 版本、当前任务状态 |
 | `easy-coding clear` | 移除 harness 安装物，保留 tasks、spec、memory、project.yaml 等用户资产；supermodule 父仓支持交互选择、`--submodules` 和 `--no-submodules` |
 
@@ -125,6 +127,7 @@ any stage --[user abort via ec-task-close]--> CLOSED
 | `ec-memory` | 写短期记忆，并在超过阈值时沉淀长期记忆 |
 | `ec-task-management` | 查看、创建、选择、恢复任务 |
 | `ec-task-close` | 用户主动中断任务并关闭 |
+| `ec-no-harness` | 当前会话仅旁路 Easy Coding Harness，使用原生 Agent 能力 |
 | `ec-git` | 约束 git diff、commit、push、跨仓库提交等交付动作 |
 
 ### 内置 skills
@@ -154,6 +157,15 @@ easy-coding upgrade
 ```
 
 `upgrade` 会刷新生成区内的 skills、hooks、agents、主约束模板和运行时模板，不会删除已有任务、spec、memory、project.yaml 或项目知识文件。
+
+升级到 0.7.0 时，旧 `strict_confirm` / `auto_mode` 会一次性迁移为
+`behavior.confirm_mode` 并从配置中删除。项目级模式用 `easy-coding config` 修改（要求
+项目 Harness 与 CLI 版本完全一致，否则先执行 `easy-coding upgrade` 或更新 CLI）；当前
+session 的临时覆盖通过 `ec-task-management` 对话修改。
+
+若当前会话不希望 Harness 接管，显式调用 `/ec-no-harness`（Codex 使用
+`$ec-no-harness`）。它只旁路 Easy Coding，不关闭其他 hooks，也不忽略其他 skills；
+当前任务状态会原样保留。
 
 ## 版本与更新日志
 

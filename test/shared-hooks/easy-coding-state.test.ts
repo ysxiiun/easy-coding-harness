@@ -45,7 +45,10 @@ async function writeTaskFixture(
   );
 }
 
-async function writeSessionFixture(currentTask: string | null): Promise<void> {
+async function writeSessionFixture(
+  currentTask: string | null,
+  extra: Record<string, unknown> = {},
+): Promise<void> {
   await mkdir(path.join(tempDir, ".easy-coding", "sessions"), { recursive: true });
   await writeFile(
     path.join(tempDir, ".easy-coding", "sessions", "test.json"),
@@ -53,6 +56,7 @@ async function writeSessionFixture(currentTask: string | null): Promise<void> {
       {
         current_task: currentTask,
         created_at: "2026-06-26T00:00:00Z",
+        ...extra,
       },
       null,
       2,
@@ -147,6 +151,15 @@ async function writeMemoryConfig(shortTermMax: number, shortTermKeep: number): P
       "  schema_version: 2",
       "",
     ].join("\n"),
+    "utf8",
+  );
+}
+
+async function writeConfirmModeConfig(mode: "approve" | "guard" | "auto"): Promise<void> {
+  await mkdir(path.join(tempDir, ".easy-coding"), { recursive: true });
+  await writeFile(
+    path.join(tempDir, ".easy-coding", "config.yaml"),
+    ["version: 2", "behavior:", `  confirm_mode: ${mode}`, ""].join("\n"),
     "utf8",
   );
 }
@@ -1462,7 +1475,176 @@ describe("easy_coding_state.py automatic and optional transitions", () => {
     expect(output.automatic_transition).toEqual({ from: "INIT", to: "ANALYSIS" });
   });
 
-  it("rejects automatic transitions outside the fixed allowlist", async () => {
+  it("uses the session confirm mode before the project mode", async () => {
+    await writeConfirmModeConfig("approve");
+    await writeSessionFixture("07-11-session-auto", { confirm_mode: "auto" });
+    await writeTaskFixture("07-11-session-auto", "ANALYSIS", "codex");
+    await writeAnalysisArtifacts("07-11-session-auto");
+
+    const output = JSON.parse(
+      execFileSync(
+        "python3",
+        [
+          stateApiPath(),
+          "auto-transition",
+          "--session-file",
+          ".easy-coding/sessions/test.json",
+          "--stage",
+          "IMPLEMENT",
+          "--agent",
+          "codex",
+        ],
+        { cwd: tempDir, encoding: "utf8" },
+      ),
+    ) as {
+      status: string;
+      project_confirm_mode: string;
+      session_confirm_mode: string;
+      effective_confirm_mode: string;
+    };
+
+    expect(output.status).toBe("IMPLEMENT");
+    expect(output.project_confirm_mode).toBe("approve");
+    expect(output.session_confirm_mode).toBe("auto");
+    expect(output.effective_confirm_mode).toBe("auto");
+  });
+
+  it("automatically follows IMPLEMENT to REVIEW in guard mode", async () => {
+    await writeConfirmModeConfig("guard");
+    await writeSessionFixture("07-11-guard-review");
+    await writeTaskFixture("07-11-guard-review", "IMPLEMENT", "codex");
+
+    const output = JSON.parse(
+      execFileSync(
+        "python3",
+        [
+          stateApiPath(),
+          "auto-transition",
+          "--session-file",
+          ".easy-coding/sessions/test.json",
+          "--stage",
+          "REVIEW",
+          "--agent",
+          "codex",
+        ],
+        { cwd: tempDir, encoding: "utf8" },
+      ),
+    ) as { status: string; effective_confirm_mode: string };
+
+    expect(output.status).toBe("REVIEW");
+    expect(output.effective_confirm_mode).toBe("guard");
+  });
+
+  it("preserves a pending edge when a session mode change makes it automatic", async () => {
+    await writeConfirmModeConfig("approve");
+    await writeSessionFixture("07-11-mode-change");
+    await writeTaskFixture("07-11-mode-change", "IMPLEMENT", "codex", {
+      pending_transition: {
+        from: "IMPLEMENT",
+        to: "REVIEW",
+        requested_at: "2026-07-11T00:00:00Z",
+        requested_by: "codex",
+      },
+    });
+
+    const output = JSON.parse(
+      execFileSync(
+        "python3",
+        [
+          stateApiPath(),
+          "set-confirm-mode",
+          "--session-file",
+          ".easy-coding/sessions/test.json",
+          "--mode",
+          "guard",
+          "--agent",
+          "codex",
+        ],
+        { cwd: tempDir, encoding: "utf8" },
+      ),
+    ) as {
+      pending_transition: { from: string; to: string };
+      status_context: string;
+    };
+
+    expect(output.pending_transition).toMatchObject({ from: "IMPLEMENT", to: "REVIEW" });
+    expect(output.status_context).toContain(
+      "[easy-coding:auto-transition-ready:IMPLEMENT->REVIEW]",
+    );
+
+    const transitioned = JSON.parse(
+      execFileSync(
+        "python3",
+        [
+          stateApiPath(),
+          "auto-transition",
+          "--session-file",
+          ".easy-coding/sessions/test.json",
+          "--stage",
+          "REVIEW",
+          "--agent",
+          "codex",
+        ],
+        { cwd: tempDir, encoding: "utf8" },
+      ),
+    ) as { status: string; pending_transition: null };
+
+    expect(transitioned.status).toBe("REVIEW");
+    expect(transitioned.pending_transition).toBeNull();
+  });
+
+  it("bypasses only harness context for the current session and preserves task state", async () => {
+    await writeSessionFixture("07-11-native-session");
+    await writeTaskFixture("07-11-native-session", "IMPLEMENT", "codex");
+
+    const disabled = JSON.parse(
+      execFileSync(
+        "python3",
+        [
+          stateApiPath(),
+          "disable-harness",
+          "--session-file",
+          ".easy-coding/sessions/test.json",
+          "--agent",
+          "codex",
+        ],
+        { cwd: tempDir, encoding: "utf8" },
+      ),
+    ) as { status: string; status_line: string; status_context: string; harness_disabled: boolean };
+
+    expect(disabled.status).toBe("IMPLEMENT");
+    expect(disabled.status_line).toBe("");
+    expect(disabled.status_context).toContain("[easy-coding:no-harness]");
+    expect(disabled.harness_disabled).toBe(true);
+
+    const task = JSON.parse(
+      await readFile(
+        path.join(tempDir, ".easy-coding", "tasks", "07-11-native-session", "task.json"),
+        "utf8",
+      ),
+    ) as { status: string };
+    expect(task.status).toBe("IMPLEMENT");
+
+    const enabled = JSON.parse(
+      execFileSync(
+        "python3",
+        [
+          stateApiPath(),
+          "enable-harness",
+          "--session-file",
+          ".easy-coding/sessions/test.json",
+          "--agent",
+          "codex",
+        ],
+        { cwd: tempDir, encoding: "utf8" },
+      ),
+    ) as { status_line: string; status_context: string; harness_disabled: boolean };
+    expect(enabled.status_line).toContain("Easy Coding");
+    expect(enabled.status_context).not.toContain("[easy-coding:no-harness]");
+    expect(enabled.harness_disabled).toBe(false);
+  });
+
+  it("keeps the two guard gates confirmation-required", async () => {
     await writeSessionFixture("07-11-no-auto-bypass");
     await writeTaskFixture("07-11-no-auto-bypass", "ANALYSIS", "codex");
 
@@ -1483,9 +1665,52 @@ describe("easy_coding_state.py automatic and optional transitions", () => {
 
     expect(result.status).toBe(1);
     expect(result.stderr).toContain(
-      "Automatic transition is not allowed: ANALYSIS -> IMPLEMENT",
+      "Automatic transition is not allowed in guard mode: ANALYSIS -> IMPLEMENT",
     );
   });
+
+  it.each(["guard", "auto"] as const)(
+    "does not allow %s mode to auto-close a task",
+    async (confirmMode) => {
+      await writeConfirmModeConfig(confirmMode);
+      await writeSessionFixture(`07-11-no-auto-close-${confirmMode}`);
+      await writeTaskFixture(`07-11-no-auto-close-${confirmMode}`, "IMPLEMENT", "codex");
+
+      const result = spawnSync(
+        "python3",
+        [
+          stateApiPath(),
+          "auto-transition",
+          "--session-file",
+          ".easy-coding/sessions/test.json",
+          "--stage",
+          "CLOSED",
+          "--agent",
+          "codex",
+        ],
+        { cwd: tempDir, encoding: "utf8" },
+      );
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(
+        `Automatic transition is not allowed in ${confirmMode} mode: IMPLEMENT -> CLOSED`,
+      );
+
+      const task = JSON.parse(
+        await readFile(
+          path.join(
+            tempDir,
+            ".easy-coding",
+            "tasks",
+            `07-11-no-auto-close-${confirmMode}`,
+            "task.json",
+          ),
+          "utf8",
+        ),
+      ) as { status: string };
+      expect(task.status).toBe("IMPLEMENT");
+    },
+  );
 
   it("rejects pending confirmation gates for automatic edges", async () => {
     await writeSessionFixture("07-11-no-auto-pending");
@@ -1508,7 +1733,7 @@ describe("easy_coding_state.py automatic and optional transitions", () => {
 
     expect(result.status).toBe(1);
     expect(result.stderr).toContain(
-      "Transition INIT -> ANALYSIS is automatic; use auto-transition instead",
+      "Transition INIT -> ANALYSIS is automatic in guard mode; use auto-transition instead",
     );
   });
 
@@ -1548,7 +1773,7 @@ describe("easy_coding_state.py automatic and optional transitions", () => {
 
       expect(result.status).toBe(1);
       expect(result.stderr).toContain(
-        `Transition ${source} -> ${target} is automatic; use auto-transition instead`,
+        `Transition ${source} -> ${target} is automatic in guard mode; use auto-transition instead`,
       );
 
       const task = JSON.parse(
@@ -1563,6 +1788,7 @@ describe("easy_coding_state.py automatic and optional transitions", () => {
   );
 
   it("allows IMPLEMENT to skip REVIEW only through the confirmed pending gate", async () => {
+    await writeConfirmModeConfig("approve");
     await writeSessionFixture("07-11-skip-review");
     await writeTaskFixture("07-11-skip-review", "IMPLEMENT", "codex");
 
@@ -1877,7 +2103,7 @@ describe("easy_coding_state.py automatic and optional transitions", () => {
     );
 
     expect(rejected.status).toBe(1);
-    expect(rejected.stderr).toContain("Automatic transition is not allowed: IMPLEMENT -> COMPLETE");
+    expect(rejected.stderr).toContain("ILLEGAL TRANSITION: IMPLEMENT -> COMPLETE");
   });
 
   it.each(["REVIEW", "VERIFICATION", "MEMORY"])(

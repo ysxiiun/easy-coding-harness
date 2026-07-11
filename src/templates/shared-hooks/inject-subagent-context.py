@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 import sys
 
-from easy_coding_state import snapshot_state
+from easy_coding_state import load_session, snapshot_state
 
 
 def configure_stdio() -> None:
@@ -54,7 +54,11 @@ def main() -> int:
     if root is None:
         return 0
 
-    state = snapshot_state(root)
+    session = load_session(root)
+    if session and session.get("harness_disabled") is True:
+        return 0
+
+    state = snapshot_state(root, session=session)
     task_id = state.get("current_task")
     context = [
         "[easy-coding:subagent-guard]",

@@ -4,7 +4,7 @@ import { CONFIG_FILE, EASY_CODING_DIR } from "../constants/paths.js";
 import { VERSION } from "../constants/version.js";
 import { renderBanner } from "../ui/banner.js";
 import { compareVersions } from "../utils/compare-versions.js";
-import { readConfigYaml } from "../utils/config-yaml.js";
+import { isConfirmMode, readConfigYaml } from "../utils/config-yaml.js";
 import { pathExists } from "../utils/file-writer.js";
 import { readSessionFile } from "../utils/session.js";
 import {
@@ -34,7 +34,7 @@ export async function status(): Promise<void> {
   console.log(chalk.bold("Harness"));
   console.log(`  version: ${config.harness_version}`);
   console.log(`  cli: ${VERSION}`);
-  if (versionRelation === -1) {
+  if (versionRelation === -1 || (versionRelation === 0 && config.harness_version !== VERSION)) {
     console.log(chalk.yellow("  upgrade: available"));
   } else if (versionRelation === 1) {
     console.log(chalk.red("  upgrade: CLI is older than project harness"));
@@ -43,8 +43,16 @@ export async function status(): Promise<void> {
   }
   console.log(`  agents: ${config.agents.join(", ") || "(none)"}`);
   console.log(`  project: ${config.project.name}`);
+  const projectConfirmMode = isConfirmMode(config.behavior?.confirm_mode)
+    ? config.behavior.confirm_mode
+    : "guard";
+  console.log(`  confirm_mode: ${projectConfirmMode}`);
   console.log("");
   console.log(chalk.bold("Session"));
+  const sessionConfirmMode = session?.confirm_mode;
+  console.log(`  confirm_mode: ${sessionConfirmMode ?? "project default"}`);
+  console.log(`  effective_confirm_mode: ${sessionConfirmMode ?? projectConfirmMode}`);
+  console.log(`  harness: ${session?.harness_disabled ? "disabled for this session" : "enabled"}`);
   if (session?.current_task) {
     const taskPath = getTaskJsonPath(cwd, session.current_task);
     if (await pathExists(taskPath)) {

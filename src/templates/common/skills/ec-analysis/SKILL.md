@@ -50,9 +50,9 @@ Communicate with the user in the user's language.
    downgrade: during the pre-fill decision gate, ask "split into batches? / which subset this
    round?" and wait for the user to decide. Never make a scope-narrowing decision yourself and
    present it as settled. Never fabricate a
-   premise such as "the user already fixed scope X in INIT" or "auto_mode already selected Y"
-   to justify narrowing — `auto_mode` only waives stage-boundary prompts under an explicit
-   autonomous user request and carries NO scope or delivery-form decision whatsoever.
+   premise such as "the user already fixed scope X in INIT" or "confirm_mode already selected Y"
+   to justify narrowing — confirmation mode controls stage-boundary prompts only and carries
+   NO scope or delivery-form decision whatsoever.
 6. **改动范围 lists ONLY real project code.** The 改动范围 table carries only changes to real
    project source/config files. Any harness artifact under `.easy-coding/` (dev-spec.md,
    execution.jsonl, test-strategy.md, memory files, generated reports, etc.) is FORBIDDEN in

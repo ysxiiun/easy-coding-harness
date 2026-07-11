@@ -89,6 +89,6 @@ Platform spawn rule: {{platform_spawn_instruction}}
 Append `review` records to execution.jsonl, one per dimension:
 `{"type":"review","dimension":"correctness","findings":[{"file":"...","line":42,"issue":"...","severity":"warn"}]}`.
 Then state the verdict and hand back to ec-workflow.
-For `accept` or `replan`, ec-workflow records the corresponding pending transition and presents
-the standard confirmation/handoff/Other gate. A `fix` round stays inside REVIEW and therefore
+For `accept` or `replan`, ec-workflow follows the effective confirm mode for the corresponding
+transition. A `fix` round stays inside REVIEW and therefore
 does not create a status transition unless the outcome changes.

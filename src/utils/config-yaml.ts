@@ -5,6 +5,10 @@ import type { AgentPlatform } from "../types/platform.js";
 import type { SupermoduleConfig } from "../types/supermodule.js";
 import { writeTextFile } from "./file-writer.js";
 
+export const CONFIG_SCHEMA_VERSION = 2;
+export const CONFIRM_MODES = ["approve", "guard", "auto"] as const;
+export type ConfirmMode = (typeof CONFIRM_MODES)[number];
+
 export interface EasyCodingConfig {
   version: number;
   harness_version: string;
@@ -22,8 +26,7 @@ export interface EasyCodingConfig {
     auto_archive_days: number;
   };
   behavior: {
-    strict_confirm: boolean;
-    auto_mode: boolean;
+    confirm_mode: ConfirmMode;
   };
   supermodule?: SupermoduleConfig;
   [key: string]: unknown;
@@ -37,7 +40,7 @@ export function createDefaultConfig(params: {
   projectId?: string;
 }): EasyCodingConfig {
   const config: EasyCodingConfig = {
-    version: 1,
+    version: CONFIG_SCHEMA_VERSION,
     harness_version: params.harnessVersion,
     agents: params.agents,
     project: {
@@ -53,8 +56,7 @@ export function createDefaultConfig(params: {
       auto_archive_days: 30,
     },
     behavior: {
-      strict_confirm: true,
-      auto_mode: false,
+      confirm_mode: "guard",
     },
   };
   if (params.supermodule) {
@@ -121,6 +123,47 @@ export async function updateHarnessVersion(
   return updateConfigYaml(filePath, (config) => {
     config.harness_version = version;
   });
+}
+
+export function isConfirmMode(value: unknown): value is ConfirmMode {
+  return typeof value === "string" && CONFIRM_MODES.includes(value as ConfirmMode);
+}
+
+export function resolveLegacyConfirmMode(config: EasyCodingConfig): ConfirmMode {
+  // 旧布尔值只在 CLI 迁移写入时读取；安装后的运行时只消费 confirm_mode。
+  const behavior = (config.behavior ?? {}) as unknown as Record<string, unknown>;
+  if (isConfirmMode(behavior.confirm_mode)) {
+    return behavior.confirm_mode;
+  }
+  if (behavior.auto_mode === true) {
+    return "auto";
+  }
+  if (behavior.strict_confirm === true) {
+    return "approve";
+  }
+  return "guard";
+}
+
+export async function setConfirmMode(
+  filePath: string,
+  mode: ConfirmMode,
+): Promise<EasyCodingConfig> {
+  return updateConfigYaml(filePath, (config) => {
+    const legacyBehavior = (config.behavior ?? {}) as unknown as Record<string, unknown>;
+    const behavior = Object.fromEntries(
+      Object.entries(legacyBehavior).filter(
+        ([key]) => key !== "strict_confirm" && key !== "auto_mode",
+      ),
+    );
+    behavior.confirm_mode = mode;
+    config.behavior = behavior as EasyCodingConfig["behavior"];
+    config.version = CONFIG_SCHEMA_VERSION;
+  });
+}
+
+export async function migrateConfirmModeConfig(filePath: string): Promise<EasyCodingConfig> {
+  const config = await readConfigYaml(filePath);
+  return setConfirmMode(filePath, resolveLegacyConfirmMode(config));
 }
 
 export async function ensureProjectId(filePath: string): Promise<string> {

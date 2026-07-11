@@ -27,6 +27,14 @@ describe("compareVersions", () => {
     expect(compareVersions("0.1", "0.1.0")).toBe(0);
   });
 
+  it("orders prereleases below the matching stable release", () => {
+    expect(compareVersions("0.7.0-beta.1", "0.7.0")).toBe(-1);
+    expect(compareVersions("0.7.0", "0.7.0-beta.1")).toBe(1);
+    expect(compareVersions("0.7.0-beta.2", "0.7.0-beta.10")).toBe(-1);
+    expect(compareVersions("0.7.0-beta.1", "0.7.0-beta.alpha")).toBe(-1);
+    expect(compareVersions("0.7.0+build.1", "0.7.0+build.2")).toBe(0);
+  });
+
   it("detects an installed version behind the current CLI", () => {
     expect(isVersionBehind("0.1.0", "0.1.1")).toBe(true);
     expect(isVersionBehind("0.1.1", "0.1.1")).toBe(false);

@@ -6,6 +6,8 @@ import {
   addAgentsToConfig,
   createDefaultConfig,
   ensureProjectId,
+  migrateConfirmModeConfig,
+  setConfirmMode,
   updateHarnessVersion,
   updateSupermoduleConfig,
   yamlHasAgent,
@@ -47,6 +49,33 @@ afterEach(async () => {
 });
 
 describe("config-yaml", () => {
+  it("creates schema 2 configs with guard as the default confirm mode", () => {
+    const config = createDefaultConfig({
+      projectName: "demo",
+      harnessVersion: "1.0.0",
+      agents: ["claude-code"],
+    });
+    expect(config.version).toBe(2);
+    expect(config.behavior).toEqual({ confirm_mode: "guard" });
+  });
+
+  it("migrates legacy confirmation booleans and removes them", async () => {
+    await migrateConfirmModeConfig(configPath);
+    const content = await readFile(configPath, "utf8");
+    expect(content).toContain("version: 2");
+    expect(content).toContain("confirm_mode: approve");
+    expect(content).not.toContain("strict_confirm");
+    expect(content).not.toContain("auto_mode");
+  });
+
+  it("writes an explicit confirm mode without restoring legacy keys", async () => {
+    await setConfirmMode(configPath, "auto");
+    const content = await readFile(configPath, "utf8");
+    expect(content).toContain("confirm_mode: auto");
+    expect(content).not.toContain("strict_confirm");
+    expect(content).not.toContain("auto_mode");
+  });
+
   it("updates harness_version while preserving comments", async () => {
     await updateHarnessVersion(configPath, "0.1.1");
     const content = await readFile(configPath, "utf8");

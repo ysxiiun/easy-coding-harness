@@ -26,13 +26,13 @@ CLI 本身很克制——它只往 `.claude` / `.agents` / `.qoder` 这些目录
 
 ### 人机共创，关键节点设硬门控
 
-整个工作流是固定状态机，用户决策状态边设置明确确认门，机械边自动流转：
+整个工作流是固定状态机，状态边按 `approve / guard / auto` 确认模式流转，机械边始终自动：
 
-- `pending_transition`（用户决策确认）——当前阶段完成后仍不改状态，用户确认后才迁移；
-- `auto-transition`（机械流转）——INIT → ANALYSIS、MEMORY → COMPLETE，以及校验通过的只读 IMPLEMENT → COMPLETE 不打断用户；
+- `pending_transition`（需要确认的状态边）——当前阶段完成后仍不改状态，用户确认后才迁移；
+- `auto-transition`（模式允许的自动边）——只在合法边和产物检查通过后迁移；
 - `VERIFICATION`（验证）——代码任务没有真实跑过的 lint、typecheck、test，不算通过；只读任务不进入该阶段。
 
-用户决策边优先通过智能体原生选项功能提供确认目标阶段、交接给其他智能体和 free-form Other；代码 IMPLEMENT 还可明确跳过 REVIEW 进入 VERIFICATION。只读任务展示完整报告后直接结束，不审查、不验证、不归档记忆。平台不支持时才退回文本编号。
+`approve` 除 INIT → ANALYSIS、MEMORY → COMPLETE 外逐边确认；`guard`（默认）只确认 ANALYSIS → IMPLEMENT、VERIFICATION → MEMORY；`auto` 自动执行全部合法工作流边。任何模式下关闭任务都必须显式执行。需要确认时优先使用智能体原生选项。只读任务展示完整报告后按生效模式结束，不审查、不验证、不归档记忆。
 
 ### 上下文卫生
 
@@ -51,14 +51,14 @@ CLI 本身很克制——它只往 `.claude` / `.agents` / `.qoder` 这些目录
 ### 一条能恢复、能交接的工作流
 
 ```text
-INIT --[auto]--> ANALYSIS -> IMPLEMENT -> REVIEW -> VERIFICATION -> MEMORY --[auto]--> COMPLETE
+INIT --[always auto]--> ANALYSIS -> IMPLEMENT -> REVIEW -> VERIFICATION -> MEMORY --[always auto]--> COMPLETE
                                     \----------------> VERIFICATION
-                                    \--[read-only auto]------------------------------> COMPLETE
+                                    \--[read-only, mode-aware]-----------------------> COMPLETE
                  ^            ^          |             |
                  +-- replan ---+          +--- fix -----+
                               ^                         |
                               +------- repair ----------+
-user-decision edge --[confirm / handoff / Other]--> target stage
+edge behavior --[approve / guard / auto]--> target stage
 ```
 
 任务状态持久化在 `.easy-coding/` 里，不绑死在某次会话上。所以：
@@ -125,7 +125,9 @@ agent 会读项目，生成 `SOUL.md`、`RULES.md`、`ABSTRACT.md`、`TEST_STRAT
 /ec-workflow 实现 xxx 功能
 ```
 
-`ec-workflow` 负责创建或恢复任务。代码任务在 IMPLEMENT 后可进入 REVIEW 或直接进入 VERIFICATION，再归档记忆；只读任务展示完整报告后直接 COMPLETE，不执行 REVIEW、VERIFICATION 或 MEMORY。
+`ec-workflow` 负责创建或恢复任务。项目可用 `approve`、`guard`（默认）、`auto` 控制状态边确认范围，当前 session 可通过 `ec-task-management` 临时覆盖；自动代码主链在 IMPLEMENT 后进入 REVIEW。只读任务展示完整报告后按生效模式进入 COMPLETE，不执行 REVIEW、VERIFICATION 或 MEMORY。
+
+如果当前会话不希望 Harness 接管，显式调用 `/ec-no-harness`（Codex 使用 `$ec-no-harness`）。它只旁路 Easy Coding，其他 skills 和 hooks 仍正常工作，任务状态也会原样保留。
 
 ### 常用命令
 
@@ -135,6 +137,7 @@ agent 会读项目，生成 `SOUL.md`、`RULES.md`、`ABSTRACT.md`、`TEST_STRAT
 | `easy-coding add-agent` | 给已接入项目追加某个平台支持 |
 | `easy-coding upgrade` | CLI 升级后同步项目内生成文件，用户资产保留 |
 | `easy-coding update` | 更新全局 CLI 到最新发布版 |
+| `easy-coding config` | 交互修改项目级确认模式 |
 | `easy-coding status` | 查看已安装平台、harness 版本、当前任务状态 |
 | `easy-coding clear` | 移除 harness 安装物，保留 tasks、spec、memory 等用户资产 |
 

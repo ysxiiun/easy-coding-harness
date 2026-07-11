@@ -66,6 +66,12 @@ describe("configureCodex", () => {
     );
     expect(skill).toContain("`$ec-init`");
     expect(skill).not.toContain("{{");
+    const noHarnessSkill = await readFile(
+      path.join(tempDir, ".agents", "skills", "ec-no-harness", "SKILL.md"),
+      "utf8",
+    );
+    expect(noHarnessSkill).toContain("disable-harness --session-file");
+    expect(noHarnessSkill).not.toContain("{{");
 
     expect(await pathExists(path.join(tempDir, ".codex", "hooks", "session-start.py"))).toBe(true);
     expect(await pathExists(path.join(tempDir, ".codex", "hooks", "easy_coding_status.py"))).toBe(

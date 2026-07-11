@@ -1,12 +1,12 @@
 ---
 name: ec-memory
-description: MEMORY-stage skill — part of the archive flow, triggered only after user acceptance and a confirmed stage edge. Writes one schema-v2 short memory, runs the authoritative conditional long-memory gate, performs optional distillation, and automatically completes the task.
+description: MEMORY-stage skill — archive flow entered after a green VERIFICATION gate according to the effective confirm mode. Writes one schema-v2 short memory, runs the authoritative conditional long-memory gate, performs optional distillation, and automatically completes the task.
 ---
 
 # ec-memory — archive what was learned
 
-ec-workflow dispatches you during MEMORY, which runs only after the user accepts the task and
-confirms entry. Inputs: the task's `dev-spec.md`, `execution.jsonl` (the `result` and
+ec-workflow dispatches you during MEMORY after approve/guard acceptance or an auto-mode green
+VERIFICATION gate. Inputs: the task's `dev-spec.md`, `execution.jsonl` (the `result` and
 `verify` records are precise source material), the changed-files list, existing memory files.
 Read-only `doc` / `analysis` / `report` tasks auto-complete from IMPLEMENT and never enter
 MEMORY or write task memory.

@@ -6,6 +6,16 @@
 - `y`：常规功能升级
 - `z`：日常 bug 修复
 
+## 0.7.0
+
+- 新增 `behavior.confirm_mode`，提供 `approve`、`guard`（默认）和 `auto` 三种状态确认策略；session 中的覆盖值优先于项目配置。
+- 新增交互式 `easy-coding config` 命令修改项目级确认模式；命令仅在项目 Harness 与 CLI 版本完全一致时写入。版本比较遵循 SemVer 预发布优先级，`upgrade` 可将 beta 收敛到同核心正式版，同时拒绝 beta CLI 降级正式版项目。`ec-task-management` 支持通过对话查看、设置或清除当前 session 覆盖，并在模式变化后保留已有待流转目标。
+- `easy-coding upgrade` 将配置 schema 升级到 2，把 `auto_mode: true` 映射为 `auto`、`strict_confirm: true` 映射为 `approve`、其余映射为 `guard`，并删除两个旧字段；运行时不再消费旧配置。
+- 状态 API 按生效确认模式决定 `request-transition` / `confirm-transition` / `auto-transition`，同时保留合法边、ANALYSIS 产物、只读交付、VERIFICATION 和 MEMORY 检查点。
+- `guard` 仅确认 `ANALYSIS → IMPLEMENT` 与 `VERIFICATION → MEMORY`；其余工作流边自动执行，代码任务的自动主链默认进入 REVIEW。`approve` 除两条机械边外逐边确认，`auto` 自动执行全部合法工作流边；任何模式下关闭任务都必须显式执行。
+- 新增 `ec-no-harness` skill：当前 session 可旁路 Easy Coding Harness，保留任务状态且不关闭 Hook 系统；非 Easy Coding skills、其他 hooks 与全局/项目约束继续生效，并支持同会话恢复。
+- README、设计/介绍/使用文档、主约束、阶段 skills、生成安装测试和状态 API 回归测试同步升级到 0.7.0。
+
 ## 0.6.1
 
 - 状态迁移按是否需要用户决策分层：`INIT → ANALYSIS` 在 INIT 工作完成后自动流转，`MEMORY → COMPLETE` 在记忆处理检查点完成后自动流转；这两条机械边不再创建 `pending_transition`，也不再展示确认或交接选项。

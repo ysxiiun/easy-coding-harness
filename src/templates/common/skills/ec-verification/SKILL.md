@@ -1,6 +1,6 @@
 ---
 name: ec-verification
-description: VERIFICATION-stage skill — the hard gate between implementation/review and archive. Use when ec-workflow enters VERIFICATION. Runs lint/typecheck/test in parallel, verifies coverage against test-strategy, gates on fresh evidence, then drives the user-acceptance and repair loop. Archive never happens without explicit user acceptance.
+description: VERIFICATION-stage skill — the hard evidence gate between implementation/review and archive. Runs lint/typecheck/test in parallel, verifies coverage against test-strategy, then follows the effective confirm mode for archive or repair.
 ---
 
 # ec-verification — the hard gate
@@ -19,10 +19,10 @@ NO COMPLETION CLAIMS WITHOUT FRESH VERIFICATION EVIDENCE
 - A previous round's result does not count.
 - "should pass" / "looks correct" is not evidence.
 
-NO AUTO-ARCHIVE WITHOUT USER ACCEPTANCE
-- Verification passing does not complete the task.
-- The memory flow is part of archive; it runs only after the user accepts.
-- An unaccepted task's memory is dirty data.
+NO ARCHIVE WITHOUT A GREEN GATE
+- Verification passing evidence is mandatory in every confirm mode.
+- approve/guard require user acceptance before MEMORY; auto advances after the green gate.
+- Confirmation mode never turns failed or missing evidence into acceptance.
 ```
 
 ## 1. Run the gate (parallel, always sub-agents)
@@ -53,10 +53,10 @@ Append one `verify` record per check:
 
 ## 3. Gate decision
 
-- All three pass AND coverage satisfied → present the verification result; wait for user
-  acceptance. Do NOT archive yet.
-- Any failure → append the failing `verify` record, summarize failures, request
-  VERIFICATION -> IMPLEMENT, and wait at the standard confirmation/handoff/Other gate.
+- All three pass AND coverage satisfied → present the verification result; approve/guard wait
+  for user acceptance, while auto hands the green result to ec-workflow for automatic MEMORY.
+- Any failure → append the failing `verify` record, summarize failures, select
+  VERIFICATION -> IMPLEMENT, and follow the effective confirm mode.
 
 ## 4. User acceptance and repair loop
 
@@ -64,11 +64,10 @@ After a green gate, present an acceptance summary: what changed (files + summari
 verification results (lint/type/test), and the coverage status. Then the user takes time to
 test manually. Their response routes:
 
-- **"accepted"** → request VERIFICATION -> MEMORY and present the standard boundary gate.
+- **"accepted"** (approve/guard) → request VERIFICATION -> MEMORY and present the standard boundary gate.
 - **"problem here"** → scope judgment against the dev-spec:
-  - in scope → request VERIFICATION -> IMPLEMENT and wait for the user to confirm the return;
-    after repair, the IMPLEMENT completion choice decides whether REVIEW runs again or
-    VERIFICATION resumes directly.
+  - in scope → select VERIFICATION -> IMPLEMENT and follow the effective confirm mode; after
+    repair, approve presents the IMPLEMENT choice while guard/auto default to REVIEW.
   - out of scope → propose a new task (`spawned_from` = current task id); the current task
     may archive now (if already satisfactory) or stay suspended.
 - **"cancel"** → ec-task-close.
@@ -77,15 +76,16 @@ Repair sizing: a trivial tweak is fixed and re-verified inside VERIFICATION; a l
 change formally returns to IMPLEMENT. After repair, present the standard IMPLEMENT completion
 choice again so the user may enter REVIEW or skip directly to VERIFICATION.
 
-## 5. Archive entry (only after acceptance)
+## 5. Archive entry
 
-Acceptance does not mutate the stage directly. Hand control to ec-workflow to call
-`request-transition --stage MEMORY`, then present:
+In approve/guard, acceptance does not mutate the stage directly. Hand control to ec-workflow
+to call `request-transition --stage MEMORY`, then present:
 1. Confirm entering MEMORY
 2. Hand off to another agent
 3. Other (native free-form Other, or the third text option)
 
 Only after confirmation may ec-workflow consume the pending edge and dispatch ec-memory.
+In auto, hand the green gate directly to ec-workflow for `auto-transition --stage MEMORY`.
 ec-memory owns both short-memory creation and the conditional long-memory gate inside the
 single MEMORY stage. After memory processing completes, MEMORY -> COMPLETE advances
 automatically without another confirmation or handoff gate.

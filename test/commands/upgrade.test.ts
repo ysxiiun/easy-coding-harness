@@ -334,6 +334,35 @@ describe("upgrade command", () => {
     expect(await readFile(memoryPath, "utf8")).toBe("memory must stay byte-identical\n");
   });
 
+  it("migrates legacy confirmation fields to schema 2 and removes the old keys", async () => {
+    await init({ agent: "codex" });
+    const configPath = path.join(tempDir, ".easy-coding", "config.yaml");
+    const legacyConfig = (await readFile(configPath, "utf8"))
+      .replace("version: 2", "version: 1")
+      .replace("confirm_mode: guard", "strict_confirm: false\n  auto_mode: true")
+      .replace(/harness_version: .+/, "harness_version: 0.6.1");
+    await writeFile(configPath, legacyConfig, "utf8");
+
+    await upgrade({ yes: true });
+
+    const migrated = await readFile(configPath, "utf8");
+    expect(migrated).toContain("version: 2");
+    expect(migrated).toContain("confirm_mode: auto");
+    expect(migrated).not.toContain("strict_confirm");
+    expect(migrated).not.toContain("auto_mode");
+  });
+
+  it("normalizes an equal-core prerelease harness version to the exact CLI version", async () => {
+    await init({ agent: "codex" });
+    await markProjectInitComplete();
+    await setHarnessVersion(`${VERSION}-beta.1`);
+
+    await upgrade({ yes: true });
+
+    const config = await readConfigYaml(path.join(tempDir, ".easy-coding", "config.yaml"));
+    expect(config.harness_version).toBe(VERSION);
+  });
+
   it("refreshes stale supermodule parent topology even when all targets are current", async () => {
     await writeFile(
       path.join(tempDir, ".gitmodules"),

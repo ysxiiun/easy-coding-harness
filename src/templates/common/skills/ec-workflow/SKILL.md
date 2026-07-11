@@ -14,6 +14,10 @@ replies are English.
 
 ## Startup sequence (run on every activation, in order)
 
+If `[easy-coding:no-harness]` is present, do not start or resume this workflow. The current
+session is intentionally using native agent behavior; only `ec-no-harness` may restore Easy
+Coding for that session.
+
 1. **Init guard.** Read `.easy-coding/tasks/project-init/task.json`.
    - Missing → tell the user to run the `easy-coding init` CLI first. Stop.
    - `status != "COMPLETE"` → tell the user to run `{{skill_trigger}}ec-init` first. Stop.
@@ -65,24 +69,24 @@ replies are English.
 ## State machine
 
 ```
-INIT --[auto]--> ANALYSIS -> IMPLEMENT -> REVIEW -> VERIFICATION -> MEMORY --[auto]--> COMPLETE
+INIT --[always auto]--> ANALYSIS -> IMPLEMENT -> REVIEW -> VERIFICATION -> MEMORY --[always auto]--> COMPLETE
                                     \----------------> VERIFICATION
-                                    \--[read-only auto]------------------------------> COMPLETE
+                                    \--[read-only, mode-aware]-----------------------> COMPLETE
                  ^            ^          |             |
                  +-- replan ---+          +--- fix -----+
                               ^                         |
                               +------- repair ----------+
-user-decision edge --[explicit confirmation / handoff / Other]--> target stage
+edge behavior --[effective confirm mode: approve / guard / auto]--> target stage
 any stage --[user abort via ec-task-close]--> CLOSED
 ```
 
 | Stage | Owner skill | What happens | Exit condition |
 |---|---|---|---|
 | INIT | ec-workflow | collect context, settle scope AND delivery form (change code vs. produce a document) | work complete; auto-transition to ANALYSIS |
-| ANALYSIS | ec-analysis | dev-spec + execution plan; code tasks also get test strategy | analysis presented; request IMPLEMENT |
-| IMPLEMENT | ec-implementing | code changes or one read-only deliverable | code: choose REVIEW or VERIFICATION; read-only: auto-complete after delivery |
-| REVIEW | ec-reviewing | multi-dimension code review | verdict selects a legal target; request it |
-| VERIFICATION | ec-verification | hard gate: lint/typecheck/test + coverage | result selects MEMORY or IMPLEMENT; request it |
+| ANALYSIS | ec-analysis | dev-spec + execution plan; code tasks also get test strategy | mode-aware transition to IMPLEMENT |
+| IMPLEMENT | ec-implementing | code changes or one read-only deliverable | code defaults to REVIEW when automatic; approve may choose VERIFICATION |
+| REVIEW | ec-reviewing | multi-dimension code review | verdict selects a legal mode-aware target |
+| VERIFICATION | ec-verification | hard gate: lint/typecheck/test + coverage | mode-aware transition to MEMORY or IMPLEMENT |
 | MEMORY | ec-memory | write short memory, then run the conditional long-memory gate | memory work complete; auto-transition to COMPLETE |
 | COMPLETE | ec-workflow | clear current_task, set task status, summary | automatic terminal after MEMORY or validated read-only IMPLEMENT |
 | CLOSED | ec-task-close | user abort; no memory flow | terminal |
@@ -93,9 +97,9 @@ any stage --[user abort via ec-task-close]--> CLOSED
 > code task into a documentation-only task — that is a downgrade (see ec-analysis HARD RULE 5).
 > Use `doc`, `analysis`, or `report` only when the user's original request explicitly asks for
 > a no-code deliverable. Those task types may carry execution units with an empty file scope;
-> code task types may not. A successful empty-scope task ends automatically from IMPLEMENT to
-> COMPLETE after its full deliverable is shown; it never creates test-strategy.md or enters
-> REVIEW, VERIFICATION, or MEMORY.
+> code task types may not. After its full deliverable is shown, a successful empty-scope task
+> follows the effective confirm mode from IMPLEMENT to COMPLETE; it never creates
+> test-strategy.md or enters REVIEW, VERIFICATION, or MEMORY.
 
 ## Task switching
 
@@ -114,22 +118,28 @@ it, routing matches, and switching happens again.
 
 ## Transition rules (hard)
 
-- **Code tasks may skip only REVIEW.** ANALYSIS cannot jump to VERIFICATION; IMPLEMENT cannot
-  start before the ANALYSIS -> IMPLEMENT confirmation gate passes. After code implementation,
-  the user may enter REVIEW or skip it and enter VERIFICATION; code tasks never skip
-  VERIFICATION. Explicit read-only tasks are the separate terminal exception below.
-- **User-decision edges are confirmation gates.** Stage completion on those edges does NOT
-  change `task.json.status`. It records a `pending_transition` through the state API, presents
-  the choices below, and stops. This applies to forward edges, repair/replan edges, and the
-  IMPLEMENT review choice. Task creation entering INIT and the separately confirmed
-  ec-task-close flow do not add a redundant second prompt.
-- **Mechanical edges are automatic.** After INIT work completes, call `auto-transition`
-  for ANALYSIS and dispatch ec-analysis in the same flow. After `memory-complete`, call
-  `auto-transition` for COMPLETE and emit the closeout summary. A successful explicit read-only
-  task also calls `auto-transition` from IMPLEMENT to COMPLETE immediately after displaying the
-  full deliverable. These edges do not create `pending_transition`, do not offer handoff, and
-  never wait for user confirmation.
-- **Native choice first (hard requirement).** After `request-transition` succeeds, you MUST
+- **Code tasks may skip only REVIEW.** ANALYSIS cannot jump to VERIFICATION and code tasks never
+  skip VERIFICATION. In `guard` and `auto`, an automatic code path chooses REVIEW as the default
+  successor to IMPLEMENT. In `approve`, the user may explicitly choose REVIEW or skip it and
+  enter VERIFICATION.
+- **Resolve the effective confirm mode first.** Read `[easy-coding:confirm-mode:X]` or the state
+  API snapshot. Session mode overrides project `behavior.confirm_mode`; missing project
+  configuration defaults to `guard`.
+  - `approve`: every legal edge requires `request-transition` and explicit confirmation except
+    INIT -> ANALYSIS and MEMORY -> COMPLETE.
+  - `guard` (default): only ANALYSIS -> IMPLEMENT and VERIFICATION -> MEMORY require explicit
+    confirmation. Every other legal edge uses `auto-transition` after its owner selects the
+    evidence-backed target.
+  - `auto`: every legal edge uses `auto-transition`.
+  `ec-task-close` remains an explicit user abort and is not triggered by confirm mode.
+- **Confirmation policy changes prompts, not evidence.** No mode chooses product scope,
+  delivery form, API contracts, or risk decisions for the user. No mode bypasses dev-spec,
+  execution, review, verification, or memory checkpoints.
+- **Always-automatic mechanical edges.** After INIT work completes, call `auto-transition` for
+  ANALYSIS. After `memory-complete`, call `auto-transition` for COMPLETE. These two edges never
+  create `pending_transition` in any mode.
+- **Native choice first (hard requirement).** When the effective mode requires confirmation,
+  call `request-transition`. After it succeeds, you MUST
   prefer the agent/platform's native user-choice tool whenever one is available. Do not render
   a plain-text numbered list on a platform that can present selectable options and a free-form
   Other input. Offer exactly these business branches through that native UI:
@@ -147,7 +157,7 @@ it, routing matches, and switching happens again.
   you against the current task and stored target before calling `confirm-transition` explicitly.
   On Other feedback, cancel the pending edge before revising work or requesting a different
   legal target. Never interpret silence, enthusiasm, or topic changes as confirmation.
-- **State before action.** Every user-confirmed stage advance is a two-step protocol: first
+- **State before action.** Every confirmation-required stage advance is a two-step protocol: first
   consume the pending edge through `confirm-transition`, then run that stage's real work. The
   automatic edges use `auto-transition` instead. Do not start
   analysis, implementation, review, verification, memory writing, or closeout while
@@ -165,23 +175,20 @@ it, routing matches, and switching happens again.
   Additionally, ANALYSIS must stay faithful to the user's delivery form — it may NOT downgrade
   a code task to a report-only task — and the 改动范围 table must list only real project code,
   never `.easy-coding/` harness artifacts (ec-analysis HARD RULES 5 and 6).
-- **Autonomous exception.** `behavior.auto_mode: true` in `.easy-coding/config.yaml` only
-  waives stage-boundary prompts when the user explicitly requested autonomous execution.
-  It carries NO scope or delivery-form decision. Never cite `auto_mode` to narrow scope,
-  downgrade a code task, or bypass a blocker that needs a real user decision.
-- **At user-decision stage completion** request the legal target immediately (not at turn end):
+- **At confirmation-required stage completion** request the legal target immediately:
   `{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py request-transition --session-file <P> --stage <STAGE> --agent <agent-id> --reason "<why this edge is ready>"`.
   This writes only `pending_transition`; it does not change the stage.
 - **No-code IMPLEMENT delivery:** before completing the task, ec-implementing must
   have output the successful unit's complete non-empty `deliverable` verbatim to the user.
   A summary or execution.jsonl record is not a substitute; missing user-visible delivery keeps
   the task in IMPLEMENT. The execution log must contain a matching `dispatch` immediately before
-  the accepted result for that unit. After delivery, call `auto-transition --stage COMPLETE`;
-  do not enter REVIEW, VERIFICATION, or MEMORY and do not write memory.
-- **On automatic completion** call:
-  `{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py auto-transition --session-file <P> --stage <ANALYSIS|COMPLETE> --agent <agent-id>`.
-  The state API accepts INIT -> ANALYSIS, completed MEMORY -> COMPLETE, and a validated
-  read-only IMPLEMENT -> COMPLETE through this command.
+  the accepted result for that unit. After delivery, use `request-transition` in approve mode
+  or `auto-transition` in guard/auto mode for COMPLETE; do not enter REVIEW, VERIFICATION, or
+  MEMORY and do not write memory.
+- **On an automatic edge** call:
+  `{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py auto-transition --session-file <P> --stage <TARGET> --agent <agent-id>`.
+  The state API validates both the legal edge and the effective confirm mode before changing
+  the stage.
 - **On user confirmation** read the current task's pending edge and call:
   `{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py confirm-transition --session-file <P> --stage <STAGE> --agent <agent-id>`.
   Only after the read-after-write status names the target stage may its action start.
@@ -197,18 +204,17 @@ it, routing matches, and switching happens again.
   you MUST revert the task's status to the previous valid stage and explain why the
   transition was rejected. Do not proceed with an illegal stage.
 - **Repair loop sizing** (after VERIFICATION): a trivial tweak may be fixed inside
-  VERIFICATION and re-verified without a status change; a logic or structure change requests
-  VERIFICATION -> IMPLEMENT and waits at the standard confirmation gate. After repair, present
-  the IMPLEMENT completion choice again so the user may enter REVIEW or skip directly to
-  VERIFICATION.
+  VERIFICATION and re-verified without a status change; a logic or structure change selects
+  VERIFICATION -> IMPLEMENT and follows the effective mode. After repair, approve mode presents
+  the IMPLEMENT choice again; guard/auto follow the default REVIEW path.
 - **Scope guard** (repair loop): if the user's fix request falls outside the dev-spec scope
   (features or files absent from the change-scope table), say so explicitly and propose a
   new task with `spawned_from` set to the current task id. Never silently absorb scope creep.
 - **Task switching is allowed at any stage.** The suspended task retains its stage in
   task.json. Do not run memory flows for suspended tasks — only completed tasks get archived.
-- **Archive only after user acceptance.** VERIFICATION passing does not complete the task.
-  A green gate requests VERIFICATION -> MEMORY and presents the standard choices. After the
-  user confirms, MEMORY writes one short entry first, records it through `memory-short-complete`,
+- **Archive only after the configured acceptance gate.** VERIFICATION passing does not complete
+  the task. A green gate requests VERIFICATION -> MEMORY in approve/guard, or advances
+  automatically in auto. After entry, MEMORY writes one short entry first, records it through `memory-short-complete`,
   then asks the state API for the authoritative `memory` instruction. `action == "no-op"`
   skips long-memory reads/writes; `action == "distill"` processes exactly `trim_count` older
   entries. After `memory-complete`, ec-memory automatically advances MEMORY -> COMPLETE.
@@ -220,7 +226,8 @@ it, routing matches, and switching happens again.
 ## Resume and handoff
 
 Hook breadcrumbs you may receive: `[workflow-state:X]`, `[current-task:Y]`,
-`[easy-coding:session-file:P]`, `[easy-coding:handoff-from:Z]`,
+`[easy-coding:session-file:P]`, `[easy-coding:confirm-mode:M]`,
+`[easy-coding:handoff-from:Z]`,
 `[easy-coding:init-required]`.
 
 Resuming an active task (whether from session restart, claim, handoff, or task switch):
@@ -229,21 +236,20 @@ Resuming an active task (whether from session restart, claim, handoff, or task s
    records tell you exactly where work stopped.
 3. If the task was claimed from another agent, read the latest `handoff` record first for the
    fast summary and tell the user which previous agent handed it off.
-4. If `pending_transition` exists, do not rerun the completed stage action. If its stored edge
-   is INIT -> ANALYSIS or MEMORY -> COMPLETE, treat it as an upgrade-era automatic edge: call
-   `auto-transition` for the stored target immediately, without confirmation or handoff. For
-   a read-only task in IMPLEMENT, cancel any stale pending REVIEW/VERIFICATION edge before the
-   terminal check below. For any other stored edge, re-present the standard
-   confirmation/handoff/Other choices. At an IMPLEMENT boundary for a code task, re-present the
-   special REVIEW / skip to VERIFICATION / handoff choices.
+4. If `pending_transition` exists, do not rerun the completed stage action. Compare the stored
+   edge with `effective_confirm_mode`. If the edge is now automatic, call `auto-transition` for
+   its stored target; otherwise re-present the confirmation/handoff/Other choices. For a
+   read-only task in IMPLEMENT, cancel any stale REVIEW/VERIFICATION edge before the terminal
+   check below. At an approve-mode IMPLEMENT boundary for a code task, re-present the special
+   REVIEW / skip to VERIFICATION / handoff choices.
 5. If a read-only task resumes in IMPLEMENT with a valid successful result, output its complete
-   deliverable again and immediately auto-transition to COMPLETE. Otherwise tell the user what
-   is being resumed and from which stage, then continue.
+   deliverable again and follow the effective mode to COMPLETE. Otherwise tell the user what is
+   being resumed and from which stage, then continue.
 
 After a task switch, the same resume flow applies — the only difference is that `current_task`
 was just changed by the switching procedure rather than being loaded from a prior session.
 
-Offering handoff — every user-decision pending edge includes the handoff option. On that
+Offering handoff — every confirmation-required pending edge includes the handoff option. On that
 option, call:
 `{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py handoff-task --session-file <P> --agent <agent-id> --summary "<dense context: plan shape, key decisions, user emphases>"`.
 

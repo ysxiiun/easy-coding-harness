@@ -2,6 +2,7 @@ import chalk from "chalk";
 import { Command } from "commander";
 import { addAgent } from "./commands/add-agent.js";
 import { clear } from "./commands/clear.js";
+import { config } from "./commands/config.js";
 import { init } from "./commands/init.js";
 import { status } from "./commands/status.js";
 import { update } from "./commands/update.js";
@@ -65,6 +66,11 @@ program
   .option("--dry-run", "Preview the install command without running it")
   .option("-y, --yes", "Skip confirmation")
   .action(withErrorHandling(update));
+
+program
+  .command("config")
+  .description("Interactively configure project-level harness behavior")
+  .action(withErrorHandling(config));
 
 program
   .command("status")

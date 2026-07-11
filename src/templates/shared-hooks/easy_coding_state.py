@@ -47,12 +47,18 @@ VALID_TRANSITIONS: dict[str, set[str]] = {
     "CLOSED": set(),
 }
 
-AUTO_TRANSITIONS = {
+ALWAYS_AUTO_TRANSITIONS = {
     ("INIT", "ANALYSIS"),
     ("MEMORY", "COMPLETE"),
 }
 READ_ONLY_COMPLETION_TRANSITION = ("IMPLEMENT", "COMPLETE")
 NO_CODE_TASK_TYPES = {"analysis", "doc", "report"}
+CONFIRM_MODES = {"approve", "guard", "auto"}
+DEFAULT_CONFIRM_MODE = "guard"
+GUARD_CONFIRM_TRANSITIONS = {
+    ("ANALYSIS", "IMPLEMENT"),
+    ("VERIFICATION", "MEMORY"),
+}
 
 LEGACY_STAGE_MAP = {
     "WAITING_CONFIRM": "ANALYSIS",
@@ -163,6 +169,51 @@ def read_memory_config(root: Path) -> dict[str, int]:
             "memory.short_term_keep must be less than or equal to memory.short_term_max."
         )
     return config
+
+
+def read_project_confirm_mode(root: Path) -> str:
+    path = root / ".easy-coding" / "config.yaml"
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return DEFAULT_CONFIRM_MODE
+
+    in_behavior = False
+    behavior_indent = 0
+    for raw_line in lines:
+        without_comment = raw_line.split("#", 1)[0].rstrip()
+        stripped = without_comment.strip()
+        if not stripped:
+            continue
+        indent = len(without_comment) - len(without_comment.lstrip(" "))
+        if stripped == "behavior:":
+            in_behavior = True
+            behavior_indent = indent
+            continue
+        if in_behavior and indent <= behavior_indent:
+            in_behavior = False
+        if not in_behavior or ":" not in stripped:
+            continue
+        key, value = stripped.split(":", 1)
+        if key != "confirm_mode":
+            continue
+        mode = value.strip().strip("'\"")
+        if mode not in CONFIRM_MODES:
+            raise StateError(
+                "Invalid behavior.confirm_mode in .easy-coding/config.yaml: "
+                "expected approve, guard, or auto."
+            )
+        return mode
+    return DEFAULT_CONFIRM_MODE
+
+
+def resolve_confirm_mode(root: Path, session: dict) -> tuple[str, str | None, str]:
+    project_mode = read_project_confirm_mode(root)
+    session_mode = session.get("confirm_mode")
+    if session_mode is not None and session_mode not in CONFIRM_MODES:
+        raise StateError("Invalid session confirm_mode: expected approve, guard, or auto.")
+    effective_mode = str(session_mode or project_mode)
+    return project_mode, str(session_mode) if session_mode else None, effective_mode
 
 
 def short_memory_entries(root: Path) -> list[dict[str, object]]:
@@ -890,13 +941,32 @@ def get_pending_init_version(root: Path) -> str | None:
     return None
 
 
-def is_automatic_transition(previous: str, current: str, task_type: str = "") -> bool:
-    if (previous, current) in AUTO_TRANSITIONS:
+def transition_requires_confirmation(
+    previous: str,
+    current: str,
+    task_type: str,
+    confirm_mode: str,
+) -> bool:
+    if (previous, current) in ALWAYS_AUTO_TRANSITIONS:
+        return False
+    if current == "CLOSED":
         return True
-    return (
-        (previous, current) == READ_ONLY_COMPLETION_TRANSITION
-        and task_type.strip().lower() in NO_CODE_TASK_TYPES
-    )
+    if confirm_mode == "auto":
+        return False
+    if confirm_mode == "guard":
+        return (previous, current) in GUARD_CONFIRM_TRANSITIONS
+    if confirm_mode == "approve":
+        return True
+    raise StateError(f"Unknown confirm mode: {confirm_mode}")
+
+
+def is_automatic_transition(
+    previous: str,
+    current: str,
+    task_type: str,
+    confirm_mode: str,
+) -> bool:
+    return not transition_requires_confirmation(previous, current, task_type, confirm_mode)
 
 
 def validate_transition(previous: str, current: str, task_type: str = "") -> str | None:
@@ -943,6 +1013,10 @@ def snapshot_state(
         missing = False
         status = "idle"
 
+    project_confirm_mode, session_confirm_mode, effective_confirm_mode = resolve_confirm_mode(
+        root, resolved_session
+    )
+
     return {
         "session_file": display_path(root, session_path),
         "current_task": str(task_id) if task_id else None,
@@ -955,6 +1029,10 @@ def snapshot_state(
         "last_agent": task.get("last_agent") if task else None,
         "project_init_required": is_project_init_required(root),
         "pending_init_version": get_pending_init_version(root),
+        "project_confirm_mode": project_confirm_mode,
+        "session_confirm_mode": session_confirm_mode,
+        "effective_confirm_mode": effective_confirm_mode,
+        "harness_disabled": resolved_session.get("harness_disabled") is True,
     }
 
 
@@ -1000,7 +1078,11 @@ def build_machine_breadcrumbs(
     task = state["task"]
     stage = str(state["status"]) if task else "idle"
     resolved_session_file = str(state["session_file"])
-    lines = [f"[workflow-state:{stage}]", f"[easy-coding:session-file:{resolved_session_file}]"]
+    lines = [
+        f"[workflow-state:{stage}]",
+        f"[easy-coding:session-file:{resolved_session_file}]",
+        f"[easy-coding:confirm-mode:{state['effective_confirm_mode']}]",
+    ]
 
     if task_id:
         lines.append(f"[current-task:{task_id}]")
@@ -1016,7 +1098,12 @@ def build_machine_breadcrumbs(
             if target:
                 lines.append(f"[easy-coding:pending-transition:{source}->{target}]")
                 task_type = str(task.get("type") or "") if task else ""
-                if is_automatic_transition(source, target, task_type):
+                if is_automatic_transition(
+                    source,
+                    target,
+                    task_type,
+                    str(state["effective_confirm_mode"]),
+                ):
                     lines.append(f"[easy-coding:auto-transition-ready:{source}->{target}]")
                 else:
                     lines.append("[easy-coding:transition-confirmation-required]")
@@ -1063,6 +1150,14 @@ def build_status_context(
     agent: str | None = None,
     session_file: str | Path | None = None,
 ) -> str:
+    if session.get("harness_disabled") is True:
+        session_path = resolve_session_path(root, session_file)
+        return "\n".join(
+            [
+                "[easy-coding:no-harness]",
+                f"[easy-coding:session-file:{display_path(root, session_path)}]",
+            ]
+        )
     return "\n".join(
         [
             build_status_line(root, session, agent, session_file),
@@ -1082,7 +1177,7 @@ def attach_status_context(
     if session is None:
         session = default_session()
     context = build_status_context(root, session, agent, resolved_session_file)
-    first_line = context.splitlines()[0] if context else ""
+    first_line = context.splitlines()[0] if context.startswith("> ") else ""
     enriched = dict(data)
     enriched["status_line"] = first_line
     enriched["status_context"] = context
@@ -1155,6 +1250,55 @@ def clear_current_task(root: Path, agent: str, session_file: str | Path | None =
     clear_session_pointer(session, agent)
     write_session(root, session, session_file)
     return snapshot_state(root, session_file, session)
+
+
+def set_session_confirm_mode(
+    root: Path,
+    mode: str,
+    agent: str,
+    session_file: str | Path | None = None,
+) -> dict:
+    if mode not in CONFIRM_MODES:
+        raise StateError("Invalid confirm mode: expected approve, guard, or auto.")
+    session = ensure_session(root, session_file)
+    session["confirm_mode"] = mode
+    session["last_agent"] = agent
+    write_session(root, session, session_file)
+    snapshot = snapshot_state(root, session_file, session)
+    snapshot["action"] = "set-confirm-mode"
+    return snapshot
+
+
+def clear_session_confirm_mode(
+    root: Path,
+    agent: str,
+    session_file: str | Path | None = None,
+) -> dict:
+    session = ensure_session(root, session_file)
+    session.pop("confirm_mode", None)
+    session["last_agent"] = agent
+    write_session(root, session, session_file)
+    snapshot = snapshot_state(root, session_file, session)
+    snapshot["action"] = "clear-confirm-mode"
+    return snapshot
+
+
+def set_harness_disabled(
+    root: Path,
+    disabled: bool,
+    agent: str,
+    session_file: str | Path | None = None,
+) -> dict:
+    session = ensure_session(root, session_file)
+    if disabled:
+        session["harness_disabled"] = True
+    else:
+        session.pop("harness_disabled", None)
+    session["last_agent"] = agent
+    write_session(root, session, session_file)
+    snapshot = snapshot_state(root, session_file, session)
+    snapshot["action"] = "disable-harness" if disabled else "enable-harness"
+    return snapshot
 
 
 def handoff_task(
@@ -1297,15 +1441,17 @@ def request_transition(
     session, resolved_task_id, task = resolve_current_task(root, task_id, session_file)
     previous = str(task.get("status") or "idle")
     task_type = str(task.get("type") or "")
+    confirm_mode = resolve_confirm_mode(root, session)[2]
     if previous == stage:
         raise StateError(f"Transition target must differ from current stage: {stage}")
 
     violation = validate_transition(previous, stage, task_type)
     if violation:
         raise StateError(violation)
-    if is_automatic_transition(previous, stage, task_type):
+    if is_automatic_transition(previous, stage, task_type, confirm_mode):
         raise StateError(
-            f"Transition {previous} -> {stage} is automatic; use auto-transition instead."
+            f"Transition {previous} -> {stage} is automatic in {confirm_mode} mode; "
+            "use auto-transition instead."
         )
     if previous == "ANALYSIS" and stage == "IMPLEMENT":
         validate_analysis_readiness(root, resolved_task_id)
@@ -1382,11 +1528,14 @@ def auto_transition(
     task_id: str | None = None,
     session_file: str | Path | None = None,
 ) -> dict:
-    _, _, task = resolve_current_task(root, task_id, session_file)
+    session, _, task = resolve_current_task(root, task_id, session_file)
     previous = str(task.get("status") or "idle")
     task_type = str(task.get("type") or "")
-    if not is_automatic_transition(previous, stage, task_type):
-        raise StateError(f"Automatic transition is not allowed: {previous} -> {stage}.")
+    confirm_mode = resolve_confirm_mode(root, session)[2]
+    if not is_automatic_transition(previous, stage, task_type, confirm_mode):
+        raise StateError(
+            f"Automatic transition is not allowed in {confirm_mode} mode: {previous} -> {stage}."
+        )
 
     pending = task.get("pending_transition")
     if isinstance(pending, dict) and (
@@ -1409,12 +1558,13 @@ def confirm_transition(
     task_id: str | None = None,
     session_file: str | Path | None = None,
 ) -> dict:
-    _, _, task = resolve_current_task(root, task_id, session_file)
+    session, _, task = resolve_current_task(root, task_id, session_file)
     pending = task.get("pending_transition")
     if not isinstance(pending, dict):
         raise StateError("No transition is pending user confirmation.")
     previous = str(task.get("status") or "idle")
     task_type = str(task.get("type") or "")
+    confirm_mode = resolve_confirm_mode(root, session)[2]
     source = str(pending.get("from") or "")
     target = str(pending.get("to") or "")
     if source != previous:
@@ -1423,9 +1573,10 @@ def confirm_transition(
         )
     if stage and stage != target:
         raise StateError(f"Pending transition targets {target}, not {stage}.")
-    if is_automatic_transition(source, target, task_type):
+    if is_automatic_transition(source, target, task_type, confirm_mode):
         raise StateError(
-            f"Transition {source} -> {target} is automatic; use auto-transition instead."
+            f"Transition {source} -> {target} is automatic in {confirm_mode} mode; "
+            "use auto-transition instead."
         )
 
     snapshot = apply_transition(root, target, agent, task_id, session_file)
@@ -1703,6 +1854,19 @@ def main() -> int:
     clear_current = subcommands.add_parser("clear-current", parents=[common])
     clear_current.add_argument("--agent", required=True)
 
+    set_confirm_mode_parser = subcommands.add_parser("set-confirm-mode", parents=[common])
+    set_confirm_mode_parser.add_argument("--mode", required=True, choices=sorted(CONFIRM_MODES))
+    set_confirm_mode_parser.add_argument("--agent", required=True)
+
+    clear_confirm_mode_parser = subcommands.add_parser("clear-confirm-mode", parents=[common])
+    clear_confirm_mode_parser.add_argument("--agent", required=True)
+
+    disable_harness_parser = subcommands.add_parser("disable-harness", parents=[common])
+    disable_harness_parser.add_argument("--agent", required=True)
+
+    enable_harness_parser = subcommands.add_parser("enable-harness", parents=[common])
+    enable_harness_parser.add_argument("--agent", required=True)
+
     handoff = subcommands.add_parser("handoff-task", parents=[common])
     handoff.add_argument("--agent", required=True)
     handoff.add_argument("--summary", required=True)
@@ -1803,6 +1967,42 @@ def main() -> int:
                 attach_status_context(
                     root,
                     clear_current_task(root, args.agent, session_file),
+                    args.agent,
+                    session_file,
+                )
+            )
+        elif command == "set-confirm-mode":
+            emit(
+                attach_status_context(
+                    root,
+                    set_session_confirm_mode(root, args.mode, args.agent, session_file),
+                    args.agent,
+                    session_file,
+                )
+            )
+        elif command == "clear-confirm-mode":
+            emit(
+                attach_status_context(
+                    root,
+                    clear_session_confirm_mode(root, args.agent, session_file),
+                    args.agent,
+                    session_file,
+                )
+            )
+        elif command == "disable-harness":
+            emit(
+                attach_status_context(
+                    root,
+                    set_harness_disabled(root, True, args.agent, session_file),
+                    args.agent,
+                    session_file,
+                )
+            )
+        elif command == "enable-harness":
+            emit(
+                attach_status_context(
+                    root,
+                    set_harness_disabled(root, False, args.agent, session_file),
                     args.agent,
                     session_file,
                 )

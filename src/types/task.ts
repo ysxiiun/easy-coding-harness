@@ -9,6 +9,7 @@ export type Stage =
   | "CLOSED";
 
 export type TaskStatus = "PENDING" | Stage;
+export type ConfirmMode = "approve" | "guard" | "auto";
 
 export interface StageHistoryEntry {
   stage: Stage;
@@ -49,6 +50,8 @@ export interface MemoryProgress {
 export interface SessionFile {
   current_task: string | null;
   created_at: string;
+  confirm_mode?: ConfirmMode;
+  harness_disabled?: boolean;
   last_seen_task?: string | null;
   last_seen_stage?: string;
 }

@@ -53,7 +53,7 @@ EVERY STRATEGY = MANDATORY SUB-AGENT DISPATCH. NO EXCEPTIONS.
 You MUST dispatch sub-agents using {{sub_agent_dispatch}} for every unit, whatever the
 strategy. You are FORBIDDEN from implementing any unit yourself in the main agent. Doing the
 work inline instead of dispatching is a protocol violation equivalent to bypassing the
-ANALYSIS -> IMPLEMENT confirmation gate.
+ANALYSIS -> IMPLEMENT gate selected by the effective confirm mode.
 
 Self-check before writing ANY implementation code:
 - Am I about to write implementation code in the main agent? → STOP. Dispatch a sub-agent.
@@ -121,19 +121,19 @@ let sub-agents re-dispatch each other.
 
 ## End state
 
-- **Code task:** after all units are done and self-audited, hand back to ec-workflow. It records
-  IMPLEMENT -> REVIEW as the recommended pending edge, then presents: (1) enter REVIEW,
-  (2) skip REVIEW and enter VERIFICATION, (3) hand off, plus native free-form Other.
+- **Code task:** after all units are done and self-audited, hand back to ec-workflow. In approve
+  mode it records IMPLEMENT -> REVIEW as the recommended pending edge and presents REVIEW /
+  skip to VERIFICATION / handoff. In guard/auto it automatically enters REVIEW.
 - **No-code read-only task:** after recording the successful result and showing the complete
-  deliverable, call `auto-transition --stage COMPLETE` through ec-workflow. Do not request or
+  deliverable, request COMPLETE in approve mode or auto-transition in guard/auto. Do not
   enter REVIEW, VERIFICATION, or MEMORY; do not write short or long memory. The state API only
   accepts this terminal edge when the latest plan is `single` with `files:[]` and the latest
   result has `changed_files:[]`, a non-empty `deliverable`, and no issues/needs_attention.
   A matching `dispatch` record must immediately precede the accepted result among that unit's
   execution records; an inline report without dispatch cannot complete.
 
-If something invalidates the plan before completion, request IMPLEMENT -> ANALYSIS and wait at
-the standard gate instead of improvising.
+If something invalidates the plan before completion, select IMPLEMENT -> ANALYSIS and follow
+the effective confirm mode instead of improvising.
 
 ## Self-check gates (before handing back)
 
@@ -143,6 +143,6 @@ the standard gate instead of improvising.
 - [ ] Each returned unit has a `result` record?
 - [ ] No files modified outside the change-scope table?
 - [ ] For a no-code unit: changed_files is empty, deliverable is non-empty, and the full
-      deliverable was output verbatim to the user before automatic completion?
-- [ ] For a no-code task: IMPLEMENT -> COMPLETE was automatic, with no REVIEW, VERIFICATION,
-      MEMORY, or memory write?
+      deliverable was output verbatim to the user before completion?
+- [ ] For a no-code task: IMPLEMENT -> COMPLETE followed the effective confirm mode, with no
+      REVIEW, VERIFICATION, MEMORY, or memory write?

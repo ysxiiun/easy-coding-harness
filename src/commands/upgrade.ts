@@ -7,6 +7,7 @@ import type { AgentPlatform, PlatformMeta } from "../types/platform.js";
 import { renderBanner } from "../ui/banner.js";
 import { compareVersions } from "../utils/compare-versions.js";
 import {
+  migrateConfirmModeConfig,
   readConfigYaml,
   updateHarnessVersion,
   updateSupermoduleConfig,
@@ -129,6 +130,7 @@ export async function upgrade(opts: UpgradeOptions): Promise<void> {
       : []),
     "Will overwrite managed skills, hooks, agents, templates, and generated main-constraint regions.",
     "Will update project-init task to recommend ec-init re-run for version adaptation.",
+    "Will migrate behavior.strict_confirm/auto_mode to behavior.confirm_mode and remove the old keys.",
     "Will migrate legacy workflow stage metadata; memory content, spec, and project knowledge files remain untouched.",
   ].join("\n");
 
@@ -164,6 +166,7 @@ export async function upgrade(opts: UpgradeOptions): Promise<void> {
     await ensureEasyCodingSessionsIgnored(target.dir);
     await ensureHookBytecodeIgnored(target.dir);
     await migrateLegacyWorkflowState(target.dir);
+    await migrateConfirmModeConfig(target.configPath);
     await updateHarnessVersion(target.configPath, VERSION);
     await updateSupermoduleConfig(target.configPath, target.supermodule);
     await setPendingInitSince(target.dir, VERSION);
@@ -217,7 +220,8 @@ async function resolvePendingUpgradeTargets(
     if (
       relation === -1 ||
       (relation === 0 &&
-        ((await needsHookConfigRefresh(target, config)) ||
+        (installedVersion !== VERSION ||
+          (await needsHookConfigRefresh(target, config)) ||
           (await hasLegacyWorkflowState(target.dir))))
     ) {
       pending.push({ target, config });
