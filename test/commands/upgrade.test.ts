@@ -290,6 +290,50 @@ describe("upgrade command", () => {
     expect(task.pending_init_since).toBe(VERSION);
   });
 
+  it("migrates active 0.5.x workflow stages without touching memory content", async () => {
+    await init({ agent: "claude-code", yes: true });
+    await setHarnessVersion("0.5.3");
+    await markProjectInitComplete();
+
+    const taskDir = path.join(tempDir, ".easy-coding", "tasks", "07-10-upgrade");
+    await mkdir(taskDir, { recursive: true });
+    await writeFile(
+      path.join(taskDir, "task.json"),
+      JSON.stringify({
+        type: "feature",
+        status: "WAITING_CONFIRM",
+        created_at: "2026-07-10T00:00:00Z",
+        created_by: "codex",
+        last_agent: "codex",
+        stage_history: [
+          { stage: "ANALYSIS", agent: "codex", entered_at: "2026-07-10T00:00:00Z" },
+          { stage: "WAITING_CONFIRM", agent: "codex", entered_at: "2026-07-10T00:01:00Z" },
+        ],
+      }),
+      "utf8",
+    );
+    const sessionPath = path.join(tempDir, ".easy-coding", "sessions", "legacy.json");
+    await writeFile(
+      sessionPath,
+      JSON.stringify({ current_task: "07-10-upgrade", last_seen_stage: "WAITING_CONFIRM" }),
+      "utf8",
+    );
+    const memoryPath = path.join(tempDir, ".easy-coding", "memory", "short", "keep.md");
+    await writeFile(memoryPath, "memory must stay byte-identical\n", "utf8");
+
+    await upgrade({ yes: true });
+
+    const task = JSON.parse(await readFile(path.join(taskDir, "task.json"), "utf8"));
+    expect(task.status).toBe("ANALYSIS");
+    expect(task.pending_transition).toMatchObject({ from: "ANALYSIS", to: "IMPLEMENT" });
+    expect(task.stage_history.map((entry: { stage: string }) => entry.stage)).toEqual([
+      "ANALYSIS",
+    ]);
+    const session = JSON.parse(await readFile(sessionPath, "utf8"));
+    expect(session.last_seen_stage).toBe("ANALYSIS");
+    expect(await readFile(memoryPath, "utf8")).toBe("memory must stay byte-identical\n");
+  });
+
   it("refreshes stale supermodule parent topology even when all targets are current", async () => {
     await writeFile(
       path.join(tempDir, ".gitmodules"),

@@ -36,11 +36,10 @@ src/
 ### Runtime State Machine (agent-side, not CLI)
 
 ```
-INIT → ANALYSIS → WAITING_CONFIRM → IMPLEMENT → REVIEW → VERIFICATION
-                       ↑                                      │
-                       └──────── repair loop ──────────────────┘
-                                                    [user acceptance]
-                                     MEMORY_SHORT → MEMORY_LONG → COMPLETE
+INIT → ANALYSIS → IMPLEMENT → REVIEW → VERIFICATION → MEMORY → COMPLETE
+          ↑            ↑          │             │
+          └── replan ───┘          └── repair ───┘
+every edge requires explicit user confirmation by default; prefer native choice UI
 ```
 
 ## Development Conventions

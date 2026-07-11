@@ -21,7 +21,12 @@ import {
 } from "../utils/install-manifest.js";
 import { resolvePlatformMeta } from "../utils/platform-paths.js";
 import { writeRuntimeScaffold } from "../utils/runtime-scaffold.js";
-import { setPendingInitSince, stripInitTaskProjectPath } from "../utils/task-json.js";
+import {
+  hasLegacyWorkflowState,
+  migrateLegacyWorkflowState,
+  setPendingInitSince,
+  stripInitTaskProjectPath,
+} from "../utils/task-json.js";
 import { configurePlatformsForDir, refreshSupermoduleParent } from "./install-harness.js";
 import { type CommandTarget, resolveUpgradeTargets } from "./supermodule-targets.js";
 
@@ -124,7 +129,7 @@ export async function upgrade(opts: UpgradeOptions): Promise<void> {
       : []),
     "Will overwrite managed skills, hooks, agents, templates, and generated main-constraint regions.",
     "Will update project-init task to recommend ec-init re-run for version adaptation.",
-    "Will not touch memory, state, spec, or project knowledge files.",
+    "Will migrate legacy workflow stage metadata; memory content, spec, and project knowledge files remain untouched.",
   ].join("\n");
 
   if (opts.dryRun) {
@@ -158,6 +163,7 @@ export async function upgrade(opts: UpgradeOptions): Promise<void> {
     });
     await ensureEasyCodingSessionsIgnored(target.dir);
     await ensureHookBytecodeIgnored(target.dir);
+    await migrateLegacyWorkflowState(target.dir);
     await updateHarnessVersion(target.configPath, VERSION);
     await updateSupermoduleConfig(target.configPath, target.supermodule);
     await setPendingInitSince(target.dir, VERSION);
@@ -208,7 +214,12 @@ async function resolvePendingUpgradeTargets(
         `${target.label} harness version ${installedVersion} is newer than CLI ${VERSION}. Update the CLI first.`,
       );
     }
-    if (relation === -1 || (relation === 0 && (await needsHookConfigRefresh(target, config)))) {
+    if (
+      relation === -1 ||
+      (relation === 0 &&
+        ((await needsHookConfigRefresh(target, config)) ||
+          (await hasLegacyWorkflowState(target.dir))))
+    ) {
       pending.push({ target, config });
     }
   }

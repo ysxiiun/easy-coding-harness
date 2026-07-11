@@ -24,7 +24,7 @@ when you recognize abandonment intent in the user's message.
    clears session `current_task` so the next hook injection returns to Ready.
    Use the returned `status_context` as the authoritative status source for the rest of the
    current turn.
-4. **No memory flow.** Do not run MEMORY_SHORT/LONG. An incomplete task's memory is dirty data.
+4. **No memory flow.** Do not run MEMORY. An incomplete task's memory is dirty data.
 5. **Linked tasks.** If the task has `spawned_from` or `spawned_tasks`, note the closure fact
    on the relation so a future agent understands the chain.
 6. Optionally append a closure note to `execution.jsonl` if there is context worth keeping for

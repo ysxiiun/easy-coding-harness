@@ -30,9 +30,9 @@ result. No finding without a location.
 
 ## Verdict (exactly one)
 
-- `accept` — all dimensions pass. Advance to VERIFICATION.
+- `accept` — all dimensions pass. Request REVIEW -> VERIFICATION.
 - `fix` — problems found, fixable within the current plan. Auto-fix via sub-agents (see below).
-- `replan` — the plan itself is flawed (wrong approach, missing design). Return to ANALYSIS.
+- `replan` — the plan itself is flawed (wrong approach, missing design). Request REVIEW -> ANALYSIS.
 - `blocked` — external blocker (missing dependency, environment). Pause and report.
 
 ## Auto-fix flow (on `fix` verdict)
@@ -46,7 +46,7 @@ defects, not design decisions.
 ONLY escalate to the user when:
 - The fix requires a DESIGN CHOICE (two equally valid approaches, ambiguous requirement)
 - The fix would change the public API contract beyond what the dev-spec specifies
-- The finding contradicts something the user explicitly stated during WAITING_CONFIRM
+- The finding contradicts something the user explicitly confirmed at a stage boundary
 </HARD-GATE>
 
 Fix dispatch flow:
@@ -88,3 +88,6 @@ Platform spawn rule: {{platform_spawn_instruction}}
 Append `review` records to execution.jsonl, one per dimension:
 `{"type":"review","dimension":"correctness","findings":[{"file":"...","line":42,"issue":"...","severity":"warn"}]}`.
 Then state the verdict and hand back to ec-workflow.
+For `accept` or `replan`, ec-workflow records the corresponding pending transition and presents
+the standard confirmation/handoff/Other gate. A `fix` round stays inside REVIEW and therefore
+does not create a status transition unless the outcome changes.

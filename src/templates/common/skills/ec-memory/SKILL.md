@@ -1,18 +1,18 @@
 ---
 name: ec-memory
-description: MEMORY_SHORT and MEMORY_LONG stage skill — part of the archive flow, triggered only after user acceptance. Use when ec-workflow enters the memory stages. Writes schema-v2 short memory with a sliding window, distills long memory into BUSINESS/TECHNICAL with conflict resolution, and backfills ABSTRACT on architecture changes.
+description: MEMORY-stage skill — part of the archive flow, triggered only after user acceptance and a confirmed stage edge. Writes one schema-v2 short memory, then runs the authoritative conditional long-memory gate, performs optional distillation, and requests COMPLETE.
 ---
 
 # ec-memory — archive what was learned
 
-ec-workflow dispatches you during MEMORY_SHORT and MEMORY_LONG, which run only after the
-user accepts the task. Inputs: the task's `dev-spec.md`, `execution.jsonl` (the `result` and
+ec-workflow dispatches you during MEMORY, which runs only after the user accepts the task and
+confirms entry. Inputs: the task's `dev-spec.md`, `execution.jsonl` (the `result` and
 `verify` records are precise source material), the changed-files list, existing memory files.
 
 Communicate with the user in the user's language. Memory file content follows the project's
 recorded comment/doc language.
 
-## MEMORY_SHORT — write one short memory entry
+## Step 1 — write one short memory entry
 
 Create one file under `.easy-coding/memory/short/` following the format in
 `.easy-coding/memory/SHORT_MEMORY_TEMPLATE.md`. File naming convention:
@@ -23,6 +23,7 @@ Frontmatter (all fields required):
 ---
 memory_schema: 2
 id: SM-{YYYYMMDD}-{NN}
+source_task: {current task id, exact}
 date: {YYYY-MM-DD}
 task_type: {feature | bugfix | refactor | perf | doc | workflow}
 project_mode: {startup | iteration}
@@ -44,6 +45,13 @@ conversation. Refer to SHORT_MEMORY_TEMPLATE.md for the complete section format.
 ```
 
 If the task was cross-repo, record the repo names involved and the collaboration reason.
+
+After the file is successfully written, record the checkpoint immediately:
+`{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py memory-short-complete --session-file <P> --file "<relative-short-memory-path>" --agent <agent-id>`.
+Use the returned `status_context` as authoritative. On resume, if `memory_progress` already
+shows `short_memory_written:true`, do not create a duplicate entry; continue from Step 2.
+The state API validates `memory_schema: 2`, requires `source_task` to equal the current task id,
+and fingerprints the file. Do not reuse an older task's memory file as this checkpoint.
 
 ## Supermodule memory routing
 
@@ -67,26 +75,27 @@ create a new one instead. Short memories serve as both a recent-detail sliding w
 distillation buffer for long-term memory.
 
 **Sliding window (informational):** The short memory directory has a soft cap defined by
-`memory.short_term_max` (default 10). MEMORY_SHORT only WRITES one entry per completed task
-— it never counts, trims, or triggers distillation. Trimming is exclusively MEMORY_LONG's
-responsibility and only runs when the threshold is exceeded.
+`memory.short_term_max` (default 10). Step 1 only writes and checkpoints one entry per
+completed task. It never decides whether to distill.
 
-## MEMORY_LONG — distill durable knowledge (CONDITIONAL)
+## Step 2 — run the long-memory gate (CONDITIONAL)
 
 <HARD-GATE>
-MEMORY_LONG IS CONTROLLED BY THE STATE API `memory_long` INSTRUCTION.
+LONG-MEMORY WORK IS CONTROLLED BY THE STATE API `memory` INSTRUCTION.
 
 Before performing ANY distillation work:
-1. Read the `memory_long` object returned by the state API transition to MEMORY_LONG.
-   If it is not visible in context, re-run the same transition command for MEMORY_LONG to
-   re-emit the snapshot, then use that `memory_long` object.
-2. Treat `memory_long.action` as authoritative. Do NOT recount short memories yourself and
+1. After Step 1 is checkpointed, call
+   `{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py memory-instruction --session-file <P>`.
+   This ordering is mandatory: the current task's short entry must be counted first.
+   The first successful call is frozen in `memory_progress.instruction`; resumed work reuses
+   the same action and trim count even after consumed short files are deleted.
+2. Treat the returned `memory.action` as authoritative. Do NOT recount short memories yourself and
    do NOT override the state API instruction with prompt reasoning.
-3. If `action == "no-op"`: output "MEMORY_LONG: no-op (short memory count = {short_count},
-   threshold = {short_term_max})" and immediately hand back to ec-workflow to advance to
-   COMPLETE. Do NOT read long memory files, do NOT attempt distillation, do NOT modify any file.
-4. If `action == "distill"`: distill exactly the older `trim_count` short-memory entries
-   and keep the latest `short_term_keep` entries.
+3. If `action == "no-op"`: output "MEMORY: long-memory no-op (short memory count =
+   {short_count}, threshold = {short_term_max})". Do NOT read or modify long memory files.
+4. If `action == "distill"`: treat `memory.candidate_files` and `memory.kept_files` as the
+   frozen authoritative sets. Distill and delete exactly `candidate_files`; preserve every
+   `kept_files` entry. Do not rebuild either set from the live directory.
 
 This gate is absolute. Even a single short memory entry below threshold does NOT trigger
 long-term compression regardless of any other signal.
@@ -100,8 +109,8 @@ Three-file long memory:
 - `TECHNICAL.md` — architecture decisions, implementation patterns, gotchas.
 
 Distillation steps:
-1. Use `memory_long.short_term_keep` and `memory_long.trim_count`. Keep the latest
-   `short_term_keep` entries; the older `trim_count` entries become distillation candidates.
+1. Use `memory.candidate_files` and `memory.kept_files`; their sizes correspond to
+   `memory.trim_count` and the retained window calculated at instruction time.
 2. Read the `target_long` of candidate short memories; route to business/technical.
 3. **Progressive loading** — read only the existing long entries matching this round's
    domain/tags/related_files. No unbounded whole-repo memory scan.
@@ -115,6 +124,19 @@ Distillation steps:
    short-memory candidate files. Leave only the latest `short_term_keep` short memories.
    This is sliding-window consumption after successful distillation, not destructive
    deletion of durable long-term knowledge.
+
+After either branch succeeds, record completion with the same authoritative action:
+`{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py memory-complete --session-file <P> --action <no-op|distill> --agent <agent-id>`.
+The state API rejects an action that disagrees with the current threshold calculation.
+For `distill`, it also rejects completion while any frozen candidate still exists or any
+frozen retained file is missing. A candidate checkpoint may disappear only because it is
+explicitly listed in `candidate_files`.
+
+## Step 3 — request COMPLETE
+
+Only after `memory_progress.completed:true`, hand control to ec-workflow to request
+MEMORY -> COMPLETE. Present the standard confirmation/handoff/Other gate and stop. Do not
+mark the task COMPLETE automatically.
 
 ## ABSTRACT backfill / update
 

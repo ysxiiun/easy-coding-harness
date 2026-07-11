@@ -46,8 +46,8 @@ EVERY STRATEGY = MANDATORY SUB-AGENT DISPATCH. NO EXCEPTIONS.
 
 You MUST dispatch sub-agents using {{sub_agent_dispatch}} for every unit, whatever the
 strategy. You are FORBIDDEN from implementing any unit yourself in the main agent. Doing the
-work inline instead of dispatching is a protocol violation equivalent to skipping
-WAITING_CONFIRM.
+work inline instead of dispatching is a protocol violation equivalent to bypassing the
+ANALYSIS -> IMPLEMENT confirmation gate.
 
 Self-check before writing ANY implementation code:
 - Am I about to write implementation code in the main agent? → STOP. Dispatch a sub-agent.
@@ -107,8 +107,9 @@ let sub-agents re-dispatch each other.
 
 ## End state
 
-All units done and self-audited → hand back to ec-workflow to advance to REVIEW. If you
-hit something that invalidates the plan, return to ANALYSIS instead of improvising.
+All units done and self-audited → hand back to ec-workflow to request IMPLEMENT -> REVIEW and
+wait at the standard confirmation/handoff/Other gate. If something invalidates the plan,
+request IMPLEMENT -> ANALYSIS and wait at the same gate instead of improvising.
 
 ## Self-check gates (before handing back)
 

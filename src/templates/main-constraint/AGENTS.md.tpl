@@ -35,16 +35,20 @@ First run `ec-init`; daily work goes through `ec-workflow`.
 
 ## Workflow discipline
 
-- Stages do not skip. WAITING_CONFIRM is a real gate — implement only after the user confirms
-  the plan and test strategy (unless `behavior.auto_mode` is on and the user asked for it).
+- Stages do not skip. Every legal stage edge uses `pending_transition` and requires explicit
+  user confirmation by default. At each boundary, use the agent's native user-choice tool
+  whenever available to offer: confirm target stage, hand off to another agent, or its
+  free-form Other input. Plain-text numbered choices are fallback only. `auto_mode` only
+  waives prompts when configured and explicitly requested by the user; it never changes scope
+  or delivery form.
 - ANALYSIS must follow template-first: read `.easy-coding/templates/dev-spec-skeleton.md` then
   write its exact content to the task's dev-spec.md as the FIRST tool calls, then fill sections
   incrementally via edits. Reply to the user with the complete dev-spec.md content — never a
   summary table or custom format.
 - VERIFICATION is a hard gate: lint + typecheck + test must pass on fresh evidence, and
   coverage must match the test strategy, before a task can complete.
-- Archive (memory flow) runs only after explicit user acceptance — an unaccepted task's
-  memory is dirty data.
+- MEMORY combines short-memory creation and the conditional long-memory gate. Archive runs
+  only after explicit user acceptance — an unaccepted task's memory is dirty data.
 - NO COMPLETION CLAIMS WITHOUT FRESH VERIFICATION EVIDENCE.
 - All cross-platform modules (skills, hooks, references) must use universal agent protocols.
   Do not rely on any specific agent's proprietary conventions unless the module is explicitly
@@ -54,8 +58,8 @@ First run `ec-init`; daily work goes through `ec-workflow`.
 ## Runtime contract
 
 - Workflow state operations go through `{{platform_config_dir}}/hooks/easy_coding_state.py`;
-  do not hand-edit session files, `current_task`, task `status`, `stage_history`, or
-  `last_agent`.
+  do not hand-edit session files, `current_task`, task `status`, `stage_history`,
+  `pending_transition`, `memory_progress`, or `last_agent`.
 - The hook injects `[easy-coding:session-file:P]`; pass that path to the state script with
   `--session-file <P>` when changing the current task or stage.
 - Workflow session files live at `{{workflow_state_path}}`; the CLI only installs files and

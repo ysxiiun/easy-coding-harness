@@ -1,12 +1,10 @@
 export type Stage =
   | "INIT"
   | "ANALYSIS"
-  | "WAITING_CONFIRM"
   | "IMPLEMENT"
   | "REVIEW"
   | "VERIFICATION"
-  | "MEMORY_SHORT"
-  | "MEMORY_LONG"
+  | "MEMORY"
   | "COMPLETE"
   | "CLOSED";
 
@@ -16,6 +14,36 @@ export interface StageHistoryEntry {
   stage: Stage;
   agent: string;
   entered_at: string;
+}
+
+export interface PendingTransition {
+  from: Stage;
+  to: Stage;
+  requested_at: string;
+  requested_by: string;
+  reason?: string;
+}
+
+export interface MemoryInstruction {
+  short_count: number;
+  short_term_max: number;
+  short_term_keep: number;
+  action: "no-op" | "distill";
+  trim_count: number;
+  candidate_files: string[];
+  kept_files: string[];
+  checkpoint_disposition: "candidate" | "kept" | "legacy";
+}
+
+export interface MemoryProgress {
+  short_memory_written?: boolean;
+  short_memory_file?: string;
+  short_memory_sha256?: string;
+  legacy_short_memory_assumed?: boolean;
+  instruction?: MemoryInstruction;
+  long_memory_action?: "no-op" | "distill";
+  completed?: boolean;
+  updated_at?: string;
 }
 
 export interface SessionFile {
@@ -33,6 +61,8 @@ export interface TaskJson {
   created_by: string;
   last_agent: string;
   stage_history: StageHistoryEntry[];
+  pending_transition?: PendingTransition;
+  memory_progress?: MemoryProgress;
   confirmed_by_user?: boolean;
   test_strategy_confirmed?: boolean;
   repo_paths?: Record<string, string>;

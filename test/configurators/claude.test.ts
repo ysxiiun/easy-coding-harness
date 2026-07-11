@@ -36,6 +36,10 @@ describe("configureClaude", () => {
     expect(skill).toContain("`/ec-init`");
     expect(skill).toContain("claim-task --session-file");
     expect(skill).toContain("handoff-task --session-file");
+    expect(skill).toContain("request-transition --session-file");
+    expect(skill).toContain("confirm-transition --session-file");
+    expect(skill).toContain("native user-choice tool whenever one is available");
+    expect(skill).toContain("Plain-text numbered choices are fallback only");
     expect(skill).toContain("Current task pointer exists");
     expect(skill).toContain("No current task pointer");
     expect(skill).not.toContain("open the target agent");
@@ -81,6 +85,9 @@ describe("configureClaude", () => {
       "utf8",
     );
     expect(hook).toContain("build_status_context");
+    expect(hook).not.toContain("CONFIRM_PATTERNS");
+    expect(hook).not.toContain("confirm_transition");
+    expect(hook).not.toContain("preflight_confirmed_transition");
     expect(
       await readFile(path.join(tempDir, ".claude", "hooks", "easy_coding_status.py"), "utf8"),
     ).toContain("build_status_context");
@@ -99,18 +106,25 @@ describe("configureClaude", () => {
     expect(main).not.toContain("}```");
     expect(main).toContain("`/ec-init`");
     expect(main).toContain("`/ec-meta`");
+    expect(main).toContain("`pending_transition`");
+    expect(main).toContain("use the agent's native user-choice tool");
 
     const verificationSkill = await readFile(
       path.join(tempDir, ".claude", "skills", "ec-verification", "SKILL.md"),
       "utf8",
     );
-    expect(verificationSkill.indexOf("--stage MEMORY_SHORT")).toBeGreaterThan(-1);
-    expect(verificationSkill.indexOf("--stage MEMORY_LONG")).toBeGreaterThan(
-      verificationSkill.indexOf("--stage MEMORY_SHORT"),
+    expect(verificationSkill).toContain("request-transition --stage MEMORY");
+    expect(verificationSkill).not.toContain("MEMORY_SHORT");
+    expect(verificationSkill).not.toContain("MEMORY_LONG");
+
+    const memorySkill = await readFile(
+      path.join(tempDir, ".claude", "skills", "ec-memory", "SKILL.md"),
+      "utf8",
     );
-    expect(verificationSkill.indexOf("--stage COMPLETE")).toBeGreaterThan(
-      verificationSkill.indexOf("--stage MEMORY_LONG"),
-    );
+    expect(memorySkill).toContain("memory-short-complete");
+    expect(memorySkill).toContain("memory-instruction");
+    expect(memorySkill).toContain("memory-complete");
+    expect(memorySkill).toContain("source_task: {current task id, exact}");
 
     const metaReference = await readFile(
       path.join(
@@ -450,7 +464,7 @@ describe("configureClaude", () => {
     expect(session.current_task).toBeNull();
   });
 
-  it("generated hooks preflight WAITING_CONFIRM confirmation before rendering IMPLEMENT", async () => {
+  it("generated hooks keep option 1 read-only until the agent confirms explicitly", async () => {
     await configureClaude(tempDir);
     await writeRuntimeScaffold(tempDir, ["claude-code"]);
     await mkdir(path.join(tempDir, ".easy-coding", "sessions"), { recursive: true });
@@ -462,7 +476,7 @@ describe("configureClaude", () => {
           current_task: "06-25-confirm",
           created_at: new Date().toISOString(),
           last_seen_task: "06-25-confirm",
-          last_seen_stage: "WAITING_CONFIRM",
+          last_seen_stage: "ANALYSIS",
           last_agent: "claude-code",
         },
         null,
@@ -476,11 +490,17 @@ describe("configureClaude", () => {
         {
           type: "feature",
           title: "Confirm task",
-          status: "WAITING_CONFIRM",
+          status: "ANALYSIS",
           created_at: "2026-06-25T00:00:00Z",
           created_by: "claude-code",
           last_agent: "claude-code",
-          stage_history: [{ stage: "WAITING_CONFIRM", agent: "claude-code" }],
+          stage_history: [{ stage: "ANALYSIS", agent: "claude-code" }],
+          pending_transition: {
+            from: "ANALYSIS",
+            to: "IMPLEMENT",
+            requested_at: "2026-06-25T00:01:00Z",
+            requested_by: "claude-code",
+          },
         },
         null,
         2,
@@ -491,30 +511,30 @@ describe("configureClaude", () => {
     const hook = path.join(tempDir, ".claude", "hooks", "inject-workflow-state.py");
     const stdout = execFileSync("python3", [hook], {
       cwd: tempDir,
-      input: JSON.stringify({ cwd: tempDir, prompt: "确认，开始执行" }),
+      input: JSON.stringify({ cwd: tempDir, prompt: "1" }),
       encoding: "utf8",
     });
 
-    expect(stdout).toContain("> **Easy Coding** · `06-25-confirm` · `IMPLEMENT`");
-    expect(stdout).toContain("[workflow-state:IMPLEMENT]");
+    expect(stdout).toContain("> **Easy Coding** · `06-25-confirm` · `ANALYSIS`");
+    expect(stdout).toContain("[workflow-state:ANALYSIS]");
+    expect(stdout).toContain("[easy-coding:pending-transition:ANALYSIS->IMPLEMENT]");
     const task = JSON.parse(
       await readFile(
         path.join(tempDir, ".easy-coding", "tasks", "06-25-confirm", "task.json"),
         "utf8",
       ),
     );
-    expect(task.status).toBe("IMPLEMENT");
+    expect(task.status).toBe("ANALYSIS");
     expect(task.stage_history.map((entry: { stage: string }) => entry.stage)).toEqual([
-      "WAITING_CONFIRM",
-      "IMPLEMENT",
+      "ANALYSIS",
     ]);
     const session = JSON.parse(
       await readFile(path.join(tempDir, ".easy-coding", "sessions", `${process.pid}.json`), "utf8"),
     );
-    expect(session.last_seen_stage).toBe("IMPLEMENT");
+    expect(session.last_seen_stage).toBe("ANALYSIS");
   });
 
-  it("generated hooks do not preflight WAITING_CONFIRM revision requests", async () => {
+  it("generated hooks keep a pending edge when the user requests revision", async () => {
     await configureClaude(tempDir);
     await writeRuntimeScaffold(tempDir, ["claude-code"]);
     await mkdir(path.join(tempDir, ".easy-coding", "sessions"), { recursive: true });
@@ -526,7 +546,7 @@ describe("configureClaude", () => {
           current_task: "06-25-revise",
           created_at: new Date().toISOString(),
           last_seen_task: "06-25-revise",
-          last_seen_stage: "WAITING_CONFIRM",
+          last_seen_stage: "ANALYSIS",
           last_agent: "claude-code",
         },
         null,
@@ -540,11 +560,17 @@ describe("configureClaude", () => {
         {
           type: "feature",
           title: "Revise task",
-          status: "WAITING_CONFIRM",
+          status: "ANALYSIS",
           created_at: "2026-06-25T00:00:00Z",
           created_by: "claude-code",
           last_agent: "claude-code",
-          stage_history: [{ stage: "WAITING_CONFIRM", agent: "claude-code" }],
+          stage_history: [{ stage: "ANALYSIS", agent: "claude-code" }],
+          pending_transition: {
+            from: "ANALYSIS",
+            to: "IMPLEMENT",
+            requested_at: "2026-06-25T00:01:00Z",
+            requested_by: "claude-code",
+          },
         },
         null,
         2,
@@ -559,21 +585,103 @@ describe("configureClaude", () => {
       encoding: "utf8",
     });
 
-    expect(stdout).toContain("> **Easy Coding** · `06-25-revise` · `WAITING_CONFIRM`");
-    expect(stdout).toContain("[workflow-state:WAITING_CONFIRM]");
+    expect(stdout).toContain("> **Easy Coding** · `06-25-revise` · `ANALYSIS`");
+    expect(stdout).toContain("[workflow-state:ANALYSIS]");
+    expect(stdout).toContain("[easy-coding:pending-transition:ANALYSIS->IMPLEMENT]");
     const task = JSON.parse(
       await readFile(
         path.join(tempDir, ".easy-coding", "tasks", "06-25-revise", "task.json"),
         "utf8",
       ),
     );
-    expect(task.status).toBe("WAITING_CONFIRM");
+    expect(task.status).toBe("ANALYSIS");
     expect(task.stage_history.map((entry: { stage: string }) => entry.stage)).toEqual([
-      "WAITING_CONFIRM",
+      "ANALYSIS",
     ]);
+    expect(task.pending_transition).toMatchObject({ from: "ANALYSIS", to: "IMPLEMENT" });
   });
 
-  it("generated hooks preflight accepted verification before rendering MEMORY_SHORT", async () => {
+  it("generated hooks do not treat free-form or directional language as confirmation", async () => {
+    await configureClaude(tempDir);
+    await writeRuntimeScaffold(tempDir, ["claude-code"]);
+    await mkdir(path.join(tempDir, ".easy-coding", "sessions"), { recursive: true });
+    await mkdir(path.join(tempDir, ".easy-coding", "tasks", "06-25-discuss"), {
+      recursive: true,
+    });
+    await writeFile(
+      path.join(tempDir, ".easy-coding", "sessions", `${process.pid}.json`),
+      JSON.stringify(
+        {
+          current_task: "06-25-discuss",
+          created_at: new Date().toISOString(),
+          last_seen_task: "06-25-discuss",
+          last_seen_stage: "ANALYSIS",
+          last_agent: "claude-code",
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    const taskPath = path.join(
+      tempDir,
+      ".easy-coding",
+      "tasks",
+      "06-25-discuss",
+      "task.json",
+    );
+    await writeFile(
+      taskPath,
+      JSON.stringify(
+        {
+          type: "feature",
+          title: "Discuss task",
+          status: "ANALYSIS",
+          created_at: "2026-06-25T00:00:00Z",
+          created_by: "claude-code",
+          last_agent: "claude-code",
+          stage_history: [{ stage: "ANALYSIS", agent: "claude-code" }],
+          pending_transition: {
+            from: "ANALYSIS",
+            to: "IMPLEMENT",
+            requested_at: "2026-06-25T00:01:00Z",
+            requested_by: "claude-code",
+          },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    const hook = path.join(tempDir, ".claude", "hooks", "inject-workflow-state.py");
+    const prompts = [
+      "继续分析这个方案",
+      "我想继续讨论方案",
+      "我还没确认",
+      "帮我确认现在处于什么阶段",
+      "确认进入下一阶段",
+      "确认返回上一阶段",
+    ];
+    for (const prompt of prompts) {
+      const stdout = execFileSync("python3", [hook], {
+        cwd: tempDir,
+        input: JSON.stringify({ cwd: tempDir, prompt }),
+        encoding: "utf8",
+      });
+      expect(stdout).toContain("> **Easy Coding** · `06-25-discuss` · `ANALYSIS`");
+      expect(stdout).toContain("[easy-coding:pending-transition:ANALYSIS->IMPLEMENT]");
+    }
+
+    const task = JSON.parse(await readFile(taskPath, "utf8"));
+    expect(task.status).toBe("ANALYSIS");
+    expect(task.stage_history.map((entry: { stage: string }) => entry.stage)).toEqual([
+      "ANALYSIS",
+    ]);
+    expect(task.pending_transition).toMatchObject({ from: "ANALYSIS", to: "IMPLEMENT" });
+  });
+
+  it("generated hooks keep verification fallback input read-only", async () => {
     await configureClaude(tempDir);
     await writeRuntimeScaffold(tempDir, ["claude-code"]);
     await mkdir(path.join(tempDir, ".easy-coding", "sessions"), { recursive: true });
@@ -604,6 +712,12 @@ describe("configureClaude", () => {
           created_by: "claude-code",
           last_agent: "claude-code",
           stage_history: [{ stage: "VERIFICATION", agent: "claude-code" }],
+          pending_transition: {
+            from: "VERIFICATION",
+            to: "MEMORY",
+            requested_at: "2026-06-25T00:01:00Z",
+            requested_by: "claude-code",
+          },
         },
         null,
         2,
@@ -614,26 +728,26 @@ describe("configureClaude", () => {
     const hook = path.join(tempDir, ".claude", "hooks", "inject-workflow-state.py");
     const stdout = execFileSync("python3", [hook], {
       cwd: tempDir,
-      input: JSON.stringify({ cwd: tempDir, user_prompt: "验收通过，可以归档" }),
+      input: JSON.stringify({ cwd: tempDir, user_prompt: "1." }),
       encoding: "utf8",
     });
 
-    expect(stdout).toContain("> **Easy Coding** · `06-25-verify` · `MEMORY_SHORT`");
-    expect(stdout).toContain("[workflow-state:MEMORY_SHORT]");
+    expect(stdout).toContain("> **Easy Coding** · `06-25-verify` · `VERIFICATION`");
+    expect(stdout).toContain("[workflow-state:VERIFICATION]");
+    expect(stdout).toContain("[easy-coding:pending-transition:VERIFICATION->MEMORY]");
     const task = JSON.parse(
       await readFile(
         path.join(tempDir, ".easy-coding", "tasks", "06-25-verify", "task.json"),
         "utf8",
       ),
     );
-    expect(task.status).toBe("MEMORY_SHORT");
+    expect(task.status).toBe("VERIFICATION");
     expect(task.stage_history.map((entry: { stage: string }) => entry.stage)).toEqual([
       "VERIFICATION",
-      "MEMORY_SHORT",
     ]);
   });
 
-  it("generated hooks do not preflight non-confirmation stages", async () => {
+  it("generated hooks do not advance stages without a pending edge", async () => {
     await configureClaude(tempDir);
     await writeRuntimeScaffold(tempDir, ["claude-code"]);
     await mkdir(path.join(tempDir, ".easy-coding", "sessions"), { recursive: true });
@@ -728,20 +842,79 @@ describe("configureClaude", () => {
 
     const stages = [
       "ANALYSIS",
-      "WAITING_CONFIRM",
       "IMPLEMENT",
       "REVIEW",
       "VERIFICATION",
-      "MEMORY_SHORT",
-      "MEMORY_LONG",
+      "MEMORY",
       "COMPLETE",
     ];
     for (const stage of stages) {
+      if (stage === "COMPLETE") {
+        await writeFile(
+          path.join(tempDir, ".easy-coding", "memory", "short", "001_fixture.md"),
+          "---\nmemory_schema: 2\nsource_task: 06-12-api\n---\n",
+          "utf8",
+        );
+        execFileSync(
+          "python3",
+          [
+            stateApi,
+            "memory-short-complete",
+            "--session-file",
+            sessionFile,
+            "--file",
+            ".easy-coding/memory/short/001_fixture.md",
+            "--agent",
+            "claude-code",
+          ],
+          { cwd: tempDir, encoding: "utf8" },
+        );
+        execFileSync(
+          "python3",
+          [stateApi, "memory-instruction", "--session-file", sessionFile],
+          { cwd: tempDir, encoding: "utf8" },
+        );
+        execFileSync(
+          "python3",
+          [
+            stateApi,
+            "memory-complete",
+            "--session-file",
+            sessionFile,
+            "--action",
+            "no-op",
+            "--agent",
+            "claude-code",
+          ],
+          { cwd: tempDir, encoding: "utf8" },
+        );
+      }
+      const requestStdout = execFileSync(
+        "python3",
+        [
+          stateApi,
+          "request-transition",
+          "--session-file",
+          sessionFile,
+          "--stage",
+          stage,
+          "--agent",
+          "claude-code",
+        ],
+        { cwd: tempDir, encoding: "utf8" },
+      );
+      const requestOutput = JSON.parse(requestStdout) as {
+        status: string;
+        pending_transition: { to: string };
+      };
+      expect(requestOutput.pending_transition.to).toBe(stage);
+      expect(requestOutput.status).not.toBe(stage);
+
       const transitionStdout = execFileSync(
         "python3",
         [
           stateApi,
-          "transition",
+          "confirm-transition",
           "--session-file",
           sessionFile,
           "--stage",

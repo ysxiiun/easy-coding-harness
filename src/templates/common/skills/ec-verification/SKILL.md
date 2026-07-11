@@ -54,7 +54,8 @@ Append one `verify` record per check:
 
 - All three pass AND coverage satisfied → present the verification result; wait for user
   acceptance. Do NOT archive yet.
-- Any failure → append the failing `verify` record, summarize failures, return to IMPLEMENT.
+- Any failure → append the failing `verify` record, summarize failures, request
+  VERIFICATION -> IMPLEMENT, and wait at the standard confirmation/handoff/Other gate.
 
 ## 4. User acceptance and repair loop
 
@@ -62,9 +63,10 @@ After a green gate, present an acceptance summary: what changed (files + summari
 verification results (lint/type/test), and the coverage status. Then the user takes time to
 test manually. Their response routes:
 
-- **"accepted"** → trigger the archive flow (section 5).
+- **"accepted"** → request VERIFICATION -> MEMORY and present the standard boundary gate.
 - **"problem here"** → scope judgment against the dev-spec:
-  - in scope → return to IMPLEMENT to fix → re-REVIEW → re-VERIFICATION.
+  - in scope → request VERIFICATION -> IMPLEMENT, then re-REVIEW → re-VERIFICATION after
+    the user confirms each stage edge.
   - out of scope → propose a new task (`spawned_from` = current task id); the current task
     may archive now (if already satisfactory) or stay suspended.
 - **"cancel"** → ec-task-close.
@@ -72,21 +74,14 @@ test manually. Their response routes:
 Repair sizing: a trivial tweak is fixed and re-verified inside VERIFICATION; a logic/structure
 change formally returns to IMPLEMENT and re-walks REVIEW → VERIFICATION.
 
-## 5. Archive flow (only after acceptance)
+## 5. Archive entry (only after acceptance)
 
-Runs automatically once the user accepts:
-1. MEMORY_SHORT — call
-   `{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py transition --session-file <P> --stage MEMORY_SHORT --agent <agent-id>`,
-   use the returned `status_context` as the latest status source, then hand control to
-   ec-memory to write the short memory entry.
-2. MEMORY_LONG — after MEMORY_SHORT returns, call
-   `{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py transition --session-file <P> --stage MEMORY_LONG --agent <agent-id>`,
-   use the returned `status_context` and `memory_long` object as authoritative, then hand
-   control to ec-memory to distill long memory or perform its no-op gate.
-3. COMPLETE — after MEMORY_LONG returns, call
-   `{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py transition --session-file <P> --stage COMPLETE --agent <agent-id>`,
-   which clears session `current_task` for the completed task. Use the returned
-   `status_context`, then output the task summary (what was done, files changed, key
-   decisions).
+Acceptance does not mutate the stage directly. Hand control to ec-workflow to call
+`request-transition --stage MEMORY`, then present:
+1. Confirm entering MEMORY
+2. Hand off to another agent
+3. Other (native free-form Other, or the third text option)
 
-Hand control back to ec-workflow at each transition; ec-workflow owns the stage writes.
+Only after confirmation may ec-workflow consume the pending edge and dispatch ec-memory.
+ec-memory owns both short-memory creation and the conditional long-memory gate inside the
+single MEMORY stage. It later requests MEMORY -> COMPLETE and waits for a separate confirmation.

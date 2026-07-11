@@ -22,6 +22,7 @@ async function writeTaskFixture(
   taskId: string,
   status: string,
   lastAgent: string,
+  extra: Record<string, unknown> = {},
 ): Promise<void> {
   await mkdir(path.join(tempDir, ".easy-coding", "tasks", taskId), { recursive: true });
   await writeFile(
@@ -35,6 +36,7 @@ async function writeTaskFixture(
         created_by: lastAgent,
         last_agent: lastAgent,
         stage_history: [{ stage: status, agent: lastAgent }],
+        ...extra,
       },
       null,
       2,
@@ -59,24 +61,32 @@ async function writeSessionFixture(currentTask: string | null): Promise<void> {
   );
 }
 
-async function writeMemoryLongFixture(shortCount: number): Promise<string> {
-  await mkdir(path.join(tempDir, ".easy-coding", "sessions"), { recursive: true });
-  await mkdir(path.join(tempDir, ".easy-coding", "tasks", "06-23-memory"), {
-    recursive: true,
-  });
-  await mkdir(path.join(tempDir, ".easy-coding", "memory", "short"), { recursive: true });
+async function writeMemoryConfig(shortTermMax: number, shortTermKeep: number): Promise<void> {
+  await mkdir(path.join(tempDir, ".easy-coding"), { recursive: true });
   await writeFile(
     path.join(tempDir, ".easy-coding", "config.yaml"),
     [
       "version: 1",
       "memory:",
-      "  short_term_max: 10",
-      "  short_term_keep: 5",
+      `  short_term_max: ${shortTermMax}`,
+      `  short_term_keep: ${shortTermKeep}`,
       "  schema_version: 2",
       "",
     ].join("\n"),
     "utf8",
   );
+}
+
+async function writeMemoryFixture(
+  shortCount: number,
+  checkpointIndex: number = shortCount,
+): Promise<string> {
+  await mkdir(path.join(tempDir, ".easy-coding", "sessions"), { recursive: true });
+  await mkdir(path.join(tempDir, ".easy-coding", "tasks", "06-23-memory"), {
+    recursive: true,
+  });
+  await mkdir(path.join(tempDir, ".easy-coding", "memory", "short"), { recursive: true });
+  await writeMemoryConfig(10, 5);
   await writeFile(
     path.join(tempDir, ".easy-coding", "sessions", "test.json"),
     JSON.stringify(
@@ -95,11 +105,12 @@ async function writeMemoryLongFixture(shortCount: number): Promise<string> {
       {
         type: "feature",
         title: "Memory gate fixture",
-        status: "MEMORY_SHORT",
+        status: "MEMORY",
         created_at: "2026-06-23T00:00:00Z",
         created_by: "codex",
         last_agent: "codex",
-        stage_history: [{ stage: "MEMORY_SHORT", agent: "codex" }],
+        stage_history: [{ stage: "MEMORY", agent: "codex" }],
+        memory_progress: {},
       },
       null,
       2,
@@ -120,6 +131,7 @@ async function writeMemoryLongFixture(shortCount: number): Promise<string> {
         "---",
         "memory_schema: 2",
         `id: SM-20260623-${String(index).padStart(3, "0")}`,
+        "source_task: 06-23-memory",
         "---",
         "",
         `Short memory ${index}`,
@@ -134,21 +146,32 @@ async function writeMemoryLongFixture(shortCount: number): Promise<string> {
     "utf8",
   );
 
+  execFileSync(
+    "python3",
+    [
+      stateApiPath(),
+      "memory-short-complete",
+      "--session-file",
+      ".easy-coding/sessions/test.json",
+      "--file",
+      `.easy-coding/memory/short/${String(checkpointIndex).padStart(3, "0")}_20260623_item-${checkpointIndex}.md`,
+      "--agent",
+      "codex",
+    ],
+    { cwd: tempDir, encoding: "utf8" },
+  );
+
   return stateApiPath();
 }
 
-function transitionMemoryLong(scriptPath: string) {
+function readMemoryInstruction(scriptPath: string) {
   const output = execFileSync(
     "python3",
     [
       scriptPath,
-      "transition",
+      "memory-instruction",
       "--session-file",
       ".easy-coding/sessions/test.json",
-      "--stage",
-      "MEMORY_LONG",
-      "--agent",
-      "codex",
     ],
     {
       cwd: tempDir,
@@ -156,50 +179,464 @@ function transitionMemoryLong(scriptPath: string) {
     },
   );
   return JSON.parse(output) as {
-    memory_long: Record<string, unknown>;
+    memory: Record<string, unknown>;
     status_line: string;
     status_context: string;
   };
 }
 
-describe("easy_coding_state.py MEMORY_LONG instruction", () => {
+describe("easy_coding_state.py MEMORY instruction", () => {
+  it("rejects a memory window where short_term_keep exceeds short_term_max", async () => {
+    const scriptPath = await writeMemoryFixture(6);
+    await writeMemoryConfig(5, 10);
+
+    const result = spawnSync(
+      "python3",
+      [
+        scriptPath,
+        "memory-instruction",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(
+      "memory.short_term_keep must be less than or equal to memory.short_term_max",
+    );
+  });
+
+  it("accepts equal max/keep values and still produces a real candidate", async () => {
+    const scriptPath = await writeMemoryFixture(6);
+    await writeMemoryConfig(5, 5);
+
+    const snapshot = readMemoryInstruction(scriptPath);
+
+    expect(snapshot.memory).toMatchObject({
+      action: "distill",
+      trim_count: 1,
+      checkpoint_disposition: "kept",
+    });
+    expect(snapshot.memory.candidate_files).toEqual([
+      ".easy-coding/memory/short/001_20260623_item-1.md",
+    ]);
+  });
+
+  it("supports a zero-sized retained window", async () => {
+    const scriptPath = await writeMemoryFixture(6);
+    await writeMemoryConfig(5, 0);
+
+    const snapshot = readMemoryInstruction(scriptPath);
+
+    expect(snapshot.memory).toMatchObject({
+      action: "distill",
+      trim_count: 6,
+      checkpoint_disposition: "candidate",
+      kept_files: [],
+    });
+    expect(snapshot.memory.candidate_files).toHaveLength(6);
+  });
+
+  it("preserves the explicit legacy MEMORY_LONG recovery exception", async () => {
+    await writeSessionFixture("06-23-legacy-memory");
+    await writeTaskFixture("06-23-legacy-memory", "MEMORY", "codex", {
+      memory_progress: {
+        short_memory_written: true,
+        legacy_short_memory_assumed: true,
+      },
+    });
+
+    const snapshot = readMemoryInstruction(stateApiPath());
+
+    expect(snapshot.memory).toMatchObject({ action: "no-op", short_count: 0 });
+  });
+
+  it("rejects malformed or cross-task short-memory checkpoints", async () => {
+    await writeSessionFixture("06-23-invalid-memory");
+    await writeTaskFixture("06-23-invalid-memory", "MEMORY", "codex", {
+      memory_progress: {},
+    });
+    const shortDir = path.join(tempDir, ".easy-coding", "memory", "short");
+    await mkdir(shortDir, { recursive: true });
+    const malformedPath = path.join(shortDir, "001_malformed.md");
+    await writeFile(malformedPath, "plain markdown without schema\n", "utf8");
+
+    const malformed = spawnSync(
+      "python3",
+      [
+        stateApiPath(),
+        "memory-short-complete",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--file",
+        ".easy-coding/memory/short/001_malformed.md",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    expect(malformed.status).toBe(1);
+    expect(malformed.stderr).toContain("must declare memory_schema: 2");
+
+    const reusedPath = path.join(shortDir, "002_reused.md");
+    await writeFile(
+      reusedPath,
+      ["---", "memory_schema: 2", "source_task: another-task", "---", ""].join("\n"),
+      "utf8",
+    );
+    const reused = spawnSync(
+      "python3",
+      [
+        stateApiPath(),
+        "memory-short-complete",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--file",
+        ".easy-coding/memory/short/002_reused.md",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    expect(reused.status).toBe(1);
+    expect(reused.stderr).toContain("does not match current task 06-23-invalid-memory");
+  });
+
+  it("revalidates the short-memory fingerprint before completion", async () => {
+    await writeSessionFixture("06-23-fingerprint");
+    await writeTaskFixture("06-23-fingerprint", "MEMORY", "codex", {
+      memory_progress: {},
+    });
+    const memoryPath = path.join(
+      tempDir,
+      ".easy-coding",
+      "memory",
+      "short",
+      "001_fingerprint.md",
+    );
+    await mkdir(path.dirname(memoryPath), { recursive: true });
+    await writeFile(
+      memoryPath,
+      ["---", "memory_schema: 2", "source_task: 06-23-fingerprint", "---", "original"].join(
+        "\n",
+      ),
+      "utf8",
+    );
+    execFileSync(
+      "python3",
+      [
+        stateApiPath(),
+        "memory-short-complete",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--file",
+        ".easy-coding/memory/short/001_fingerprint.md",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    readMemoryInstruction(stateApiPath());
+    await writeFile(
+      memoryPath,
+      ["---", "memory_schema: 2", "source_task: 06-23-fingerprint", "---", "changed"].join(
+        "\n",
+      ),
+      "utf8",
+    );
+
+    const completed = spawnSync(
+      "python3",
+      [
+        stateApiPath(),
+        "memory-complete",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--action",
+        "no-op",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    expect(completed.status).toBe(1);
+    expect(completed.stderr).toContain("changed after its checkpoint");
+
+    await rm(memoryPath);
+    const missing = spawnSync(
+      "python3",
+      [
+        stateApiPath(),
+        "memory-complete",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--action",
+        "no-op",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    expect(missing.status).toBe(1);
+    expect(missing.stderr).toContain("Short-memory file not found");
+  });
+
   it("returns no-op when short memory count is below threshold", async () => {
-    const scriptPath = await writeMemoryLongFixture(1);
+    const scriptPath = await writeMemoryFixture(1);
 
-    const snapshot = transitionMemoryLong(scriptPath);
+    const snapshot = readMemoryInstruction(scriptPath);
 
-    expect(snapshot.memory_long).toEqual({
+    expect(snapshot.memory).toEqual({
       short_count: 1,
       short_term_max: 10,
       short_term_keep: 5,
       action: "no-op",
       trim_count: 0,
+      candidate_files: [],
+      kept_files: [".easy-coding/memory/short/001_20260623_item-1.md"],
+      checkpoint_disposition: "kept",
     });
-    expect(snapshot.status_line).toContain("> **Easy Coding** · `06-23-memory` · `MEMORY_LONG`");
-    expect(snapshot.status_context).toContain("[workflow-state:MEMORY_LONG]");
+    expect(snapshot.status_line).toContain("> **Easy Coding** · `06-23-memory` · `MEMORY`");
+    expect(snapshot.status_context).toContain("[workflow-state:MEMORY]");
   });
 
   it("returns distill instructions and trim count when threshold is exceeded", async () => {
-    const scriptPath = await writeMemoryLongFixture(12);
+    const scriptPath = await writeMemoryFixture(12);
 
-    const snapshot = transitionMemoryLong(scriptPath);
+    const snapshot = readMemoryInstruction(scriptPath);
 
-    expect(snapshot.memory_long).toEqual({
+    expect(snapshot.memory).toEqual({
       short_count: 12,
       short_term_max: 10,
       short_term_keep: 5,
       action: "distill",
       trim_count: 7,
+      candidate_files: Array.from(
+        { length: 7 },
+        (_, index) =>
+          `.easy-coding/memory/short/${String(index + 1).padStart(3, "0")}_20260623_item-${index + 1}.md`,
+      ),
+      kept_files: Array.from(
+        { length: 5 },
+        (_, index) =>
+          `.easy-coding/memory/short/${String(index + 8).padStart(3, "0")}_20260623_item-${index + 8}.md`,
+      ),
+      checkpoint_disposition: "kept",
     });
-    expect(snapshot.status_line).toContain("> **Easy Coding** · `06-23-memory` · `MEMORY_LONG`");
-    expect(snapshot.status_context).toContain("[workflow-state:MEMORY_LONG]");
+    expect(snapshot.status_line).toContain("> **Easy Coding** · `06-23-memory` · `MEMORY`");
+    expect(snapshot.status_context).toContain("[workflow-state:MEMORY]");
+
+    for (let index = 1; index <= 7; index += 1) {
+      await rm(
+        path.join(
+          tempDir,
+          ".easy-coding",
+          "memory",
+          "short",
+          `${String(index).padStart(3, "0")}_20260623_item-${index}.md`,
+        ),
+      );
+    }
+    const completed = JSON.parse(
+      execFileSync(
+        "python3",
+        [
+          scriptPath,
+          "memory-complete",
+          "--session-file",
+          ".easy-coding/sessions/test.json",
+          "--action",
+          "distill",
+          "--agent",
+          "codex",
+        ],
+        { cwd: tempDir, encoding: "utf8" },
+      ),
+    ) as { memory_progress: { completed: boolean; long_memory_action: string } };
+    expect(completed.memory_progress).toMatchObject({
+      completed: true,
+      long_memory_action: "distill",
+    });
+  });
+
+  it("rejects distill completion when the retained checkpoint is missing", async () => {
+    const scriptPath = await writeMemoryFixture(12);
+    readMemoryInstruction(scriptPath);
+    for (let index = 1; index <= 7; index += 1) {
+      await rm(
+        path.join(
+          tempDir,
+          ".easy-coding",
+          "memory",
+          "short",
+          `${String(index).padStart(3, "0")}_20260623_item-${index}.md`,
+        ),
+      );
+    }
+    await rm(
+      path.join(tempDir, ".easy-coding", "memory", "short", "012_20260623_item-12.md"),
+    );
+
+    const completed = spawnSync(
+      "python3",
+      [
+        scriptPath,
+        "memory-complete",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--action",
+        "distill",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    expect(completed.status).toBe(1);
+    expect(completed.stderr).toContain("Short-memory file not found");
+  });
+
+  it("allows a checkpoint to disappear only when it is a consumed candidate", async () => {
+    const scriptPath = await writeMemoryFixture(12, 1);
+    const snapshot = readMemoryInstruction(scriptPath);
+    expect(snapshot.memory).toMatchObject({
+      action: "distill",
+      checkpoint_disposition: "candidate",
+    });
+
+    const premature = spawnSync(
+      "python3",
+      [
+        scriptPath,
+        "memory-complete",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--action",
+        "distill",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    expect(premature.status).toBe(1);
+    expect(premature.stderr).toContain("Distillation candidate was not consumed");
+
+    for (let index = 1; index <= 7; index += 1) {
+      await rm(
+        path.join(
+          tempDir,
+          ".easy-coding",
+          "memory",
+          "short",
+          `${String(index).padStart(3, "0")}_20260623_item-${index}.md`,
+        ),
+      );
+    }
+    const completed = JSON.parse(
+      execFileSync(
+        "python3",
+        [
+          scriptPath,
+          "memory-complete",
+          "--session-file",
+          ".easy-coding/sessions/test.json",
+          "--action",
+          "distill",
+          "--agent",
+          "codex",
+        ],
+        { cwd: tempDir, encoding: "utf8" },
+      ),
+    ) as { memory_progress: { completed: boolean } };
+    expect(completed.memory_progress.completed).toBe(true);
+  });
+});
+
+describe("easy_coding_state.py pending transition gate", () => {
+  it("keeps the current stage until the pending edge is confirmed", async () => {
+    await writeSessionFixture("06-26-gate");
+    await writeTaskFixture("06-26-gate", "ANALYSIS", "codex");
+
+    const requested = JSON.parse(
+      execFileSync(
+        "python3",
+        [
+          stateApiPath(),
+          "request-transition",
+          "--session-file",
+          ".easy-coding/sessions/test.json",
+          "--stage",
+          "IMPLEMENT",
+          "--agent",
+          "codex",
+        ],
+        { cwd: tempDir, encoding: "utf8" },
+      ),
+    ) as { status: string; pending_transition: { from: string; to: string }; status_context: string };
+
+    expect(requested.status).toBe("ANALYSIS");
+    expect(requested.pending_transition).toMatchObject({ from: "ANALYSIS", to: "IMPLEMENT" });
+    expect(requested.status_context).toContain(
+      "[easy-coding:pending-transition:ANALYSIS->IMPLEMENT]",
+    );
+
+    const confirmed = JSON.parse(
+      execFileSync(
+        "python3",
+        [
+          stateApiPath(),
+          "confirm-transition",
+          "--session-file",
+          ".easy-coding/sessions/test.json",
+          "--stage",
+          "IMPLEMENT",
+          "--agent",
+          "codex",
+        ],
+        { cwd: tempDir, encoding: "utf8" },
+      ),
+    ) as { status: string; pending_transition: null; confirmed_transition: Record<string, string> };
+
+    expect(confirmed.status).toBe("IMPLEMENT");
+    expect(confirmed.pending_transition).toBeNull();
+    expect(confirmed.confirmed_transition).toEqual({ from: "ANALYSIS", to: "IMPLEMENT" });
+  });
+
+  it("rejects confirmation when no edge is pending", async () => {
+    await writeSessionFixture("06-26-no-gate");
+    await writeTaskFixture("06-26-no-gate", "ANALYSIS", "codex");
+
+    const result = spawnSync(
+      "python3",
+      [
+        stateApiPath(),
+        "confirm-transition",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--stage",
+        "IMPLEMENT",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("No transition is pending user confirmation");
   });
 });
 
 describe("easy_coding_state.py handoff and claim", () => {
   it("writes a target-less handoff record and clears the current session pointer", async () => {
     await writeSessionFixture("06-26-handoff");
-    await writeTaskFixture("06-26-handoff", "WAITING_CONFIRM", "codex");
+    await writeTaskFixture("06-26-handoff", "ANALYSIS", "codex", {
+      pending_transition: {
+        from: "ANALYSIS",
+        to: "IMPLEMENT",
+        requested_at: "2026-06-26T00:00:00Z",
+        requested_by: "codex",
+      },
+    });
 
     const output = execFileSync(
       "python3",
@@ -225,7 +662,7 @@ describe("easy_coding_state.py handoff and claim", () => {
     expect(snapshot.handoff).toMatchObject({
       type: "handoff",
       from: "codex",
-      stage: "WAITING_CONFIRM",
+      stage: "ANALYSIS",
       summary: "Plan is ready for implementation.",
     });
     expect(snapshot.handoff).not.toHaveProperty("to");
@@ -244,6 +681,14 @@ describe("easy_coding_state.py handoff and claim", () => {
       await readFile(path.join(tempDir, ".easy-coding", "sessions", "test.json"), "utf8"),
     );
     expect(session.current_task).toBeNull();
+
+    const task = JSON.parse(
+      await readFile(
+        path.join(tempDir, ".easy-coding", "tasks", "06-26-handoff", "task.json"),
+        "utf8",
+      ),
+    );
+    expect(task.pending_transition).toMatchObject({ from: "ANALYSIS", to: "IMPLEMENT" });
   });
 
   it("marks task list entries as continue or takeover for the current agent", async () => {

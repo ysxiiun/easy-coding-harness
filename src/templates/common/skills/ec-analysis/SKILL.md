@@ -1,6 +1,6 @@
 ---
 name: ec-analysis
-description: ANALYSIS-stage skill. Use when ec-workflow enters ANALYSIS. Creates the dev-spec skeleton FIRST (template-first), then fills incrementally — producing the narrative plan, execution plan (execution.jsonl), and test strategy. Ends in WAITING_CONFIRM. Grounds every conclusion in real code, never restates the requirement.
+description: ANALYSIS-stage skill. Use when ec-workflow enters ANALYSIS. Creates the dev-spec skeleton FIRST (template-first), then fills incrementally — producing the narrative plan, execution plan (execution.jsonl), and test strategy. Ends by requesting the confirmed edge to IMPLEMENT. Grounds every conclusion in real code, never restates the requirement.
 ---
 
 > **SKELETON FIRST — your first two tool calls MUST be: (1) Read `.easy-coding/templates/dev-spec-skeleton.md`, (2) Write its EXACT content to the task's dev-spec.md. No exceptions. Do not analyze or think before the skeleton file exists on disk.**
@@ -42,8 +42,8 @@ Communicate with the user in the user's language.
    which subset this round?" as an explicit item in 待用户决策 for the user to decide. Never
    make a scope-narrowing decision yourself and present it as settled. Never fabricate a
    premise such as "the user already fixed scope X in INIT" or "auto_mode already selected Y"
-   to justify narrowing — `auto_mode` only waives the WAITING_CONFIRM confirmation step and
-   carries NO scope or delivery-form decision whatsoever.
+   to justify narrowing — `auto_mode` only waives stage-boundary prompts under an explicit
+   autonomous user request and carries NO scope or delivery-form decision whatsoever.
 6. **改动范围 lists ONLY real project code.** The 改动范围 table carries only changes to real
    project source/config files. Any harness artifact under `.easy-coding/` (dev-spec.md,
    execution.jsonl, test-strategy.md, memory files, generated reports, etc.) is FORBIDDEN in
@@ -218,7 +218,8 @@ VERIFICATION baseline).
 
 > 修订同样受 HARD RULE 5/6 约束：用户的修订诉求若是扩大或细化代码改动，不得借机把任务降级为"出报告"；范围收窄仍须作为 待用户决策 项由用户确认。
 
-On user revision request at WAITING_CONFIRM, do NOT reply with only a change summary.
+On user revision or Other feedback while ANALYSIS has a pending transition, first cancel the
+pending edge. Do NOT reply with only a change summary.
 Re-output the COMPLETE revised dev-spec.md:
 
 1. Prepend a `### 修订摘要` listing each user request and its impact on the plan. If the
@@ -227,11 +228,11 @@ Re-output the COMPLETE revised dev-spec.md:
    sections), incorporating all revisions.
 3. Overwrite the `plan` record in execution.jsonl with the new strategy.
 4. Update test-strategy.md if test scope changed.
-5. Re-enter WAITING_CONFIRM and wait for explicit user confirmation.
+5. Request ANALYSIS -> IMPLEMENT again and present the standard confirmation/handoff/Other gate.
 
 ## End state
 
 Read dev-spec.md back from disk and output the COMPLETE content as your reply to the user —
-not a summary, not a different format, not a table you invented. Then set stage to
-WAITING_CONFIRM and hand control back to ec-workflow. Never start implementing from this
-skill.
+not a summary, not a different format, not a table you invented. Then ask ec-workflow to
+record `pending_transition: ANALYSIS -> IMPLEMENT`, present the standard boundary choices,
+and stop. Never start implementing from this skill.

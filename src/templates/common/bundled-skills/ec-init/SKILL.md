@@ -162,7 +162,7 @@ agent must be able to see what was generated and on what evidence.
    - TEST_STRATEGY.md (skeleton for the chosen framework)
 3. **Skip ABSTRACT.md** — no architecture exists yet. Note in init_log:
    "ABSTRACT pending; ec-memory backfills after the first substantive task." (ec-memory
-   detects the missing file during MEMORY_LONG and generates it from the then-current code.)
+   detects the missing file during MEMORY and generates it from the then-current code.)
 4. Memory migration probe and memory init, same as iterative steps 5-7.
 5. Recommend: design first with `{{skill_trigger}}ec-brainstorming`, then build via
    `{{skill_trigger}}ec-workflow`.

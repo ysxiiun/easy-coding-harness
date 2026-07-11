@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import hashlib
 import json
 import os
 from datetime import datetime, timezone
@@ -37,15 +38,19 @@ MANDATORY_DEV_SPEC_HEADERS: list[str] = [
 VALID_TRANSITIONS: dict[str, set[str]] = {
     "idle": {"INIT"},
     "INIT": {"ANALYSIS", "CLOSED"},
-    "ANALYSIS": {"WAITING_CONFIRM", "CLOSED"},
-    "WAITING_CONFIRM": {"IMPLEMENT", "ANALYSIS", "CLOSED"},
+    "ANALYSIS": {"IMPLEMENT", "CLOSED"},
     "IMPLEMENT": {"REVIEW", "ANALYSIS", "CLOSED"},
     "REVIEW": {"VERIFICATION", "IMPLEMENT", "ANALYSIS", "CLOSED"},
-    "VERIFICATION": {"MEMORY_SHORT", "IMPLEMENT", "CLOSED"},
-    "MEMORY_SHORT": {"MEMORY_LONG", "CLOSED"},
-    "MEMORY_LONG": {"COMPLETE", "CLOSED"},
+    "VERIFICATION": {"MEMORY", "IMPLEMENT", "CLOSED"},
+    "MEMORY": {"COMPLETE", "CLOSED"},
     "COMPLETE": set(),
     "CLOSED": set(),
+}
+
+LEGACY_STAGE_MAP = {
+    "WAITING_CONFIRM": "ANALYSIS",
+    "MEMORY_SHORT": "MEMORY",
+    "MEMORY_LONG": "MEMORY",
 }
 
 DEFAULT_SHORT_TERM_MAX = 10
@@ -127,50 +132,246 @@ def read_memory_config(root: Path) -> dict[str, int]:
         parsed = parse_positive_int(value)
         if parsed is not None:
             config[key] = parsed
+    if config["short_term_keep"] > config["short_term_max"]:
+        raise StateError(
+            "Invalid memory config in .easy-coding/config.yaml: "
+            "memory.short_term_keep must be less than or equal to memory.short_term_max."
+        )
     return config
 
 
-def count_short_memories(root: Path) -> int:
+def short_memory_entries(root: Path) -> list[dict[str, object]]:
     short_dir = root / ".easy-coding" / "memory" / "short"
     if not short_dir.is_dir():
-        return 0
-    count = 0
+        return []
+    entries: list[dict[str, object]] = []
     for entry in short_dir.glob("*.md"):
         try:
-            if is_schema_v2_short_memory(entry.read_text(encoding="utf-8")):
-                count += 1
+            content = entry.read_text(encoding="utf-8")
         except OSError:
             continue
-    return count
+        if not is_schema_v2_short_memory(content):
+            continue
+        frontmatter = parse_short_memory_frontmatter(content)
+        resolved_entry = entry.resolve()
+        try:
+            resolved_entry.relative_to(short_dir.resolve())
+            display_entry = resolved_entry.relative_to(root.resolve()).as_posix()
+        except ValueError:
+            continue
+        prefix_text = entry.name.split("_", 1)[0]
+        try:
+            prefix = int(prefix_text)
+        except ValueError:
+            prefix = sys.maxsize
+        entries.append(
+            {
+                "path": resolved_entry,
+                "display_path": display_entry,
+                "date": frontmatter.get("date", ""),
+                "prefix": prefix,
+                "name": entry.name,
+            }
+        )
+    return sorted(
+        entries,
+        key=lambda item: (str(item["date"]), int(item["prefix"]), str(item["name"])),
+    )
 
 
-def is_schema_v2_short_memory(content: str) -> bool:
+def count_short_memories(root: Path) -> int:
+    return len(short_memory_entries(root))
+
+
+def parse_short_memory_frontmatter(content: str) -> dict[str, str]:
     lines = content.splitlines()
     if not lines or lines[0].strip() != "---":
-        return False
+        return {}
+    frontmatter: dict[str, str] = {}
     for line in lines[1:]:
         stripped = line.strip()
         if stripped == "---":
-            return False
-        if not stripped.startswith("memory_schema:"):
+            return frontmatter
+        if not stripped or stripped.startswith("#") or ":" not in stripped:
             continue
-        _, value = stripped.split(":", 1)
-        return parse_positive_int(value) == 2
-    return False
+        key, value = stripped.split(":", 1)
+        frontmatter[key.strip()] = value.strip().strip("'\"")
+    return {}
 
 
-def build_memory_long_instruction(root: Path) -> dict:
+def is_schema_v2_short_memory(content: str) -> bool:
+    frontmatter = parse_short_memory_frontmatter(content)
+    return parse_positive_int(frontmatter.get("memory_schema", "")) == 2
+
+
+def resolve_short_memory_path(root: Path, memory_file: str) -> Path:
+    short_dir = (root / ".easy-coding" / "memory" / "short").resolve()
+    memory_path = Path(memory_file.strip())
+    candidate = memory_path if memory_path.is_absolute() else root / memory_path
+    resolved_memory_path = candidate.resolve()
+    try:
+        resolved_memory_path.relative_to(short_dir)
+    except ValueError as error:
+        raise StateError("Short-memory file must be under .easy-coding/memory/short/.") from error
+    if resolved_memory_path.suffix != ".md":
+        raise StateError(f"Short-memory file must be Markdown: {memory_file.strip()}")
+    return resolved_memory_path
+
+
+def validate_short_memory_file(
+    root: Path,
+    task_id: str,
+    memory_file: str,
+    expected_sha256: str | None = None,
+) -> tuple[Path, str]:
+    resolved_memory_path = resolve_short_memory_path(root, memory_file)
+    if not resolved_memory_path.is_file():
+        raise StateError(f"Short-memory file not found: {memory_file.strip()}")
+    try:
+        content = resolved_memory_path.read_text(encoding="utf-8")
+    except OSError as error:
+        raise StateError(f"Cannot read short-memory file: {memory_file.strip()}") from error
+    frontmatter = parse_short_memory_frontmatter(content)
+    if parse_positive_int(frontmatter.get("memory_schema", "")) != 2:
+        raise StateError("Short-memory file must declare memory_schema: 2.")
+    source_task = frontmatter.get("source_task", "")
+    if source_task != task_id:
+        raise StateError(
+            f"Short-memory source_task {source_task or 'missing'} does not match current task {task_id}."
+        )
+    digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    if expected_sha256 and digest != expected_sha256:
+        raise StateError("Short-memory file changed after its checkpoint was recorded.")
+    return resolved_memory_path, digest
+
+
+def validate_recorded_short_memory(
+    root: Path,
+    task_id: str,
+    progress: dict,
+    allow_missing_after_distill: bool = False,
+) -> None:
+    if progress.get("legacy_short_memory_assumed") is True:
+        return
+    memory_file = progress.get("short_memory_file")
+    expected_sha256 = progress.get("short_memory_sha256")
+    if not isinstance(memory_file, str) or not memory_file.strip():
+        raise StateError("Recorded short-memory checkpoint is missing its file path.")
+    if not isinstance(expected_sha256, str) or not expected_sha256:
+        raise StateError("Recorded short-memory checkpoint is missing its content fingerprint.")
+    resolved_memory_path = resolve_short_memory_path(root, memory_file)
+    if allow_missing_after_distill and not resolved_memory_path.exists():
+        return
+    validate_short_memory_file(root, task_id, memory_file, expected_sha256)
+
+
+def build_memory_instruction(
+    root: Path,
+    checkpoint_file: str | None = None,
+    legacy_checkpoint: bool = False,
+) -> dict:
     config = read_memory_config(root)
-    short_count = count_short_memories(root)
+    entries = short_memory_entries(root)
+    short_count = len(entries)
     action = "distill" if short_count > config["short_term_max"] else "no-op"
     trim_count = max(0, short_count - config["short_term_keep"]) if action == "distill" else 0
+    candidate_files = [str(entry["display_path"]) for entry in entries[:trim_count]]
+    kept_files = [str(entry["display_path"]) for entry in entries[trim_count:]]
+    if legacy_checkpoint:
+        checkpoint_disposition = "legacy"
+    elif checkpoint_file in candidate_files:
+        checkpoint_disposition = "candidate"
+    elif checkpoint_file in kept_files:
+        checkpoint_disposition = "kept"
+    else:
+        raise StateError("Recorded short-memory checkpoint is absent from the frozen memory set.")
     return {
         "short_count": short_count,
         "short_term_max": config["short_term_max"],
         "short_term_keep": config["short_term_keep"],
         "action": action,
         "trim_count": trim_count,
+        "candidate_files": candidate_files,
+        "kept_files": kept_files,
+        "checkpoint_disposition": checkpoint_disposition,
     }
+
+
+def validate_distillation_file_sets(root: Path, instruction: dict) -> None:
+    candidate_files = instruction.get("candidate_files")
+    kept_files = instruction.get("kept_files")
+    if not isinstance(candidate_files, list) or not all(
+        isinstance(item, str) for item in candidate_files
+    ):
+        raise StateError("Memory instruction is missing its frozen candidate file set.")
+    if not isinstance(kept_files, list) or not all(isinstance(item, str) for item in kept_files):
+        raise StateError("Memory instruction is missing its frozen kept file set.")
+    for memory_file in candidate_files:
+        if resolve_short_memory_path(root, memory_file).exists():
+            raise StateError(f"Distillation candidate was not consumed: {memory_file}")
+    for memory_file in kept_files:
+        if not resolve_short_memory_path(root, memory_file).is_file():
+            raise StateError(f"Short-memory file selected for retention is missing: {memory_file}")
+
+
+def normalize_legacy_stage(stage: object) -> object:
+    return LEGACY_STAGE_MAP.get(str(stage), stage)
+
+
+def normalize_legacy_task(task: dict) -> bool:
+    """Normalize pre-0.6 stage names without touching task artifacts outside task.json."""
+    legacy_status = str(task.get("status") or "")
+    changed = False
+
+    if legacy_status in LEGACY_STAGE_MAP:
+        task["status"] = LEGACY_STAGE_MAP[legacy_status]
+        changed = True
+
+    history = task.get("stage_history")
+    if isinstance(history, list):
+        normalized_history: list[dict] = []
+        for raw_entry in history:
+            if not isinstance(raw_entry, dict):
+                continue
+            entry = dict(raw_entry)
+            mapped_stage = normalize_legacy_stage(entry.get("stage"))
+            if mapped_stage != entry.get("stage"):
+                entry["stage"] = mapped_stage
+                changed = True
+            if normalized_history and normalized_history[-1].get("stage") == entry.get("stage"):
+                changed = True
+                continue
+            normalized_history.append(entry)
+        if changed:
+            task["stage_history"] = normalized_history
+
+    if legacy_status == "WAITING_CONFIRM" and not task.get("pending_transition"):
+        task["pending_transition"] = {
+            "from": "ANALYSIS",
+            "to": "IMPLEMENT",
+            "requested_at": now_iso(),
+            "requested_by": str(task.get("last_agent") or "legacy-migration"),
+            "reason": "migrated-from-WAITING_CONFIRM",
+        }
+        changed = True
+
+    if legacy_status == "MEMORY_LONG":
+        progress = task.get("memory_progress")
+        if not isinstance(progress, dict):
+            progress = {}
+        if progress.get("short_memory_written") is not True:
+            progress["short_memory_written"] = True
+            progress["legacy_short_memory_assumed"] = True
+            progress["updated_at"] = now_iso()
+            task["memory_progress"] = progress
+            changed = True
+        elif progress.get("legacy_short_memory_assumed") is not True:
+            progress["legacy_short_memory_assumed"] = True
+            progress["updated_at"] = now_iso()
+            task["memory_progress"] = progress
+            changed = True
+
+    return changed
 
 
 def write_json(path: Path, data: dict) -> None:
@@ -335,6 +536,8 @@ def snapshot_state(
         "session_file": display_path(root, session_path),
         "current_task": str(task_id) if task_id else None,
         "task": task,
+        "pending_transition": task.get("pending_transition") if task else None,
+        "memory_progress": task.get("memory_progress") if task else None,
         "task_missing": missing,
         "status": status,
         "is_terminal": status in TERMINAL_STATUSES,
@@ -395,6 +598,13 @@ def build_machine_breadcrumbs(
         last_agent = state.get("last_agent")
         if agent and last_agent and last_agent != agent:
             lines.append(f"[easy-coding:handoff-from:{last_agent}]")
+        pending = state.get("pending_transition")
+        if isinstance(pending, dict):
+            source = str(pending.get("from") or stage)
+            target = str(pending.get("to") or "")
+            if target:
+                lines.append(f"[easy-coding:pending-transition:{source}->{target}]")
+                lines.append("[easy-coding:transition-confirmation-required]")
 
     if is_project_init_required(root):
         lines.append("[easy-coding:init-required]")
@@ -644,7 +854,67 @@ def append_stage_history(task: dict, stage: str, agent: str) -> None:
     history.append({"stage": stage, "agent": agent, "entered_at": now_iso()})
 
 
-def transition_task(
+def resolve_current_task(
+    root: Path,
+    task_id: str | None = None,
+    session_file: str | Path | None = None,
+) -> tuple[dict, str, dict]:
+    session = ensure_session(root, session_file)
+    resolved_task_id = task_id or session.get("current_task")
+    if not resolved_task_id:
+        raise StateError("No current task is set.")
+    task = load_task(root, str(resolved_task_id))
+    if task is None:
+        raise StateError(f"Task not found: {resolved_task_id}")
+    return session, str(resolved_task_id), task
+
+
+def request_transition(
+    root: Path,
+    stage: str,
+    agent: str,
+    task_id: str | None = None,
+    session_file: str | Path | None = None,
+    reason: str | None = None,
+) -> dict:
+    if stage not in VALID_TRANSITIONS:
+        raise StateError(f"Unknown stage: {stage}")
+    session, resolved_task_id, task = resolve_current_task(root, task_id, session_file)
+    previous = str(task.get("status") or "idle")
+    if previous == stage:
+        raise StateError(f"Transition target must differ from current stage: {stage}")
+
+    violation = validate_transition(previous, stage)
+    if violation:
+        raise StateError(violation)
+    if previous == "MEMORY" and stage == "COMPLETE":
+        progress = task.get("memory_progress")
+        if not isinstance(progress, dict) or progress.get("completed") is not True:
+            raise StateError("MEMORY cannot advance to COMPLETE before memory processing completes.")
+
+    existing = task.get("pending_transition")
+    if isinstance(existing, dict):
+        if existing.get("from") != previous or existing.get("to") != stage:
+            raise StateError(
+                "A different transition is already pending. Cancel it before requesting another."
+            )
+    else:
+        task["pending_transition"] = {
+            "from": previous,
+            "to": stage,
+            "requested_at": now_iso(),
+            "requested_by": agent,
+            **({"reason": reason.strip()} if reason and reason.strip() else {}),
+        }
+        task["last_agent"] = agent
+        write_task(root, resolved_task_id, task)
+
+    snapshot = snapshot_state(root, session_file, session)
+    snapshot["action"] = "request-transition"
+    return snapshot
+
+
+def apply_transition(
     root: Path,
     stage: str,
     agent: str,
@@ -653,13 +923,7 @@ def transition_task(
 ) -> dict:
     if stage not in VALID_TRANSITIONS:
         raise StateError(f"Unknown stage: {stage}")
-    session = ensure_session(root, session_file)
-    resolved_task_id = task_id or session.get("current_task")
-    if not resolved_task_id:
-        raise StateError("No current task is set.")
-    task = load_task(root, str(resolved_task_id))
-    if task is None:
-        raise StateError(f"Task not found: {resolved_task_id}")
+    session, resolved_task_id, task = resolve_current_task(root, task_id, session_file)
 
     previous = str(task.get("status") or "idle")
     violation = validate_transition(previous, stage)
@@ -668,20 +932,189 @@ def transition_task(
     if previous != stage:
         task["status"] = stage
         append_stage_history(task, stage, agent)
+    task.pop("pending_transition", None)
+    if stage == "MEMORY" and previous != stage:
+        task["memory_progress"] = {}
     task["last_agent"] = agent
-    write_task(root, str(resolved_task_id), task)
+    write_task(root, resolved_task_id, task)
 
     if session.get("current_task") == resolved_task_id:
         if stage in TERMINAL_STATUSES:
             clear_session_pointer(session, agent)
         else:
-            session["last_seen_task"] = str(resolved_task_id)
+            session["last_seen_task"] = resolved_task_id
             session["last_seen_stage"] = stage
             session["last_agent"] = agent
         write_session(root, session, session_file)
+    return snapshot_state(root, session_file, session)
+
+
+def confirm_transition(
+    root: Path,
+    agent: str,
+    stage: str | None = None,
+    task_id: str | None = None,
+    session_file: str | Path | None = None,
+) -> dict:
+    _, _, task = resolve_current_task(root, task_id, session_file)
+    pending = task.get("pending_transition")
+    if not isinstance(pending, dict):
+        raise StateError("No transition is pending user confirmation.")
+    previous = str(task.get("status") or "idle")
+    source = str(pending.get("from") or "")
+    target = str(pending.get("to") or "")
+    if source != previous:
+        raise StateError(
+            f"Pending transition source {source or 'missing'} does not match current stage {previous}."
+        )
+    if stage and stage != target:
+        raise StateError(f"Pending transition targets {target}, not {stage}.")
+
+    snapshot = apply_transition(root, target, agent, task_id, session_file)
+    snapshot["action"] = "confirm-transition"
+    snapshot["confirmed_transition"] = {"from": source, "to": target}
+    return snapshot
+
+
+def cancel_transition(
+    root: Path,
+    agent: str,
+    task_id: str | None = None,
+    session_file: str | Path | None = None,
+) -> dict:
+    session, resolved_task_id, task = resolve_current_task(root, task_id, session_file)
+    pending = task.pop("pending_transition", None)
+    task["last_agent"] = agent
+    write_task(root, resolved_task_id, task)
     snapshot = snapshot_state(root, session_file, session)
-    if stage == "MEMORY_LONG":
-        snapshot["memory_long"] = build_memory_long_instruction(root)
+    snapshot["action"] = "cancel-transition"
+    snapshot["cancelled_transition"] = pending
+    return snapshot
+
+
+def memory_short_complete(
+    root: Path,
+    memory_file: str,
+    agent: str,
+    task_id: str | None = None,
+    session_file: str | Path | None = None,
+) -> dict:
+    session, resolved_task_id, task = resolve_current_task(root, task_id, session_file)
+    if task.get("status") != "MEMORY":
+        raise StateError("Short-memory progress can only be recorded during MEMORY.")
+    if not memory_file.strip():
+        raise StateError("Short-memory file is required.")
+    resolved_memory_path, digest = validate_short_memory_file(
+        root, resolved_task_id, memory_file.strip()
+    )
+    progress = task.get("memory_progress")
+    if not isinstance(progress, dict):
+        progress = {}
+    checkpoint_file = display_path(root, resolved_memory_path)
+    if (
+        progress.get("short_memory_written") is True
+        and progress.get("legacy_short_memory_assumed") is not True
+    ):
+        if (
+            progress.get("short_memory_file") == checkpoint_file
+            and progress.get("short_memory_sha256") == digest
+        ):
+            snapshot = snapshot_state(root, session_file, session)
+            snapshot["action"] = "memory-short-complete"
+            snapshot["checkpoint_unchanged"] = True
+            return snapshot
+        raise StateError("A different short-memory checkpoint is already recorded for this task.")
+    progress["short_memory_written"] = True
+    progress["short_memory_file"] = checkpoint_file
+    progress["short_memory_sha256"] = digest
+    progress.pop("legacy_short_memory_assumed", None)
+    progress["updated_at"] = now_iso()
+    task["memory_progress"] = progress
+    task["last_agent"] = agent
+    write_task(root, resolved_task_id, task)
+    snapshot = snapshot_state(root, session_file, session)
+    snapshot["action"] = "memory-short-complete"
+    return snapshot
+
+
+def memory_instruction(
+    root: Path,
+    task_id: str | None = None,
+    session_file: str | Path | None = None,
+) -> dict:
+    session, resolved_task_id, task = resolve_current_task(root, task_id, session_file)
+    if task.get("status") != "MEMORY":
+        raise StateError("Memory instruction is only available during MEMORY.")
+    progress = task.get("memory_progress")
+    if not isinstance(progress, dict) or progress.get("short_memory_written") is not True:
+        raise StateError("Write and record the short memory before requesting memory instruction.")
+    instruction = progress.get("instruction")
+    allow_missing_checkpoint = bool(
+        isinstance(instruction, dict)
+        and instruction.get("action") == "distill"
+        and instruction.get("checkpoint_disposition") == "candidate"
+    )
+    validate_recorded_short_memory(
+        root,
+        resolved_task_id,
+        progress,
+        allow_missing_after_distill=allow_missing_checkpoint,
+    )
+    if not isinstance(instruction, dict):
+        legacy_checkpoint = progress.get("legacy_short_memory_assumed") is True
+        checkpoint_file = None if legacy_checkpoint else str(progress.get("short_memory_file"))
+        instruction = build_memory_instruction(root, checkpoint_file, legacy_checkpoint)
+        progress["instruction"] = instruction
+        progress["updated_at"] = now_iso()
+        task["memory_progress"] = progress
+        write_task(root, resolved_task_id, task)
+    snapshot = snapshot_state(root, session_file, session)
+    snapshot["memory"] = instruction
+    snapshot["action"] = "memory-instruction"
+    return snapshot
+
+
+def memory_complete(
+    root: Path,
+    action: str,
+    agent: str,
+    task_id: str | None = None,
+    session_file: str | Path | None = None,
+) -> dict:
+    if action not in {"no-op", "distill"}:
+        raise StateError(f"Unknown memory action: {action}")
+    session, resolved_task_id, task = resolve_current_task(root, task_id, session_file)
+    if task.get("status") != "MEMORY":
+        raise StateError("Memory completion can only be recorded during MEMORY.")
+    progress = task.get("memory_progress")
+    if not isinstance(progress, dict) or progress.get("short_memory_written") is not True:
+        raise StateError("Short memory must be recorded before MEMORY can complete.")
+    instruction = progress.get("instruction")
+    if not isinstance(instruction, dict):
+        raise StateError("Request the authoritative memory instruction before completing MEMORY.")
+    if instruction["action"] != action:
+        raise StateError(
+            f"Memory action {action} does not match authoritative instruction {instruction['action']}."
+        )
+    validate_recorded_short_memory(
+        root,
+        resolved_task_id,
+        progress,
+        allow_missing_after_distill=(
+            action == "distill" and instruction.get("checkpoint_disposition") == "candidate"
+        ),
+    )
+    if action == "distill":
+        validate_distillation_file_sets(root, instruction)
+    progress["long_memory_action"] = action
+    progress["completed"] = True
+    progress["updated_at"] = now_iso()
+    task["memory_progress"] = progress
+    task["last_agent"] = agent
+    write_task(root, resolved_task_id, task)
+    snapshot = snapshot_state(root, session_file, session)
+    snapshot["memory"] = instruction
+    snapshot["action"] = "memory-complete"
     return snapshot
 
 
@@ -701,6 +1134,7 @@ def close_current_task(
     if task.get("status") != "CLOSED":
         task["status"] = "CLOSED"
         append_stage_history(task, "CLOSED", agent)
+    task.pop("pending_transition", None)
     task["closed_reason"] = reason
     task["last_agent"] = agent
     write_task(root, str(task_id), task)
@@ -818,10 +1252,39 @@ def main() -> int:
     claim.add_argument("--task-id", required=True)
     claim.add_argument("--agent", required=True)
 
+    request = subcommands.add_parser("request-transition", parents=[common])
+    request.add_argument("--stage", required=True)
+    request.add_argument("--agent", required=True)
+    request.add_argument("--task-id")
+    request.add_argument("--reason")
+
+    confirm_transition_parser = subcommands.add_parser("confirm-transition", parents=[common])
+    confirm_transition_parser.add_argument("--stage")
+    confirm_transition_parser.add_argument("--agent", required=True)
+    confirm_transition_parser.add_argument("--task-id")
+
+    # Compatibility alias: pre-0.6 callers still consume the pending gate instead of bypassing it.
     transition = subcommands.add_parser("transition", parents=[common])
-    transition.add_argument("--stage", required=True)
+    transition.add_argument("--stage")
     transition.add_argument("--agent", required=True)
     transition.add_argument("--task-id")
+
+    cancel_transition_parser = subcommands.add_parser("cancel-transition", parents=[common])
+    cancel_transition_parser.add_argument("--agent", required=True)
+    cancel_transition_parser.add_argument("--task-id")
+
+    memory_short = subcommands.add_parser("memory-short-complete", parents=[common])
+    memory_short.add_argument("--file", required=True)
+    memory_short.add_argument("--agent", required=True)
+    memory_short.add_argument("--task-id")
+
+    memory_instruction_parser = subcommands.add_parser("memory-instruction", parents=[common])
+    memory_instruction_parser.add_argument("--task-id")
+
+    memory_complete_parser = subcommands.add_parser("memory-complete", parents=[common])
+    memory_complete_parser.add_argument("--action", required=True, choices=["no-op", "distill"])
+    memory_complete_parser.add_argument("--agent", required=True)
+    memory_complete_parser.add_argument("--task-id")
 
     close = subcommands.add_parser("close-current", parents=[common])
     close.add_argument("--reason", required=True)
@@ -897,11 +1360,75 @@ def main() -> int:
                     session_file,
                 )
             )
-        elif command == "transition":
+        elif command == "request-transition":
             emit(
                 attach_status_context(
                     root,
-                    transition_task(root, args.stage, args.agent, args.task_id, session_file),
+                    request_transition(
+                        root,
+                        args.stage,
+                        args.agent,
+                        args.task_id,
+                        session_file,
+                        args.reason,
+                    ),
+                    args.agent,
+                    session_file,
+                )
+            )
+        elif command in {"confirm-transition", "transition"}:
+            emit(
+                attach_status_context(
+                    root,
+                    confirm_transition(root, args.agent, args.stage, args.task_id, session_file),
+                    args.agent,
+                    session_file,
+                )
+            )
+        elif command == "cancel-transition":
+            emit(
+                attach_status_context(
+                    root,
+                    cancel_transition(root, args.agent, args.task_id, session_file),
+                    args.agent,
+                    session_file,
+                )
+            )
+        elif command == "memory-short-complete":
+            emit(
+                attach_status_context(
+                    root,
+                    memory_short_complete(
+                        root,
+                        args.file,
+                        args.agent,
+                        args.task_id,
+                        session_file,
+                    ),
+                    args.agent,
+                    session_file,
+                )
+            )
+        elif command == "memory-instruction":
+            emit(
+                attach_status_context(
+                    root,
+                    memory_instruction(root, args.task_id, session_file),
+                    None,
+                    session_file,
+                )
+            )
+        elif command == "memory-complete":
+            emit(
+                attach_status_context(
+                    root,
+                    memory_complete(
+                        root,
+                        args.action,
+                        args.agent,
+                        args.task_id,
+                        session_file,
+                    ),
                     args.agent,
                     session_file,
                 )

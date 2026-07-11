@@ -36,17 +36,17 @@ src/
 
 ### State Machine (runtime, not CLI)
 
-The 8-stage workflow runs inside the agent, not in the CLI:
+The 6-stage workflow plus terminal states runs inside the agent, not in the CLI:
 
 ```
-INIT → ANALYSIS → WAITING_CONFIRM → IMPLEMENT → REVIEW → VERIFICATION
-                       ↑                                      │
-                       └──────── repair loop ──────────────────┘
-                                                    [user acceptance]
-                                     MEMORY_SHORT → MEMORY_LONG → COMPLETE
+INIT → ANALYSIS → IMPLEMENT → REVIEW → VERIFICATION → MEMORY → COMPLETE
+          ↑            ↑          │             │
+          └── replan ───┘          └── repair ───┘
+every edge requires explicit user confirmation by default; prefer native choice UI
 ```
 
-WAITING_CONFIRM and VERIFICATION are hard gates. The CLI has no knowledge of runtime state.
+Every legal edge is a user-confirmation gate by default; VERIFICATION also requires fresh
+evidence. The CLI deploys the runtime and migrates legacy workflow metadata during upgrade.
 
 ## Development Conventions
 

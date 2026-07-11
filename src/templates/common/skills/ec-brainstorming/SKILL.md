@@ -66,7 +66,8 @@ After saving the design doc, ask the user: "Design confirmed. Start a task based
 design now?" Offer two options:
 
 1. **Start task now** — invoke `{{skill_trigger}}ec-workflow` with the design topic as the
-   task prompt. ec-workflow will create the task (step 4) and enter INIT → ANALYSIS.
+   task prompt. ec-workflow will create the task and enter INIT. After INIT completes, it
+   presents the standard confirmation/handoff/Other gate before entering ANALYSIS.
    ec-analysis will discover the design doc in `.easy-coding/spec/` and use it as input.
 2. **Later** — tell the user the design is saved and they can run
    `{{skill_trigger}}ec-workflow` whenever ready.

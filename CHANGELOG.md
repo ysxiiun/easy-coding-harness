@@ -6,6 +6,17 @@
 - `y`：常规功能升级
 - `z`：日常 bug 修复
 
+## 0.6.0
+
+- 状态机移除无实际工作内容的 `WAITING_CONFIRM`；阶段完成后通过 `task.json.pending_transition` 记录待确认边，状态仍停留在当前阶段，直到用户明确确认。
+- 所有合法阶段迁移默认统一提供“确认进入/返回目标阶段、交接给其他智能体、Other”三分支；优先使用智能体原生选项功能，纯文本编号仅作为无原生能力时的回退；handoff 会保留待确认边，下一智能体 claim 后可直接恢复该门禁。
+- 合并 `MEMORY_SHORT` 与 `MEMORY_LONG` 为单一 `MEMORY`：先写并检查点化短期记忆，再由状态 API 计算长期记忆 `no-op/distill` 指令，原阈值门禁保持不变。
+- MEMORY 短期记忆检查点校验 `memory_schema: 2`、`source_task` 当前任务归属和 SHA-256 内容指纹；长期记忆指令冻结 `candidate_files/kept_files`，只有明确候选允许被消费，保留项缺失或候选未清理均不能完成归档；旧 `MEMORY_LONG` 恢复通过显式兼容标记保留。
+- MEMORY 配置强制满足 `0 <= short_term_keep <= short_term_max`；非法窗口直接阻断并提示修正 config.yaml，避免超过阈值后出现零候选、无法收敛的空蒸馏循环。
+- 状态 API 新增 `request-transition`、`confirm-transition`、`cancel-transition` 以及 MEMORY 进度命令；hook 对用户输入完全只读，不再从原生选项、裸编号或自然语言自动写状态，所有确认均由智能体核对当前任务和目标状态后显式执行。
+- `easy-coding upgrade` 幂等迁移 0.5.x 活跃任务和 session：`WAITING_CONFIRM → ANALYSIS`、`MEMORY_SHORT/MEMORY_LONG → MEMORY`，同步清洗阶段历史并保留记忆恢复进度。
+- 工作流 skills、主约束、README、设计/介绍/使用文档及生成后 hook 测试全面对齐新状态模型。
+
 ## 0.5.3
 
 - 根治 `task.json` 绝对路径泄漏：`.easy-coding/tasks/project-init/task.json` 不再写入本机仓库绝对路径。该 `project_path` 字段无任何消费方，直接移除，可提交产物彻底去本地化。

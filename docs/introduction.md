@@ -26,12 +26,12 @@ CLI 本身很克制——它只往 `.claude` / `.agents` / `.qoder` 这些目录
 
 ### 人机共创，关键节点设硬门控
 
-整个工作流是一个固定的八阶段状态机，其中有两道**不可跳过**的闸门：
+整个工作流是固定状态机，每条合法状态边默认都设**不可跳过**的用户确认门：
 
-- `WAITING_CONFIRM`（计划确认）——方案没经人确认，不准进实现；
+- `pending_transition`（全阶段确认）——当前阶段完成后仍不改状态，用户确认后才迁移；
 - `VERIFICATION`（验证）——没有真实跑过的 lint、typecheck、test，不算通过。
 
-这两道门是"人机共创"落到实处的地方。方向和验收由人拍板，机器别自作主张；同时把"嘴上说完成了"这种最常见的翻车点堵死。
+每个边界都优先通过智能体原生选项功能提供确认目标阶段、交接给其他智能体和 free-form Other；平台不支持时才退回文本编号。方向、执行节奏和验收都由人拍板；同时把"嘴上说完成了"这种最常见的翻车点堵死。
 
 ### 上下文卫生
 
@@ -50,19 +50,18 @@ CLI 本身很克制——它只往 `.claude` / `.agents` / `.qoder` 这些目录
 ### 一条能恢复、能交接的工作流
 
 ```text
-INIT -> ANALYSIS -> WAITING_CONFIRM -> IMPLEMENT -> REVIEW -> VERIFICATION
-                          ^                ^                      |
-                          |                +---- repair loop -----+
-                          +--- revision ---+                      |
-                                                        [user acceptance]
-                                                                  |
-                                          MEMORY_SHORT -> MEMORY_LONG -> COMPLETE
+INIT -> ANALYSIS -> IMPLEMENT -> REVIEW -> VERIFICATION -> MEMORY -> COMPLETE
+          ^            ^          |             |
+          +-- replan ---+          +--- fix -----+
+                       ^                         |
+                       +------- repair ----------+
+every edge --[confirm / handoff / Other]--> target stage
 ```
 
 任务状态持久化在 `.easy-coding/` 里，不绑死在某次会话上。所以：
 
 - 中途切别的任务，回来能接着跑；
-- 审查发现问题，能走 repair loop 回到实现，或者 revision 回到确认重新对齐；
+- 审查发现问题，能走 repair loop 回到实现，或者 replan 回到分析重新对齐；
 - 换个人、换个 agent 接手，通过 handoff / claim 拿到上一任的阶段和交接摘要，不用重新解释。
 
 ### 一份模板，喂三个平台
@@ -123,7 +122,7 @@ agent 会读项目，生成 `SOUL.md`、`RULES.md`、`ABSTRACT.md`、`TEST_STRAT
 /ec-workflow 实现 xxx 功能
 ```
 
-`ec-workflow` 负责创建或恢复任务，然后按阶段自动调度分析、实现、审查、验证和记忆归档。你要做的就是在计划确认和验收两个节点上拍板。
+`ec-workflow` 负责创建或恢复任务，然后按阶段调度分析、实现、审查、验证和记忆归档。每个阶段边界都会优先用当前智能体的原生选项功能，让你确认下一阶段、交接给其他智能体，或通过 free-form Other 调整方向。
 
 ### 常用命令
 

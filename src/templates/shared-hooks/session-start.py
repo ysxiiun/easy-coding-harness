@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 import sys
 
-from easy_coding_state import load_session, write_session
+from easy_coding_state import load_session, normalize_legacy_task, write_session
 from easy_coding_status import build_status_context
 
 
@@ -118,6 +118,7 @@ def migrate_legacy_state(root: Path, agent: str) -> dict | None:
                 task["test_strategy_confirmed"] = True
             if old_state.get("repo_paths"):
                 task["repo_paths"] = old_state["repo_paths"]
+            normalize_legacy_task(task)
             write_json(task_path, task)
 
     # Remove legacy state.json

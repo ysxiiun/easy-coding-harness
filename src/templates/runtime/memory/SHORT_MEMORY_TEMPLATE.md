@@ -1,6 +1,7 @@
 ---
 memory_schema: 2
 id: SM-YYYYMMDD-001
+source_task: MM-DD-task-slug
 date: YYYY-MM-DD
 task_type: feature | bugfix | refactor | perf | doc | workflow
 project_mode: startup | iteration
@@ -20,6 +21,7 @@ target_long: BUSINESS | TECHNICAL | BOTH | NONE
 
 > This template defines the format for files under `.easy-coding/memory/short/`.
 > File naming convention: `{NNN}_{YYYYMMDD}_{smart_name}.md`
+> `source_task` must exactly match the current workflow task id from `task.json`.
 > Short memories are immutable after creation — they serve as a sliding window of recent
 > details and a buffer for long-term distillation candidates.
 > When short memories reach the threshold (default 10), the newest 5 are kept as recent

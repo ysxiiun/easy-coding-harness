@@ -69,20 +69,18 @@ easy-coding init --submodules packages/a,packages/b
 ## 工作流
 
 ```text
-INIT -> ANALYSIS -> WAITING_CONFIRM -> IMPLEMENT -> REVIEW -> VERIFICATION
-                          ^                ^                      |
-                          |                +---- repair loop -----+
-                          +--- revision ---+                      |
-                                                        [user acceptance]
-                                                                  |
-                                          MEMORY_SHORT -> MEMORY_LONG -> COMPLETE
+INIT -> ANALYSIS -> IMPLEMENT -> REVIEW -> VERIFICATION -> MEMORY -> COMPLETE
+          ^            ^          |             |
+          +-- replan ---+          +--- fix -----+
+                       ^                         |
+                       +------- repair ----------+
+every edge --[user confirmation by default]--> target stage
 any stage --[user abort via ec-task-close]--> CLOSED
 ```
 
-- `WAITING_CONFIRM` 是计划确认硬门控，未确认不进入实现。
+- 每个阶段完成后先记录 `pending_transition`，默认必须由用户确认才进入目标阶段；优先通过智能体原生选项功能选择确认、交接给其他智能体或使用 free-form Other，纯文本编号仅作回退。
 - `VERIFICATION` 是验证硬门控，未实际运行的 lint、typecheck、test 不算通过。
-- `MEMORY_SHORT` 写入本次任务短期记忆。
-- `MEMORY_LONG` 只有短期记忆数量超过阈值时才沉淀长期记忆，否则 no-op。
+- `MEMORY` 先写入本次任务短期记忆，再执行长期记忆阈值门禁；未超过阈值时长期沉淀为 no-op。
 
 ## Supermodule 模型
 

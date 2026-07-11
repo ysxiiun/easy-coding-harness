@@ -65,27 +65,24 @@ replies are English.
 ## State machine
 
 ```
-INIT -> ANALYSIS -> WAITING_CONFIRM -> IMPLEMENT -> REVIEW -> VERIFICATION
-                          ^                ^                      |
-                          |                +---- repair loop -----+
-                          +--- revision ---+                      |
-                                                        [user acceptance]
-                                                                  |
-                                          MEMORY_SHORT -> MEMORY_LONG -> COMPLETE
+INIT -> ANALYSIS -> IMPLEMENT -> REVIEW -> VERIFICATION -> MEMORY -> COMPLETE
+          ^            ^          |             |
+          +-- replan ---+          +--- fix -----+
+                       ^                         |
+                       +------- repair ----------+
+every edge --[explicit user confirmation by default]--> target stage
 any stage --[user abort via ec-task-close]--> CLOSED
 ```
 
 | Stage | Owner skill | What happens | Exit condition |
 |---|---|---|---|
-| INIT | ec-workflow | collect context, settle scope AND delivery form (change code vs. produce a document) | task understood |
-| ANALYSIS | ec-analysis | dev-spec + execution plan + test strategy | analysis presented |
-| WAITING_CONFIRM | ec-workflow | blocking gate; user reviews the plan | explicit user confirmation |
-| IMPLEMENT | ec-implementing | code changes per confirmed plan | all units done |
-| REVIEW | ec-reviewing | multi-dimension code review | verdict = accept |
-| VERIFICATION | ec-verification | hard gate: lint/typecheck/test + coverage | all pass AND user accepts |
-| MEMORY_SHORT | ec-memory | archive: short memory entry | written |
-| MEMORY_LONG | ec-memory | archive: long memory distillation (conditional — no-op when short memory is under threshold) | state API `memory_long` instruction handled |
-| COMPLETE | ec-workflow | clear current_task, set task status, summary | terminal |
+| INIT | ec-workflow | collect context, settle scope AND delivery form (change code vs. produce a document) | work complete; request ANALYSIS |
+| ANALYSIS | ec-analysis | dev-spec + execution plan + test strategy | analysis presented; request IMPLEMENT |
+| IMPLEMENT | ec-implementing | code changes per confirmed plan | all units done; request REVIEW |
+| REVIEW | ec-reviewing | multi-dimension code review | verdict selects a legal target; request it |
+| VERIFICATION | ec-verification | hard gate: lint/typecheck/test + coverage | result selects MEMORY or IMPLEMENT; request it |
+| MEMORY | ec-memory | write short memory, then run the conditional long-memory gate | memory work complete; request COMPLETE |
+| COMPLETE | ec-workflow | clear current_task, set task status, summary | terminal after user confirms entry |
 | CLOSED | ec-task-close | user abort; no memory flow | terminal |
 
 > **INIT delivery-form rule.** When creating the task, `type` and `title` must faithfully
@@ -111,14 +108,31 @@ routing matches, and switching happens again.
 ## Transition rules (hard)
 
 - **Never skip a stage.** ANALYSIS cannot jump to VERIFICATION; IMPLEMENT cannot start before
-  WAITING_CONFIRM passes. No exception for "simple" tasks — simple tasks have short analyses,
-  not skipped ones.
-- **State before action.** Every stage advance is a two-step protocol: first persist the
-  next stage through the state API, then run that stage's real work. Do not start analysis,
-  implementation, review, verification, memory writing, closeout, or task switching while
+  the ANALYSIS -> IMPLEMENT confirmation gate passes. No exception for "simple" tasks —
+  simple tasks have short analyses, not skipped ones.
+- **Every stage edge is a confirmation gate by default.** Stage completion does NOT change
+  `task.json.status`. It records a `pending_transition` through the state API, presents the
+  standard choices below, and stops. This applies to forward edges, repair/replan edges, and
+  MEMORY -> COMPLETE. Task creation entering INIT and the separately confirmed ec-task-close
+  flow do not add a redundant second prompt.
+- **Native choice first (hard requirement).** After `request-transition` succeeds, you MUST
+  prefer the agent/platform's native user-choice tool whenever one is available. Do not render
+  a plain-text numbered list on a platform that can present selectable options and a free-form
+  Other input. Offer exactly these business branches through that native UI:
+  1. Confirm entering/returning to `<target-stage>` (recommended)
+  2. Hand off to another agent
+  3. Other — use the native tool's built-in free-form Other input.
+  Plain-text numbered choices are fallback only: use them only when no native user-choice tool
+  exists. The runtime hook never mutates workflow state from user-prompt text. Native choice
+  results, numbered fallback replies, and every natural-language reply must be interpreted by
+  you against the current task and stored target before calling `confirm-transition` explicitly.
+  On Other feedback, cancel the pending edge before revising work or requesting a different
+  legal target. Never interpret silence, enthusiasm, or topic changes as confirmation.
+- **State before action.** Every confirmed stage advance is a two-step protocol: first consume
+  the pending edge through `confirm-transition`, then run that stage's real work. Do not start
+  analysis, implementation, review, verification, memory writing, or closeout while
   `task.json.status` still names the previous stage. After every state API call, treat the
-  returned snapshot/read-after-write state as authoritative for the next action and for the
-  status line.
+  returned snapshot/read-after-write state as authoritative for the next action and status line.
 - **ANALYSIS entry gate.** When entering ANALYSIS, your FIRST TWO tool calls must be:
   (1) Read `.easy-coding/templates/dev-spec-skeleton.md`, then (2) Write its exact content
   to the task's dev-spec.md. This is a mechanical copy, not a generation task. Do not read
@@ -128,51 +142,45 @@ routing matches, and switching happens again.
   Additionally, ANALYSIS must stay faithful to the user's delivery form — it may NOT downgrade
   a code task to a report-only task — and the 改动范围 table must list only real project code,
   never `.easy-coding/` harness artifacts (ec-analysis HARD RULES 5 and 6).
-- **WAITING_CONFIRM is a real gate.** Proceed only on explicit user confirmation of BOTH the
-  analysis conclusion and the test strategy. Silence, enthusiasm, or a topic change is not
-  confirmation. Sole exception: `behavior.auto_mode: true` in `.easy-coding/config.yaml`
-  AND the user asked for autonomous execution. `auto_mode` ONLY waives this confirmation step;
-  it carries NO scope or delivery-form decision. Never cite `auto_mode` (or "the user already
-  decided in INIT") to justify narrowing scope or downgrading a code task to a report.
-  On confirmation, the harness hook may have already advanced the task to IMPLEMENT before
-  this reply is generated. If the breadcrumb/state is still WAITING_CONFIRM, call the state
-  API to transition to IMPLEMENT immediately; only after the read-after-write state says
-  IMPLEMENT may you dispatch ec-implementing.
-- **On every transition** call the state API immediately (not at turn end):
-  `{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py transition --session-file <P> --stage <STAGE> --agent <agent-id>`.
+- **Autonomous exception.** `behavior.auto_mode: true` in `.easy-coding/config.yaml` only
+  waives stage-boundary prompts when the user explicitly requested autonomous execution.
+  It carries NO scope or delivery-form decision. Never cite `auto_mode` to narrow scope,
+  downgrade a code task, or bypass a blocker that needs a real user decision.
+- **At stage completion** request the legal target immediately (not at turn end):
+  `{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py request-transition --session-file <P> --stage <STAGE> --agent <agent-id> --reason "<why this edge is ready>"`.
+  This writes only `pending_transition`; it does not change the stage.
+- **On user confirmation** read the current task's pending edge and call:
+  `{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py confirm-transition --session-file <P> --stage <STAGE> --agent <agent-id>`.
+  Only after the read-after-write status names the target stage may its action start.
+- **On Other feedback or a changed outcome** call:
+  `{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py cancel-transition --session-file <P> --agent <agent-id>`
+  before revising the current stage or requesting a different target.
   Do not hand-edit `status`, `stage_history`, `last_agent`, `current_task`, or session files.
   The command returns `status_line` and `status_context`; after any state-changing command,
   discard older hook-injected status text and use this returned context as the authoritative
   status source for the rest of the current turn.
-  If the target stage is already present because a hook preflight completed it, do not issue a
-  duplicate transition; use the latest snapshot and continue with the target stage's action.
 - **Hook enforcement.** The `inject-workflow-state` hook validates every stage transition
   against the state machine. If you see `[ILLEGAL-TRANSITION:...]` in the injected context,
   you MUST revert the task's status to the previous valid stage and explain why the
   transition was rejected. Do not proceed with an illegal stage.
-- **Repair loop sizing** (user acceptance window after VERIFICATION): a trivial tweak
-  (one-line style fix, copy text) is fixed inside VERIFICATION and re-verified; a logic or
-  structure change formally returns to IMPLEMENT and re-walks REVIEW → VERIFICATION.
+- **Repair loop sizing** (after VERIFICATION): a trivial tweak may be fixed inside
+  VERIFICATION and re-verified without a status change; a logic or structure change requests
+  VERIFICATION -> IMPLEMENT and waits at the standard confirmation gate before re-walking
+  REVIEW -> VERIFICATION.
 - **Scope guard** (repair loop): if the user's fix request falls outside the dev-spec scope
   (features or files absent from the change-scope table), say so explicitly and propose a
   new task with `spawned_from` set to the current task id. Never silently absorb scope creep.
 - **Task switching is allowed at any stage.** The suspended task retains its stage in
   task.json. Do not run memory flows for suspended tasks — only completed tasks get archived.
 - **Archive only after user acceptance.** VERIFICATION passing does not complete the task.
-  After the user accepts, call state API transitions in order:
-  MEMORY_SHORT → MEMORY_LONG → COMPLETE. Do not jump directly from VERIFICATION to COMPLETE.
-  For each archive step, transition first and run the corresponding action second:
-  after MEMORY_SHORT is persisted, write the short memory; after MEMORY_LONG is persisted,
-  handle the `memory_long` instruction; after COMPLETE is persisted, produce the final summary.
-  At each transition, use the state API's returned `status_context` as the latest status
-  source before running the next action.
-  When transitioning to MEMORY_LONG, pass the state API snapshot to ec-memory and treat its
-  `memory_long` object as authoritative: `action == "no-op"` advances to COMPLETE without
-  reading or writing long memory; `action == "distill"` runs distillation for `trim_count`
-  older short-memory entries.
-- **COMPLETE closeout:** call the state API with `--stage COMPLETE`. The state API clears
-  session `current_task` for terminal tasks, so the next hook injection returns to Ready.
-  Then output a summary (what was done, files changed, key decisions).
+  A green gate requests VERIFICATION -> MEMORY and presents the standard choices. After the
+  user confirms, MEMORY writes one short entry first, records it through `memory-short-complete`,
+  then asks the state API for the authoritative `memory` instruction. `action == "no-op"`
+  skips long-memory reads/writes; `action == "distill"` processes exactly `trim_count` older
+  entries. Only after `memory-complete` may ec-memory request MEMORY -> COMPLETE.
+- **COMPLETE closeout:** COMPLETE is also a confirmed edge. Once the user confirms it, the
+  state API clears session `current_task`, so the next hook injection returns to Ready. Then
+  output a summary (what was done, files changed, key decisions).
 
 ## Resume and handoff
 
@@ -186,16 +194,15 @@ Resuming an active task (whether from session restart, claim, handoff, or task s
    records tell you exactly where work stopped.
 3. If the task was claimed from another agent, read the latest `handoff` record first for the
    fast summary and tell the user which previous agent handed it off.
-4. Tell the user what is being resumed and from which stage, then continue.
+4. If `pending_transition` exists, do not rerun the completed stage action. Re-present the
+   standard confirmation/handoff/Other choices for its stored target.
+5. Otherwise tell the user what is being resumed and from which stage, then continue.
 
 After a task switch, the same resume flow applies — the only difference is that `current_task`
 was just changed by the switching procedure rather than being loaded from a prior session.
 
-Offering handoff — at WAITING_CONFIRM, after presenting the plan, offer exactly:
-1. Start implementation
-2. Write handoff and stop
-3. Revise the plan
-On option 2, call:
+Offering handoff — every pending stage edge includes the standard handoff option. On that
+option, call:
 `{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py handoff-task --session-file <P> --agent <agent-id> --summary "<dense context: plan shape, key decisions, user emphases>"`.
 
 The handoff record is target-less:
@@ -204,8 +211,9 @@ It records who handed the task off, not who will take it next. Do not ask the us
 the next agent, and do not invent or store a next-agent field. After writing handoff, stop
 owning the task; another agent can use ec-task-management or ec-workflow to claim it.
 
-Handoff is also legal at any other stage boundary on user request. The harness never switches
-agents by itself; the next agent claims the task explicitly.
+Handoff preserves `pending_transition`, so the next agent resumes the same completed boundary
+without rerunning stage work. The harness never switches agents by itself; the next agent
+claims the task explicitly.
 
 ## Status line
 
