@@ -484,7 +484,7 @@ describe("easy_coding_state.py MEMORY instruction", () => {
       kept_files: [".easy-coding/memory/short/001_20260623_item-1.md"],
       checkpoint_disposition: "kept",
     });
-    expect(snapshot.status_line).toContain("> **Easy Coding** · `06-23-memory` · `MEMORY`");
+    expect(snapshot.status_line).toContain("> **Easy Coding [Guard]** · `06-23-memory` · `MEMORY`");
     expect(snapshot.status_context).toContain("[workflow-state:MEMORY]");
   });
 
@@ -511,7 +511,7 @@ describe("easy_coding_state.py MEMORY instruction", () => {
       ),
       checkpoint_disposition: "kept",
     });
-    expect(snapshot.status_line).toContain("> **Easy Coding** · `06-23-memory` · `MEMORY`");
+    expect(snapshot.status_line).toContain("> **Easy Coding [Guard]** · `06-23-memory` · `MEMORY`");
     expect(snapshot.status_context).toContain("[workflow-state:MEMORY]");
 
     for (let index = 1; index <= 7; index += 1) {
@@ -1501,12 +1501,16 @@ describe("easy_coding_state.py automatic and optional transitions", () => {
       project_confirm_mode: string;
       session_confirm_mode: string;
       effective_confirm_mode: string;
+      status_line: string;
     };
 
     expect(output.status).toBe("IMPLEMENT");
     expect(output.project_confirm_mode).toBe("approve");
     expect(output.session_confirm_mode).toBe("auto");
     expect(output.effective_confirm_mode).toBe("auto");
+    expect(output.status_line).toContain(
+      "> **Easy Coding [Auto]** · `07-11-session-auto` · `IMPLEMENT`",
+    );
   });
 
   it("automatically follows IMPLEMENT to REVIEW in guard mode", async () => {
@@ -1529,11 +1533,44 @@ describe("easy_coding_state.py automatic and optional transitions", () => {
         ],
         { cwd: tempDir, encoding: "utf8" },
       ),
-    ) as { status: string; effective_confirm_mode: string };
+    ) as { status: string; effective_confirm_mode: string; status_line: string };
 
     expect(output.status).toBe("REVIEW");
     expect(output.effective_confirm_mode).toBe("guard");
+    expect(output.status_line).toContain(
+      "> **Easy Coding [Guard]** · `07-11-guard-review` · `REVIEW`",
+    );
   });
+
+  it.each(["approve", "guard", "auto"] as const)(
+    "shows the effective %s mode in the Ready status line",
+    async (mode) => {
+      await writeConfirmModeConfig("guard");
+      await writeSessionFixture(null);
+
+      const output = JSON.parse(
+        execFileSync(
+          "python3",
+          [
+            stateApiPath(),
+            "set-confirm-mode",
+            "--session-file",
+            ".easy-coding/sessions/test.json",
+            "--mode",
+            mode,
+            "--agent",
+            "codex",
+          ],
+          { cwd: tempDir, encoding: "utf8" },
+        ),
+      ) as { status_line: string; effective_confirm_mode: string };
+
+      expect(output.effective_confirm_mode).toBe(mode);
+      expect(output.status_line).toContain(
+        `> **Easy Coding [${mode[0].toUpperCase()}${mode.slice(1)}]** · Ready`,
+      );
+    },
+  );
 
   it("preserves a pending edge when a session mode change makes it automatic", async () => {
     await writeConfirmModeConfig("approve");

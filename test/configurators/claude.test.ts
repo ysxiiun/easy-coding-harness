@@ -223,7 +223,7 @@ describe("configureClaude", () => {
     expect(main).toContain("easy-coding-harness generated");
     expect(main).toContain("single Markdown blockquote status line");
     expect(main).toContain(
-      "- Ready: > **Easy Coding** · Ready · Use `ec-workflow` to start or resume a task, `ec-brainstorming` to brainstorm, or `ec-task-management` to manage tasks or session settings",
+      "- Ready: > **Easy Coding [{confirm-mode}]** · Ready · Use `ec-workflow` to start or resume a task, `ec-brainstorming` to brainstorm, or `ec-task-management` to manage tasks or session settings",
     );
     expect(main).not.toContain("[ Easy Coding ] ready");
     expect(main).not.toContain("tasks``");
@@ -309,7 +309,9 @@ describe("configureClaude", () => {
       input: "{}",
       encoding: "utf8",
     });
-    expect(stdout).toContain("> **Easy Coding** · Waiting init · Use `ec-init` to initialize");
+    expect(stdout).toContain(
+      "> **Easy Coding [Guard]** · Waiting init · Use `ec-init` to initialize",
+    );
     expect(stdout).toContain("[workflow-state:idle]");
     expect(stdout).toContain("[easy-coding:init-required]");
     expect(stdout).not.toContain("/ec-init");
@@ -333,7 +335,7 @@ describe("configureClaude", () => {
     });
 
     expect(stdout).toContain(
-      "> **Easy Coding** · Ready · Use `ec-workflow` to start or resume a task, `ec-brainstorming` to brainstorm, or `ec-task-management` to manage tasks or session settings",
+      "> **Easy Coding [Guard]** · Ready · Use `ec-workflow` to start or resume a task, `ec-brainstorming` to brainstorm, or `ec-task-management` to manage tasks or session settings",
     );
     expect(stdout).toContain("[workflow-state:idle]");
   });
@@ -350,7 +352,7 @@ describe("configureClaude", () => {
     });
 
     expect(stdout).toContain(
-      "> **Easy Coding** · Ready · Use `ec-workflow` to start or resume a task, `ec-brainstorming` to brainstorm, or `ec-task-management` to manage tasks or session settings",
+      "> **Easy Coding [Guard]** · Ready · Use `ec-workflow` to start or resume a task, `ec-brainstorming` to brainstorm, or `ec-task-management` to manage tasks or session settings",
     );
     expect(stdout).not.toContain("tasks`");
     expect(stdout).toContain("[workflow-state:idle]");
@@ -430,7 +432,7 @@ describe("configureClaude", () => {
       encoding: "utf8",
     });
 
-    expect(stdout).toContain("> **Easy Coding** · Ready · Use `ec-workflow`");
+    expect(stdout).toContain("> **Easy Coding [Guard]** · Ready · Use `ec-workflow`");
     expect(stdout).toContain("[workflow-state:idle]");
     expect(stdout).not.toContain("06-12-active");
   });
@@ -481,7 +483,9 @@ describe("configureClaude", () => {
       encoding: "utf8",
     });
 
-    expect(stdout).toContain("> **Easy Coding** · `06-10-demo` · `IMPLEMENT` · Handoff -> `codex`");
+    expect(stdout).toContain(
+      "> **Easy Coding [Guard]** · `06-10-demo` · `IMPLEMENT` · Handoff -> `codex`",
+    );
     expect(stdout).toContain("[workflow-state:IMPLEMENT]");
     expect(stdout).toContain("[current-task:06-10-demo]");
     expect(stdout).toContain("[easy-coding:handoff-from:codex]");
@@ -541,7 +545,7 @@ describe("configureClaude", () => {
     });
 
     expect(stdout).toContain('"hookEventName": "UserPromptSubmit"');
-    expect(stdout).toContain("> **Easy Coding** · `06-26-analysis` · `ANALYSIS`");
+    expect(stdout).toContain("> **Easy Coding [Guard]** · `06-26-analysis` · `ANALYSIS`");
     expect(stdout).toContain("[workflow-state:ANALYSIS]");
     expect(stdout).toContain("[current-task:06-26-analysis]");
   });
@@ -570,7 +574,7 @@ describe("configureClaude", () => {
       encoding: "utf8",
     });
 
-    expect(stdout).toContain("> **Easy Coding** · `missing-task` · `MISSING`");
+    expect(stdout).toContain("> **Easy Coding [Guard]** · `missing-task` · `MISSING`");
     expect(stdout).toContain("Use `ec-workflow` to start or resume a task");
     expect(stdout).toContain("[workflow-state:idle]");
     expect(stdout).toContain("[current-task:missing-task]");
@@ -630,7 +634,7 @@ describe("configureClaude", () => {
       encoding: "utf8",
     });
 
-    expect(stdout).toContain("> **Easy Coding** · Ready · Use `ec-workflow`");
+    expect(stdout).toContain("> **Easy Coding [Guard]** · Ready · Use `ec-workflow`");
     expect(stdout).toContain("[workflow-state:idle]");
     expect(stdout).not.toContain("[current-task:06-12-done]");
     expect(stdout).not.toContain("[current-task:06-12-active]");
@@ -691,7 +695,7 @@ describe("configureClaude", () => {
       encoding: "utf8",
     });
 
-    expect(stdout).toContain("> **Easy Coding** · `06-25-confirm` · `ANALYSIS`");
+    expect(stdout).toContain("> **Easy Coding [Guard]** · `06-25-confirm` · `ANALYSIS`");
     expect(stdout).toContain("[workflow-state:ANALYSIS]");
     expect(stdout).toContain("[easy-coding:pending-transition:ANALYSIS->IMPLEMENT]");
     const task = JSON.parse(
@@ -761,7 +765,7 @@ describe("configureClaude", () => {
       encoding: "utf8",
     });
 
-    expect(stdout).toContain("> **Easy Coding** · `06-25-revise` · `ANALYSIS`");
+    expect(stdout).toContain("> **Easy Coding [Guard]** · `06-25-revise` · `ANALYSIS`");
     expect(stdout).toContain("[workflow-state:ANALYSIS]");
     expect(stdout).toContain("[easy-coding:pending-transition:ANALYSIS->IMPLEMENT]");
     const task = JSON.parse(
@@ -845,7 +849,7 @@ describe("configureClaude", () => {
         input: JSON.stringify({ cwd: tempDir, prompt }),
         encoding: "utf8",
       });
-      expect(stdout).toContain("> **Easy Coding** · `06-25-discuss` · `ANALYSIS`");
+      expect(stdout).toContain("> **Easy Coding [Guard]** · `06-25-discuss` · `ANALYSIS`");
       expect(stdout).toContain("[easy-coding:pending-transition:ANALYSIS->IMPLEMENT]");
     }
 
@@ -908,7 +912,7 @@ describe("configureClaude", () => {
       encoding: "utf8",
     });
 
-    expect(stdout).toContain("> **Easy Coding** · `06-25-verify` · `VERIFICATION`");
+    expect(stdout).toContain("> **Easy Coding [Guard]** · `06-25-verify` · `VERIFICATION`");
     expect(stdout).toContain("[workflow-state:VERIFICATION]");
     expect(stdout).toContain("[easy-coding:pending-transition:VERIFICATION->MEMORY]");
     const task = JSON.parse(
@@ -968,7 +972,7 @@ describe("configureClaude", () => {
       encoding: "utf8",
     });
 
-    expect(stdout).toContain("> **Easy Coding** · `06-25-review` · `REVIEW`");
+    expect(stdout).toContain("> **Easy Coding [Guard]** · `06-25-review` · `REVIEW`");
     expect(stdout).toContain("[workflow-state:REVIEW]");
     const task = JSON.parse(
       await readFile(
@@ -1012,7 +1016,7 @@ describe("configureClaude", () => {
       status_context: string;
     };
     expect(createOutput.status).toBe("INIT");
-    expect(createOutput.status_line).toContain("> **Easy Coding** · `06-12-api` · `INIT`");
+    expect(createOutput.status_line).toContain("> **Easy Coding [Guard]** · `06-12-api` · `INIT`");
     expect(createOutput.status_context).toContain("[workflow-state:INIT]");
     expect(createOutput.status_context).toContain("[current-task:06-12-api]");
 
@@ -1126,12 +1130,12 @@ describe("configureClaude", () => {
       };
       if (stage === "COMPLETE") {
         expect(transitionOutput.status).toBe("idle");
-        expect(transitionOutput.status_line).toContain("> **Easy Coding** · Ready");
+        expect(transitionOutput.status_line).toContain("> **Easy Coding [Guard]** · Ready");
         expect(transitionOutput.status_context).toContain("[workflow-state:idle]");
       } else {
         expect(transitionOutput.status).toBe(stage);
         expect(transitionOutput.status_line).toContain(
-          `> **Easy Coding** · \`06-12-api\` · \`${stage}\``,
+          `> **Easy Coding [Guard]** · \`06-12-api\` · \`${stage}\``,
         );
         expect(transitionOutput.status_context).toContain(`[workflow-state:${stage}]`);
       }
@@ -1211,7 +1215,7 @@ describe("configureClaude", () => {
       input: "{}",
       encoding: "utf8",
     });
-    expect(stdout).toContain("> **Easy Coding** · Ready · Use `ec-workflow`");
+    expect(stdout).toContain("> **Easy Coding [Guard]** · Ready · Use `ec-workflow`");
     expect(stdout).toContain("[workflow-state:idle]");
   });
 

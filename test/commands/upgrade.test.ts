@@ -268,7 +268,7 @@ describe("upgrade command", () => {
       input: "{}",
       encoding: "utf8",
     });
-    expect(stdout).toContain(`> **Easy Coding** · Waiting init · Upgrade to v${VERSION}`);
+    expect(stdout).toContain(`> **Easy Coding [Guard]** · Waiting init · Upgrade to v${VERSION}`);
     expect(stdout).toContain(`[easy-coding:upgrade-init-pending:${VERSION}]`);
 
     const task = JSON.parse(

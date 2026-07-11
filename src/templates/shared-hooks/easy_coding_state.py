@@ -14,11 +14,8 @@ HELP_SUFFIX = (
     "Use `ec-workflow` to start or resume a task, "
     "`ec-brainstorming` to brainstorm, or `ec-task-management` to manage tasks or session settings"
 )
-READY_LINE = (
-    "> **Easy Coding** · Ready · Use `ec-workflow` to start or resume a task, "
-    "`ec-brainstorming` to brainstorm, or `ec-task-management` to manage tasks or session settings"
-)
-WAITING_INIT_LINE = "> **Easy Coding** · Waiting init · Use `ec-init` to initialize"
+READY_LINE = f"Ready · {HELP_SUFFIX}"
+WAITING_INIT_LINE = "Waiting init · Use `ec-init` to initialize"
 
 MANDATORY_DEV_SPEC_HEADERS: list[str] = [
     "## 技术方案",
@@ -1043,10 +1040,11 @@ def build_status_line(
     session_file: str | Path | None = None,
 ) -> str:
     state = snapshot_state(root, session_file, session)
+    status_brand = f"> **Easy Coding [{str(state['effective_confirm_mode']).capitalize()}]**"
     task_id = state["current_task"]
     if task_id:
         status = str(state["status"])
-        line = f"> **Easy Coding** · `{task_id}` · `{status}`"
+        line = f"{status_brand} · `{task_id}` · `{status}`"
         last_agent = state.get("last_agent")
         if agent and last_agent and last_agent != agent:
             line += f" · Handoff -> `{last_agent}`"
@@ -1055,16 +1053,16 @@ def build_status_line(
         return line
 
     if is_project_init_required(root):
-        return WAITING_INIT_LINE
+        return f"{status_brand} · {WAITING_INIT_LINE}"
 
     pending = get_pending_init_version(root)
     if pending:
         return (
-            f"> **Easy Coding** · Waiting init · "
+            f"{status_brand} · Waiting init · "
             f"Upgrade to v{pending} — run `ec-init` to adapt"
         )
 
-    return READY_LINE
+    return f"{status_brand} · {READY_LINE}"
 
 
 def build_machine_breadcrumbs(

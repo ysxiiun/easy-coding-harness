@@ -121,7 +121,7 @@ describe("configureCodex", () => {
     expect(main).toContain("Qoder: `/ec-*`");
     expect(main).toContain("single Markdown blockquote status line");
     expect(main).toContain(
-      "- Ready: > **Easy Coding** · Ready · Use `ec-workflow` to start or resume a task, `ec-brainstorming` to brainstorm, or `ec-task-management` to manage tasks or session settings",
+      "- Ready: > **Easy Coding [{confirm-mode}]** · Ready · Use `ec-workflow` to start or resume a task, `ec-brainstorming` to brainstorm, or `ec-task-management` to manage tasks or session settings",
     );
     expect(main).not.toContain("[ Easy Coding ] ready");
     expect(main).not.toContain("tasks``");

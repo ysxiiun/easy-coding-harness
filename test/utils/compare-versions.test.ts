@@ -32,6 +32,7 @@ describe("compareVersions", () => {
     expect(compareVersions("0.7.0", "0.7.0-beta.1")).toBe(1);
     expect(compareVersions("0.7.0-beta.2", "0.7.0-beta.10")).toBe(-1);
     expect(compareVersions("0.7.0-beta.1", "0.7.0-beta.alpha")).toBe(-1);
+    expect(compareVersions("0.7.1-beta0", "0.7.1-beta1")).toBe(-1);
     expect(compareVersions("0.7.0+build.1", "0.7.0+build.2")).toBe(0);
   });
 

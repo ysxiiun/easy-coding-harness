@@ -11,10 +11,13 @@ user in the user's language.
 Start every work reply with the single Markdown blockquote status line injected by the hook,
 then a blank line. Do not render the machine breadcrumbs to the user.
 
-- Ready: > **Easy Coding** · Ready · Use `ec-workflow` to start or resume a task, `ec-brainstorming` to brainstorm, or `ec-task-management` to manage tasks or session settings
-- Waiting init: > **Easy Coding** · Waiting init · Use `ec-init` to initialize
-- Active task: > **Easy Coding** · `{current-task}` · `{workflow-state}`
-- Handoff: > **Easy Coding** · `{current-task}` · `{workflow-state}` · Handoff -> `{source-agent}`
+`{confirm-mode}` is the capitalized effective mode (`Approve`, `Guard`, or `Auto`); a session
+override takes precedence over the project mode.
+
+- Ready: > **Easy Coding [{confirm-mode}]** · Ready · Use `ec-workflow` to start or resume a task, `ec-brainstorming` to brainstorm, or `ec-task-management` to manage tasks or session settings
+- Waiting init: > **Easy Coding [{confirm-mode}]** · Waiting init · Use `ec-init` to initialize
+- Active task: > **Easy Coding [{confirm-mode}]** · `{current-task}` · `{workflow-state}`
+- Handoff: > **Easy Coding [{confirm-mode}]** · `{current-task}` · `{workflow-state}` · Handoff -> `{source-agent}`
 
 Skill names in the status line are bare names (`ec-init`, `ec-workflow`) and never include
 platform prefixes such as `/` or `$`. If no status line is injected, do not invent one.
