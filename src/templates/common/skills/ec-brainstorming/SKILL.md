@@ -67,7 +67,7 @@ design now?" Offer two options:
 
 1. **Start task now** — invoke `{{skill_trigger}}ec-workflow` with the design topic as the
    task prompt. ec-workflow will create the task and enter INIT. After INIT completes, it
-   presents the standard confirmation/handoff/Other gate before entering ANALYSIS.
+   automatically enters ANALYSIS without a confirmation/handoff gate.
    ec-analysis will discover the design doc in `.easy-coding/spec/` and use it as input.
 2. **Later** — tell the user the design is saved and they can run
    `{{skill_trigger}}ec-workflow` whenever ready.

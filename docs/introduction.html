@@ -440,7 +440,7 @@
         <p class="tagline">给 AI 编程套上一套工作流规范——让它有章可循，而不是全凭 agent 当时的发挥。</p>
         <div class="chip-row">
           <span class="chip">固定阶段状态机</span>
-          <span class="chip">全阶段确认门控</span>
+          <span class="chip">用户决策确认门控</span>
           <span class="chip">子代理隔离上下文</span>
           <span class="chip">项目记忆分层</span>
           <span class="chip">一份模板 · 三平台</span>
@@ -448,7 +448,7 @@
         </div>
         <div class="meta">
           <span>来源：<code>docs/introduction.md</code></span>
-          <span>版本：<code>0.6.0</code></span>
+          <span>版本：<code>0.6.1</code></span>
           <span>适配：Claude Code · Codex · Qoder</span>
         </div>
       </header>
@@ -461,7 +461,7 @@
           <div class="pain-grid">
             <div class="pain-card">
               <p>需求还没对齐就开始写，方向错了返工一大片。</p>
-              <span class="fix">→ 全阶段确认硬门控</span>
+              <span class="fix">→ 用户决策确认 + 机械边自动流转</span>
             </div>
             <div class="pain-card">
               <p>说"改完了"，但 lint、类型、测试根本没真跑过。</p>
@@ -499,7 +499,7 @@
             <div class="idea-card">
               <div class="num">2</div>
               <h3>人机共创，关键节点设硬门控</h3>
-              <p>每条合法状态边都通过 <code>pending_transition</code> 等待用户确认，并优先使用智能体原生选项功能提供确认、交接和 free-form Other；<code>VERIFICATION</code> 仍要求新鲜验证证据，方向、节奏和验收都由人拍板。</p>
+              <p>用户决策状态边通过 <code>pending_transition</code> 等待确认；INIT → ANALYSIS、MEMORY → COMPLETE 自动流转。代码 IMPLEMENT 可跳过 REVIEW，但仍需 VERIFICATION；只读任务展示报告后直接结束，不审查、不验证、不写记忆。</p>
             </div>
             <div class="idea-card">
               <div class="num">3</div>
@@ -524,23 +524,23 @@
           <div class="pipeline">
             <div class="flow">
               <div class="stage">INIT</div>
-              <span class="arrow">→</span>
+              <span class="arrow">自动→</span>
               <div class="stage">ANALYSIS</div>
               <span class="arrow">→</span>
               <div class="stage">IMPLEMENT</div>
               <span class="arrow">→</span>
-              <div class="stage">REVIEW</div>
+              <div class="stage">REVIEW<small>可跳过</small></div>
               <span class="arrow">→</span>
               <div class="stage gate">VERIFICATION<small>验证门</small></div>
               <span class="arrow">→</span>
               <div class="stage memory">MEMORY<small>短期 + 长期门禁</small></div>
-              <span class="arrow">→</span>
+              <span class="arrow">自动→</span>
               <div class="stage done">COMPLETE</div>
             </div>
             <div class="loops">
               <div class="loop-item"><span class="loop-tag">repair loop</span><span>审查或验证发现问题，回到 IMPLEMENT 重新实现。</span></div>
               <div class="loop-item"><span class="loop-tag">replan</span><span>需要重新对齐方案时，确认后回到 ANALYSIS。</span></div>
-              <div class="loop-item"><span class="loop-tag mem">every edge</span><span>优先用原生选项功能确认目标阶段、交接给其他智能体或通过 free-form Other 调整。</span></div>
+              <div class="loop-item"><span class="loop-tag mem">user edge</span><span>代码任务可跳过 REVIEW；只读任务在 IMPLEMENT 展示报告后自动完成，不进入后续阶段。</span></div>
             </div>
           </div>
 
@@ -548,12 +548,14 @@
 
           <details>
             <summary>查看原始状态机（ASCII）</summary>
-            <pre><code>INIT -> ANALYSIS -> IMPLEMENT -> REVIEW -> VERIFICATION -> MEMORY -> COMPLETE
-          ^            ^          |             |
-          +-- replan ---+          +--- fix -----+
-                       ^                         |
-                       +------- repair ----------+
-every edge --[confirm / handoff / Other]--> target stage</code></pre>
+            <pre><code>INIT --[auto]--> ANALYSIS -> IMPLEMENT -> REVIEW -> VERIFICATION -> MEMORY --[auto]--> COMPLETE
+                                    \----------------> VERIFICATION
+                                    \--[read-only auto]------------------------------> COMPLETE
+                 ^            ^          |             |
+                 +-- replan ---+          +--- fix -----+
+                              ^                         |
+                              +------- repair ----------+
+user-decision edge --[confirm / handoff / Other]--> target stage</code></pre>
           </details>
 
           <h3>一份模板，喂三个平台</h3>
@@ -633,7 +635,7 @@ easy-coding init --agent=claude-code,codex,qoder  # 指定多个平台</code></p
               <div class="dot">4</div>
               <div>
                 <h4>日常开发从统一入口进</h4>
-                <p><code>ec-workflow</code> 负责创建或恢复任务，然后按阶段调度分析、实现、审查、验证和记忆归档。每个阶段边界都会优先用当前智能体的原生选项功能，让你确认目标阶段、交接给其他智能体或通过 free-form Other 调整。</p>
+                <p><code>ec-workflow</code> 负责创建或恢复任务。代码任务在 IMPLEMENT 后可进入 REVIEW 或直接进入 VERIFICATION，再归档记忆；只读任务展示完整报告后直接 COMPLETE，不执行 REVIEW、VERIFICATION 或 MEMORY。</p>
                 <pre><code>/ec-workflow 实现 xxx 功能</code></pre>
               </div>
             </div>

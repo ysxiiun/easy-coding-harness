@@ -69,16 +69,20 @@ easy-coding init --submodules packages/a,packages/b
 ## 工作流
 
 ```text
-INIT -> ANALYSIS -> IMPLEMENT -> REVIEW -> VERIFICATION -> MEMORY -> COMPLETE
-          ^            ^          |             |
-          +-- replan ---+          +--- fix -----+
-                       ^                         |
-                       +------- repair ----------+
-every edge --[user confirmation by default]--> target stage
+INIT --[auto]--> ANALYSIS -> IMPLEMENT -> REVIEW -> VERIFICATION -> MEMORY --[auto]--> COMPLETE
+                                    \----------------> VERIFICATION
+                                    \--[read-only auto]------------------------------> COMPLETE
+                 ^            ^          |             |
+                 +-- replan ---+          +--- fix -----+
+                              ^                         |
+                              +------- repair ----------+
+user-decision edge --[confirm / handoff / Other]--> target stage
 any stage --[user abort via ec-task-close]--> CLOSED
 ```
 
-- 每个阶段完成后先记录 `pending_transition`，默认必须由用户确认才进入目标阶段；优先通过智能体原生选项功能选择确认、交接给其他智能体或使用 free-form Other，纯文本编号仅作回退。
+- `INIT → ANALYSIS` 与完成记忆处理后的 `MEMORY → COMPLETE` 自动流转，不生成 `pending_transition`，也不展示确认或交接。
+- 其余用户关联边通过 `pending_transition` 等待明确确认；代码 IMPLEMENT 完成后可选择进入 REVIEW、跳过 REVIEW 直接进入 VERIFICATION，或交接给其他智能体。
+- 显式 `doc` / `analysis` / `report` 只读任务不生成 `test-strategy.md`；IMPLEMENT 留下匹配的 dispatch/result 并展示完整报告后自动进入 COMPLETE，不执行 REVIEW、VERIFICATION 或 MEMORY，也不写任务记忆。
 - `VERIFICATION` 是验证硬门控，未实际运行的 lint、typecheck、test 不算通过。
 - `MEMORY` 先写入本次任务短期记忆，再执行长期记忆阈值门禁；未超过阈值时长期沉淀为 no-op。
 
@@ -115,7 +119,7 @@ any stage --[user abort via ec-task-close]--> CLOSED
 | `ec-workflow` | 统一入口，负责任务创建、恢复、阶段流转和 stage skill 调度 |
 | `ec-brainstorming` | 实现前的设计探索和方案发散 |
 | `ec-analysis` | 生成 dev-spec、执行计划和测试策略 |
-| `ec-implementing` | 按确认后的计划执行代码实现 |
+| `ec-implementing` | 按确认后的计划执行代码实现或显式无代码只读交付 |
 | `ec-reviewing` | 多维度代码审查，输出 accept / fix / replan / blocked 结论 |
 | `ec-verification` | 执行 lint、typecheck、test 等验证硬门控，并处理验收修复循环 |
 | `ec-memory` | 写短期记忆，并在超过阈值时沉淀长期记忆 |

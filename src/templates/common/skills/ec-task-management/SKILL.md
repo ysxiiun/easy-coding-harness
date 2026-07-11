@@ -52,7 +52,7 @@ unless ec-workflow is explicitly invoked or the agent environment routes into it
 ### Create a task
 
 Create through the state API, never by hand-editing `task.json` or session files:
-`{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py create-task --session-file <P> --task-id <MM-DD-short-name> --type <feature|bugfix|refactor|perf> --title "<one-line summary>" --agent <agent-id> --no-set-current`.
+`{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py create-task --session-file <P> --task-id <MM-DD-short-name> --type <feature|bugfix|refactor|perf|doc|analysis|report|workflow> --title "<one-line summary>" --agent <agent-id> --no-set-current`.
 
 If the user explicitly wants to start the task now, omit `--no-set-current`; otherwise leave
 the current workflow pointer untouched and tell them to run `{{skill_trigger}}ec-workflow`

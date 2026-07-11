@@ -5,9 +5,10 @@ description: REVIEW-stage skill. Use when ec-workflow enters REVIEW. Reviews cha
 
 # ec-reviewing — graded, evidence-backed review
 
-ec-workflow dispatches you when IMPLEMENT finishes. You judge the change set and return a
-verdict that drives the next transition. Inputs: the changed files (from execution.jsonl
-`result` records), `dev-spec.md`, `.easy-coding/RULES.md`, `test-strategy.md`.
+ec-workflow dispatches you when code IMPLEMENT finishes. Read-only `doc` / `analysis` / `report`
+tasks auto-complete from IMPLEMENT and never enter REVIEW. You judge the code change set and
+return a verdict that drives the next transition. Inputs: the changed files (from
+execution.jsonl `result` records), `dev-spec.md`, `.easy-coding/RULES.md`, `test-strategy.md`.
 
 Communicate with the user in the user's language.
 

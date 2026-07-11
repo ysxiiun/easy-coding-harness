@@ -39,14 +39,19 @@ src/
 The 6-stage workflow plus terminal states runs inside the agent, not in the CLI:
 
 ```
-INIT → ANALYSIS → IMPLEMENT → REVIEW → VERIFICATION → MEMORY → COMPLETE
-          ↑            ↑          │             │
-          └── replan ───┘          └── repair ───┘
-every edge requires explicit user confirmation by default; prefer native choice UI
+INIT ─auto→ ANALYSIS → IMPLEMENT → REVIEW → VERIFICATION → MEMORY ─auto→ COMPLETE
+                                  └──────────────→ VERIFICATION
+                                  └─read-only auto────────────────────→ COMPLETE
+          ↑            ↑          │
+          └── replan ───┘          └── repair
+user-decision edges require explicit confirmation; code tasks may skip REVIEW, while validated
+read-only tasks auto-complete after IMPLEMENT without VERIFICATION or MEMORY
 ```
 
-Every legal edge is a user-confirmation gate by default; VERIFICATION also requires fresh
-evidence. The CLI deploys the runtime and migrates legacy workflow metadata during upgrade.
+User-decision edges are confirmation gates; INIT → ANALYSIS and completed MEMORY → COMPLETE
+advance automatically. Code tasks always require fresh VERIFICATION evidence, even when REVIEW
+is skipped; validated read-only deliverables end directly after IMPLEMENT. The CLI deploys the
+runtime and migrates legacy workflow metadata during upgrade.
 
 ## Development Conventions
 

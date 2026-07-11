@@ -26,12 +26,13 @@ CLI 本身很克制——它只往 `.claude` / `.agents` / `.qoder` 这些目录
 
 ### 人机共创，关键节点设硬门控
 
-整个工作流是固定状态机，每条合法状态边默认都设**不可跳过**的用户确认门：
+整个工作流是固定状态机，用户决策状态边设置明确确认门，机械边自动流转：
 
-- `pending_transition`（全阶段确认）——当前阶段完成后仍不改状态，用户确认后才迁移；
-- `VERIFICATION`（验证）——没有真实跑过的 lint、typecheck、test，不算通过。
+- `pending_transition`（用户决策确认）——当前阶段完成后仍不改状态，用户确认后才迁移；
+- `auto-transition`（机械流转）——INIT → ANALYSIS、MEMORY → COMPLETE，以及校验通过的只读 IMPLEMENT → COMPLETE 不打断用户；
+- `VERIFICATION`（验证）——代码任务没有真实跑过的 lint、typecheck、test，不算通过；只读任务不进入该阶段。
 
-每个边界都优先通过智能体原生选项功能提供确认目标阶段、交接给其他智能体和 free-form Other；平台不支持时才退回文本编号。方向、执行节奏和验收都由人拍板；同时把"嘴上说完成了"这种最常见的翻车点堵死。
+用户决策边优先通过智能体原生选项功能提供确认目标阶段、交接给其他智能体和 free-form Other；代码 IMPLEMENT 还可明确跳过 REVIEW 进入 VERIFICATION。只读任务展示完整报告后直接结束，不审查、不验证、不归档记忆。平台不支持时才退回文本编号。
 
 ### 上下文卫生
 
@@ -50,12 +51,14 @@ CLI 本身很克制——它只往 `.claude` / `.agents` / `.qoder` 这些目录
 ### 一条能恢复、能交接的工作流
 
 ```text
-INIT -> ANALYSIS -> IMPLEMENT -> REVIEW -> VERIFICATION -> MEMORY -> COMPLETE
-          ^            ^          |             |
-          +-- replan ---+          +--- fix -----+
-                       ^                         |
-                       +------- repair ----------+
-every edge --[confirm / handoff / Other]--> target stage
+INIT --[auto]--> ANALYSIS -> IMPLEMENT -> REVIEW -> VERIFICATION -> MEMORY --[auto]--> COMPLETE
+                                    \----------------> VERIFICATION
+                                    \--[read-only auto]------------------------------> COMPLETE
+                 ^            ^          |             |
+                 +-- replan ---+          +--- fix -----+
+                              ^                         |
+                              +------- repair ----------+
+user-decision edge --[confirm / handoff / Other]--> target stage
 ```
 
 任务状态持久化在 `.easy-coding/` 里，不绑死在某次会话上。所以：
@@ -122,7 +125,7 @@ agent 会读项目，生成 `SOUL.md`、`RULES.md`、`ABSTRACT.md`、`TEST_STRAT
 /ec-workflow 实现 xxx 功能
 ```
 
-`ec-workflow` 负责创建或恢复任务，然后按阶段调度分析、实现、审查、验证和记忆归档。每个阶段边界都会优先用当前智能体的原生选项功能，让你确认下一阶段、交接给其他智能体，或通过 free-form Other 调整方向。
+`ec-workflow` 负责创建或恢复任务。代码任务在 IMPLEMENT 后可进入 REVIEW 或直接进入 VERIFICATION，再归档记忆；只读任务展示完整报告后直接 COMPLETE，不执行 REVIEW、VERIFICATION 或 MEMORY。
 
 ### 常用命令
 

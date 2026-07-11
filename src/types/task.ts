@@ -90,7 +90,7 @@ export type ExecutionRecord =
       type: "plan";
       strategy: "single" | "sequential" | "parallel"; // orchestration shape — all dispatch sub-agents
       units: Unit[];
-      parallel_groups: { level: number; units: string[] }[];
+      parallel_groups?: { level: number; units: string[] }[];
     }
   | { type: "dispatch"; unit_id: string; timestamp: string; reason?: string }
   | {
@@ -99,7 +99,9 @@ export type ExecutionRecord =
       status: string;
       changed_files: string[];
       summary: string;
+      deliverable?: string | null;
       issues: unknown[];
+      needs_attention: unknown[];
     }
   | {
       type: "review";

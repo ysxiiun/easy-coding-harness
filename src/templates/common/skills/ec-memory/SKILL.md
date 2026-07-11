@@ -1,6 +1,6 @@
 ---
 name: ec-memory
-description: MEMORY-stage skill — part of the archive flow, triggered only after user acceptance and a confirmed stage edge. Writes one schema-v2 short memory, then runs the authoritative conditional long-memory gate, performs optional distillation, and requests COMPLETE.
+description: MEMORY-stage skill — part of the archive flow, triggered only after user acceptance and a confirmed stage edge. Writes one schema-v2 short memory, runs the authoritative conditional long-memory gate, performs optional distillation, and automatically completes the task.
 ---
 
 # ec-memory — archive what was learned
@@ -8,6 +8,8 @@ description: MEMORY-stage skill — part of the archive flow, triggered only aft
 ec-workflow dispatches you during MEMORY, which runs only after the user accepts the task and
 confirms entry. Inputs: the task's `dev-spec.md`, `execution.jsonl` (the `result` and
 `verify` records are precise source material), the changed-files list, existing memory files.
+Read-only `doc` / `analysis` / `report` tasks auto-complete from IMPLEMENT and never enter
+MEMORY or write task memory.
 
 Communicate with the user in the user's language. Memory file content follows the project's
 recorded comment/doc language.
@@ -132,11 +134,13 @@ For `distill`, it also rejects completion while any frozen candidate still exist
 frozen retained file is missing. A candidate checkpoint may disappear only because it is
 explicitly listed in `candidate_files`.
 
-## Step 3 — request COMPLETE
+## Step 3 — automatically enter COMPLETE
 
-Only after `memory_progress.completed:true`, hand control to ec-workflow to request
-MEMORY -> COMPLETE. Present the standard confirmation/handoff/Other gate and stop. Do not
-mark the task COMPLETE automatically.
+Only after `memory_progress.completed:true`, hand control to ec-workflow to call:
+`{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py auto-transition --session-file <P> --stage COMPLETE --agent <agent-id>`.
+MEMORY -> COMPLETE is a mechanical edge: do not create `pending_transition`, present another
+confirmation/handoff gate, or stop before closeout. Use the returned Ready status context and
+emit the final task summary.
 
 ## ABSTRACT backfill / update
 

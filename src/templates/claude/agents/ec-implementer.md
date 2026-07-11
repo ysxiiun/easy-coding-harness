@@ -9,6 +9,8 @@ complete exactly that unit. Your reply IS the return value, not a message to a h
 ## Hard constraints
 
 - Modify only the files listed in the task card's "Editable scope". Touch nothing else.
+- If the editable scope is `NONE — read-only deliverable`, modify nothing and return the full
+  requested result in `deliverable`.
 - Do not call any Skill tool.
 - Do not read `.claude/skills/`, `.agents/skills/`, `.qoder/skills/`, or any `.easy-coding/`
   file. All context you need is already in the task card.
@@ -20,6 +22,7 @@ complete exactly that unit. Your reply IS the return value, not a message to a h
 
 - `changed_files`: the files you actually modified
 - `summary`: one line describing what you did
+- `deliverable`: full no-code result, or `null` for a code unit
 - `issues`: problems you hit (empty array if none)
 - `needs_attention`: anything the main agent must decide (empty array if none)
 

@@ -1,12 +1,13 @@
 ---
 name: ec-verification
-description: VERIFICATION-stage skill — the hard gate between REVIEW and archive. Use when ec-workflow enters VERIFICATION. Runs lint/typecheck/test in parallel, verifies coverage against test-strategy, gates on fresh evidence, then drives the user-acceptance and repair loop. Archive never happens without explicit user acceptance.
+description: VERIFICATION-stage skill — the hard gate between implementation/review and archive. Use when ec-workflow enters VERIFICATION. Runs lint/typecheck/test in parallel, verifies coverage against test-strategy, gates on fresh evidence, then drives the user-acceptance and repair loop. Archive never happens without explicit user acceptance.
 ---
 
 # ec-verification — the hard gate
 
-ec-workflow dispatches you when REVIEW returns `accept`. You are the last gate before
-archive. Nothing passes on assumption.
+ec-workflow dispatches you when REVIEW returns `accept` or the user explicitly skips REVIEW
+after code IMPLEMENT. Read-only tasks auto-complete from IMPLEMENT and never enter this stage.
+You are the last gate before code-task archive. Nothing passes on assumption.
 
 Communicate with the user in the user's language.
 
@@ -65,14 +66,16 @@ test manually. Their response routes:
 
 - **"accepted"** → request VERIFICATION -> MEMORY and present the standard boundary gate.
 - **"problem here"** → scope judgment against the dev-spec:
-  - in scope → request VERIFICATION -> IMPLEMENT, then re-REVIEW → re-VERIFICATION after
-    the user confirms each stage edge.
+  - in scope → request VERIFICATION -> IMPLEMENT and wait for the user to confirm the return;
+    after repair, the IMPLEMENT completion choice decides whether REVIEW runs again or
+    VERIFICATION resumes directly.
   - out of scope → propose a new task (`spawned_from` = current task id); the current task
     may archive now (if already satisfactory) or stay suspended.
 - **"cancel"** → ec-task-close.
 
 Repair sizing: a trivial tweak is fixed and re-verified inside VERIFICATION; a logic/structure
-change formally returns to IMPLEMENT and re-walks REVIEW → VERIFICATION.
+change formally returns to IMPLEMENT. After repair, present the standard IMPLEMENT completion
+choice again so the user may enter REVIEW or skip directly to VERIFICATION.
 
 ## 5. Archive entry (only after acceptance)
 
@@ -84,4 +87,5 @@ Acceptance does not mutate the stage directly. Hand control to ec-workflow to ca
 
 Only after confirmation may ec-workflow consume the pending edge and dispatch ec-memory.
 ec-memory owns both short-memory creation and the conditional long-memory gate inside the
-single MEMORY stage. It later requests MEMORY -> COMPLETE and waits for a separate confirmation.
+single MEMORY stage. After memory processing completes, MEMORY -> COMPLETE advances
+automatically without another confirmation or handoff gate.

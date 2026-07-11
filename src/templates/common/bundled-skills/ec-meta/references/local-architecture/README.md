@@ -44,9 +44,13 @@ analysis, workflow operation). The CLI never analyzes the project.
 
 6 work stages + 2 terminals, owned by ec-workflow:
 `INIT → ANALYSIS → IMPLEMENT → REVIEW → VERIFICATION → MEMORY → COMPLETE`, plus `CLOSED`
-(user abort, no memory flow). Every legal stage edge records `task.json.pending_transition`
-and requires explicit user confirmation by default. VERIFICATION remains the fresh-evidence
-hard gate, and MEMORY keeps the conditional long-memory threshold gate. The active task
+(user abort, no memory flow). INIT → ANALYSIS and completed MEMORY → COMPLETE are restricted
+automatic edges. A validated read-only `doc` / `analysis` / `report` task also auto-completes
+from IMPLEMENT after its full deliverable is shown, without REVIEW, VERIFICATION, MEMORY, or
+task memory. Other stage edges record `task.json.pending_transition` and require explicit user
+confirmation; code tasks may skip REVIEW and enter VERIFICATION directly. VERIFICATION remains
+the code-task fresh-evidence hard gate, and MEMORY keeps the conditional long-memory threshold
+gate. The active task
 pointer lives in `sessions/{ppid}.json`;
 when the task reaches `COMPLETE` or `CLOSED`, the state API clears `current_task` so the
 session returns to Ready. Each task's stage persists in its `task.json`. Hooks inject the

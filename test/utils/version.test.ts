@@ -13,10 +13,12 @@ describe("version metadata", () => {
       version: string;
       packages: Record<string, { version?: string }>;
     };
+    const introductionHtml = await readFile(path.resolve("docs/introduction.html"), "utf8");
 
     expect(PACKAGE_NAME).toBe(packageJson.name);
     expect(VERSION).toBe(packageJson.version);
     expect(packageLock.version).toBe(packageJson.version);
     expect(packageLock.packages[""].version).toBe(packageJson.version);
+    expect(introductionHtml).toContain(`版本：<code>${packageJson.version}</code>`);
   });
 });

@@ -17,7 +17,7 @@ Communicate with the user in the user's language.
 |---|---|---|
 | `sessions/` | **never** | personal runtime state, differs per developer |
 | `config.yaml` | yes | shared team config |
-| `tasks/*/task.json` `dev-spec.md` `execution.jsonl` `test-strategy.md` | yes | per-task folders, no merge conflicts; team-readable decision record |
+| `tasks/*/task.json` `dev-spec.md` `execution.jsonl` and code-task `test-strategy.md` | yes | per-task folders, no merge conflicts; team-readable decision record |
 | `SOUL.md` `RULES.md` `ABSTRACT.md` `TEST_STRATEGY.md` `CHANGELOG.md` | yes | shared project knowledge |
 | `memory/` | yes | shared knowledge sinks |
 | `spec/` | yes | spec store |

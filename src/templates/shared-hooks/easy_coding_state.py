@@ -3,6 +3,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 import sys
@@ -26,7 +27,6 @@ MANDATORY_DEV_SPEC_HEADERS: list[str] = [
     "### 需求解析",
     "### 现状",
     "### 冲突摘要",
-    "### 待用户决策",
     "### 影响面分析",
     "### 改动范围",
     "### 修改方案",
@@ -39,13 +39,20 @@ VALID_TRANSITIONS: dict[str, set[str]] = {
     "idle": {"INIT"},
     "INIT": {"ANALYSIS", "CLOSED"},
     "ANALYSIS": {"IMPLEMENT", "CLOSED"},
-    "IMPLEMENT": {"REVIEW", "ANALYSIS", "CLOSED"},
+    "IMPLEMENT": {"REVIEW", "VERIFICATION", "ANALYSIS", "COMPLETE", "CLOSED"},
     "REVIEW": {"VERIFICATION", "IMPLEMENT", "ANALYSIS", "CLOSED"},
     "VERIFICATION": {"MEMORY", "IMPLEMENT", "CLOSED"},
     "MEMORY": {"COMPLETE", "CLOSED"},
     "COMPLETE": set(),
     "CLOSED": set(),
 }
+
+AUTO_TRANSITIONS = {
+    ("INIT", "ANALYSIS"),
+    ("MEMORY", "COMPLETE"),
+}
+READ_ONLY_COMPLETION_TRANSITION = ("IMPLEMENT", "COMPLETE")
+NO_CODE_TASK_TYPES = {"analysis", "doc", "report"}
 
 LEGACY_STAGE_MAP = {
     "WAITING_CONFIRM": "ANALYSIS",
@@ -55,6 +62,24 @@ LEGACY_STAGE_MAP = {
 
 DEFAULT_SHORT_TERM_MAX = 10
 DEFAULT_SHORT_TERM_KEEP = 5
+DEV_SPEC_PLACEHOLDER_PATTERN = re.compile(r"\[\[EC_TODO:[^\]\n]+\]\]")
+MARKDOWN_HEADING_PATTERN = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
+TABLE_HEADER_CELLS = {
+    "改动文件",
+    "改动类型",
+    "文件编码",
+    "改动核心内容",
+    "单元",
+    "说明",
+    "类型",
+    "涉及文件",
+    "依赖",
+    "测试点",
+    "级别",
+    "归属单元",
+    "方式",
+    "验证命令",
+}
 
 
 class StateError(Exception):
@@ -455,6 +480,378 @@ def append_execution_record(root: Path, task_id: str, record: dict) -> None:
         handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
+def is_non_empty_string(value: object) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def is_string_list(value: object, allow_empty: bool = True) -> bool:
+    return (
+        isinstance(value, list)
+        and (allow_empty or len(value) > 0)
+        and all(is_non_empty_string(item) for item in value)
+    )
+
+
+def has_acyclic_dependencies(dependencies_by_unit: dict[str, set[str]]) -> bool:
+    remaining = {unit_id: set(dependencies) for unit_id, dependencies in dependencies_by_unit.items()}
+    resolved: set[str] = set()
+    while remaining:
+        ready = {
+            unit_id for unit_id, dependencies in remaining.items() if dependencies.issubset(resolved)
+        }
+        if not ready:
+            return False
+        resolved.update(ready)
+        for unit_id in ready:
+            remaining.pop(unit_id)
+    return True
+
+
+def is_valid_execution_plan(plan: object, allow_empty_files: bool = False) -> bool:
+    if not isinstance(plan, dict):
+        return False
+    strategy = plan.get("strategy")
+    units = plan.get("units")
+    if strategy not in {"single", "sequential", "parallel"} or not isinstance(units, list):
+        return False
+    if not units or (strategy == "single" and len(units) != 1):
+        return False
+    if strategy == "parallel" and len(units) < 2:
+        return False
+
+    unit_ids: list[str] = []
+    has_empty_file_scope = False
+    for unit in units:
+        if not isinstance(unit, dict):
+            return False
+        if not all(is_non_empty_string(unit.get(field)) for field in ("id", "title", "type")):
+            return False
+        if not is_string_list(unit.get("files"), allow_empty=allow_empty_files):
+            return False
+        if not unit["files"]:
+            has_empty_file_scope = True
+        if not is_string_list(unit.get("depends_on")):
+            return False
+        for optional_list in ("rules_sections", "abstract_modules"):
+            if optional_list in unit and not is_string_list(unit.get(optional_list)):
+                return False
+        unit_ids.append(str(unit["id"]))
+
+    if has_empty_file_scope and (not allow_empty_files or strategy != "single" or len(units) != 1):
+        return False
+
+    if len(set(unit_ids)) != len(unit_ids):
+        return False
+    known_ids = set(unit_ids)
+    dependencies_by_unit: dict[str, set[str]] = {}
+    for unit in units:
+        unit_id = str(unit["id"])
+        dependencies = set(unit["depends_on"])
+        if unit_id in dependencies or not dependencies.issubset(known_ids):
+            return False
+        dependencies_by_unit[unit_id] = dependencies
+    if not has_acyclic_dependencies(dependencies_by_unit):
+        return False
+
+    if strategy == "parallel":
+        parallel_groups = plan.get("parallel_groups")
+        if not isinstance(parallel_groups, list) or not parallel_groups:
+            return False
+        grouped_ids: list[str] = []
+        group_levels: set[int] = set()
+        level_by_unit: dict[str, int] = {}
+        for group in parallel_groups:
+            level = group.get("level") if isinstance(group, dict) else None
+            if (
+                not isinstance(group, dict)
+                or type(level) is not int
+                or level < 0
+                or level in group_levels
+                or not is_string_list(group.get("units"), allow_empty=False)
+            ):
+                return False
+            group_levels.add(level)
+            grouped_ids.extend(group["units"])
+            for unit_id in group["units"]:
+                level_by_unit[unit_id] = level
+        if len(grouped_ids) != len(set(grouped_ids)) or set(grouped_ids) != known_ids:
+            return False
+        for unit_id, dependencies in dependencies_by_unit.items():
+            if any(level_by_unit[dependency] >= level_by_unit[unit_id] for dependency in dependencies):
+                return False
+
+    return True
+
+
+def is_read_only_execution_plan(plan: object) -> bool:
+    return (
+        is_valid_execution_plan(plan, allow_empty_files=True)
+        and isinstance(plan, dict)
+        and plan.get("strategy") == "single"
+        and len(plan["units"]) == 1
+        and plan["units"][0].get("files") == []
+    )
+
+
+def has_valid_execution_plan(root: Path, task_id: str) -> bool:
+    path = execution_log_path(root, task_id)
+    if not path.exists():
+        return False
+    latest_plan: dict | None = None
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                return False
+            if isinstance(record, dict) and record.get("type") == "plan":
+                latest_plan = record
+    except OSError:
+        return False
+    task = load_task(root, task_id)
+    task_type = str(task.get("type") or "").strip().lower() if task else ""
+    if task_type in NO_CODE_TASK_TYPES:
+        return is_read_only_execution_plan(latest_plan)
+    return is_valid_execution_plan(latest_plan)
+
+
+def validate_read_only_completion(root: Path, task_id: str) -> None:
+    task = load_task(root, task_id)
+    task_type = str(task.get("type") or "").strip().lower() if task else ""
+    reasons: list[str] = []
+    if task_type not in NO_CODE_TASK_TYPES:
+        reasons.append("task type is not doc, analysis, or report")
+
+    path = execution_log_path(root, task_id)
+    records: list[dict] = []
+    if not path.exists():
+        reasons.append("execution.jsonl is missing")
+    else:
+        try:
+            for line in path.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                record = json.loads(line)
+                if not isinstance(record, dict):
+                    reasons.append("execution.jsonl contains a non-object record")
+                    break
+                records.append(record)
+        except (OSError, json.JSONDecodeError):
+            reasons.append("execution.jsonl cannot be read as valid JSONL")
+
+    latest_plan_index: int | None = None
+    for index, record in enumerate(records):
+        if record.get("type") == "plan":
+            latest_plan_index = index
+
+    unit_id = ""
+    if latest_plan_index is None:
+        reasons.append("execution.jsonl has no plan record")
+    else:
+        plan = records[latest_plan_index]
+        if not is_read_only_execution_plan(plan):
+            reasons.append("latest plan record is invalid")
+        else:
+            units = plan["units"]
+            unit_id = str(units[0]["id"])
+
+    unit_records: list[dict] = []
+    if latest_plan_index is not None and unit_id:
+        for record in records[latest_plan_index + 1 :]:
+            if record.get("unit_id") == unit_id and record.get("type") in {"dispatch", "result"}:
+                unit_records.append(record)
+    latest_result = (
+        unit_records[-1]
+        if unit_records and unit_records[-1].get("type") == "result"
+        else None
+    )
+    if latest_result is None:
+        reasons.append("latest read-only unit has no result record")
+    else:
+        matching_dispatch = unit_records[-2] if len(unit_records) >= 2 else None
+        if matching_dispatch is None or matching_dispatch.get("type") != "dispatch":
+            reasons.append("latest read-only result has no matching dispatch record")
+        elif not is_non_empty_string(matching_dispatch.get("timestamp")):
+            reasons.append("latest read-only dispatch record has no timestamp")
+        if latest_result.get("changed_files") != []:
+            reasons.append("read-only result must contain changed_files:[]")
+        if not is_non_empty_string(latest_result.get("deliverable")):
+            reasons.append("read-only result must contain a non-empty deliverable")
+        if latest_result.get("issues") != []:
+            reasons.append("read-only result must contain issues:[]")
+        if latest_result.get("needs_attention") != []:
+            reasons.append("read-only result must contain needs_attention:[]")
+
+    if reasons:
+        raise StateError(
+            "Read-only IMPLEMENT cannot complete before its report is ready: " + "; ".join(reasons)
+        )
+
+
+def markdown_headings(content: str) -> list[tuple[int, int, str]]:
+    headings: list[tuple[int, int, str]] = []
+    fence_marker: str | None = None
+    for index, line in enumerate(content.splitlines()):
+        stripped = line.lstrip()
+        if stripped.startswith(("```", "~~~")):
+            marker = stripped[:3]
+            if fence_marker is None:
+                fence_marker = marker
+            elif fence_marker == marker:
+                fence_marker = None
+            continue
+        if fence_marker is not None:
+            continue
+        match = MARKDOWN_HEADING_PATTERN.match(line.strip())
+        if match:
+            headings.append((index, len(match.group(1)), match.group(2).strip()))
+    return headings
+
+
+def has_meaningful_markdown_body(content: str) -> bool:
+    for line in content.splitlines():
+        stripped = line.strip()
+        if not stripped or MARKDOWN_HEADING_PATTERN.match(stripped):
+            continue
+        if stripped.startswith(">"):
+            continue
+        if re.fullmatch(r"[-|: ]+", stripped):
+            continue
+        if stripped == "（若 single：单一实施单元，派发 1 个子代理执行）":
+            continue
+        if stripped.startswith("|") and stripped.endswith("|"):
+            cells = {cell.strip() for cell in stripped.strip("|").split("|") if cell.strip()}
+            if cells and cells.issubset(TABLE_HEADER_CELLS):
+                continue
+        plain = re.sub(r"[`*_]", "", stripped)
+        plain = re.sub(r"^[-+]\s*", "", plain).strip()
+        if re.fullmatch(r"[^:：|]+[:：]", plain):
+            continue
+        return True
+    return False
+
+
+def validate_mandatory_dev_spec_sections(content: str) -> tuple[list[str], list[str]]:
+    lines = content.splitlines()
+    headings = markdown_headings(content)
+    missing: list[str] = []
+    empty: list[str] = []
+
+    title_heading = next(
+        (
+            (line_index, level, title)
+            for line_index, level, title in headings
+            if level == 2 and (title == "技术方案" or title.startswith(("技术方案：", "技术方案:")))
+        ),
+        None,
+    )
+    if title_heading is None:
+        missing.append("## 技术方案")
+    else:
+        title = title_heading[2]
+        title_value = title.removeprefix("技术方案").lstrip("：:").strip()
+        if not title_value:
+            empty.append("## 技术方案")
+
+    for header in MANDATORY_DEV_SPEC_HEADERS[1:]:
+        expected_title = header.removeprefix("### ")
+        heading_index = next(
+            (
+                index
+                for index, (_, level, title) in enumerate(headings)
+                if level == 3 and title == expected_title
+            ),
+            None,
+        )
+        if heading_index is None:
+            missing.append(header)
+            continue
+        line_index, level, _ = headings[heading_index]
+        next_line_index = len(lines)
+        for candidate_line, candidate_level, _ in headings[heading_index + 1 :]:
+            if candidate_level <= level:
+                next_line_index = candidate_line
+                break
+        body = "\n".join(lines[line_index + 1 : next_line_index])
+        if not has_meaningful_markdown_body(body):
+            empty.append(header)
+
+    return missing, empty
+
+
+def validate_analysis_readiness(root: Path, task_id: str) -> None:
+    task_dir = task_json_path(root, task_id).parent
+    task = load_task(root, task_id)
+    task_type = str(task.get("type") or "").strip().lower() if task else ""
+    is_read_only_task = task_type in NO_CODE_TASK_TYPES
+    dev_spec = task_dir / "dev-spec.md"
+    skeleton = root / ".easy-coding" / "templates" / "dev-spec-skeleton.md"
+    test_strategy = task_dir / "test-strategy.md"
+    reasons: list[str] = []
+
+    dev_spec_content = ""
+    if not dev_spec.exists():
+        reasons.append("dev-spec.md is missing")
+    else:
+        try:
+            dev_spec_content = dev_spec.read_text(encoding="utf-8")
+            if not dev_spec_content.strip():
+                reasons.append("dev-spec.md is empty")
+        except OSError:
+            reasons.append("dev-spec.md cannot be read")
+
+    if dev_spec_content:
+        missing_headers, empty_sections = validate_mandatory_dev_spec_sections(dev_spec_content)
+        if is_read_only_task:
+            empty_sections = [
+                header for header in empty_sections if header != "### 改动范围"
+            ]
+        if missing_headers:
+            reasons.append(
+                "dev-spec.md is missing mandatory headers: "
+                + ", ".join(header.lstrip("# ") for header in missing_headers)
+            )
+        if empty_sections:
+            reasons.append(
+                "dev-spec.md has empty mandatory sections: "
+                + ", ".join(header.lstrip("# ") for header in empty_sections)
+            )
+        if "[阶段：ANALYSIS]" in dev_spec_content or "### 待用户决策" in dev_spec_content:
+            reasons.append("dev-spec.md contains forbidden analysis-only sections")
+
+        if not skeleton.exists():
+            reasons.append("dev-spec skeleton template is missing")
+        else:
+            try:
+                skeleton_content = skeleton.read_text(encoding="utf-8")
+                if not DEV_SPEC_PLACEHOLDER_PATTERN.search(skeleton_content):
+                    reasons.append("dev-spec skeleton template has no EC_TODO markers")
+                if DEV_SPEC_PLACEHOLDER_PATTERN.search(dev_spec_content):
+                    reasons.append("dev-spec.md contains unresolved template placeholders")
+            except OSError:
+                reasons.append("dev-spec skeleton template cannot be read")
+
+    if not has_valid_execution_plan(root, task_id):
+        reasons.append("execution.jsonl has no valid plan record")
+    if is_read_only_task:
+        if test_strategy.exists():
+            reasons.append("read-only task must not create test-strategy.md")
+    else:
+        try:
+            if not test_strategy.exists() or not test_strategy.read_text(encoding="utf-8").strip():
+                reasons.append("test-strategy.md is missing or empty")
+        except OSError:
+            reasons.append("test-strategy.md cannot be read")
+
+    if reasons:
+        raise StateError(
+            "ANALYSIS cannot advance to IMPLEMENT before analysis artifacts are ready: "
+            + "; ".join(reasons)
+        )
+
+
 def latest_handoff_record(root: Path, task_id: str) -> dict | None:
     path = execution_log_path(root, task_id)
     if not path.exists():
@@ -493,10 +890,24 @@ def get_pending_init_version(root: Path) -> str | None:
     return None
 
 
-def validate_transition(previous: str, current: str) -> str | None:
+def is_automatic_transition(previous: str, current: str, task_type: str = "") -> bool:
+    if (previous, current) in AUTO_TRANSITIONS:
+        return True
+    return (
+        (previous, current) == READ_ONLY_COMPLETION_TRANSITION
+        and task_type.strip().lower() in NO_CODE_TASK_TYPES
+    )
+
+
+def validate_transition(previous: str, current: str, task_type: str = "") -> str | None:
     if previous == current:
         return None
-    allowed = VALID_TRANSITIONS.get(previous, set())
+    normalized_task_type = task_type.strip().lower()
+    allowed = set(VALID_TRANSITIONS.get(previous, set()))
+    if previous == "IMPLEMENT" and normalized_task_type in NO_CODE_TASK_TYPES:
+        allowed = {"ANALYSIS", "COMPLETE", "CLOSED"}
+    elif previous == "IMPLEMENT":
+        allowed.discard("COMPLETE")
     if current in allowed:
         return None
     return (
@@ -604,7 +1015,11 @@ def build_machine_breadcrumbs(
             target = str(pending.get("to") or "")
             if target:
                 lines.append(f"[easy-coding:pending-transition:{source}->{target}]")
-                lines.append("[easy-coding:transition-confirmation-required]")
+                task_type = str(task.get("type") or "") if task else ""
+                if is_automatic_transition(source, target, task_type):
+                    lines.append(f"[easy-coding:auto-transition-ready:{source}->{target}]")
+                else:
+                    lines.append("[easy-coding:transition-confirmation-required]")
 
     if is_project_init_required(root):
         lines.append("[easy-coding:init-required]")
@@ -881,17 +1296,19 @@ def request_transition(
         raise StateError(f"Unknown stage: {stage}")
     session, resolved_task_id, task = resolve_current_task(root, task_id, session_file)
     previous = str(task.get("status") or "idle")
+    task_type = str(task.get("type") or "")
     if previous == stage:
         raise StateError(f"Transition target must differ from current stage: {stage}")
 
-    violation = validate_transition(previous, stage)
+    violation = validate_transition(previous, stage, task_type)
     if violation:
         raise StateError(violation)
-    if previous == "MEMORY" and stage == "COMPLETE":
-        progress = task.get("memory_progress")
-        if not isinstance(progress, dict) or progress.get("completed") is not True:
-            raise StateError("MEMORY cannot advance to COMPLETE before memory processing completes.")
-
+    if is_automatic_transition(previous, stage, task_type):
+        raise StateError(
+            f"Transition {previous} -> {stage} is automatic; use auto-transition instead."
+        )
+    if previous == "ANALYSIS" and stage == "IMPLEMENT":
+        validate_analysis_readiness(root, resolved_task_id)
     existing = task.get("pending_transition")
     if isinstance(existing, dict):
         if existing.get("from") != previous or existing.get("to") != stage:
@@ -926,9 +1343,18 @@ def apply_transition(
     session, resolved_task_id, task = resolve_current_task(root, task_id, session_file)
 
     previous = str(task.get("status") or "idle")
-    violation = validate_transition(previous, stage)
+    task_type = str(task.get("type") or "")
+    violation = validate_transition(previous, stage, task_type)
     if violation:
         raise StateError(violation)
+    if previous == "ANALYSIS" and stage == "IMPLEMENT":
+        validate_analysis_readiness(root, resolved_task_id)
+    if previous == "MEMORY" and stage == "COMPLETE":
+        progress = task.get("memory_progress")
+        if not isinstance(progress, dict) or progress.get("completed") is not True:
+            raise StateError("MEMORY cannot advance to COMPLETE before memory processing completes.")
+    if (previous, stage) == READ_ONLY_COMPLETION_TRANSITION:
+        validate_read_only_completion(root, resolved_task_id)
     if previous != stage:
         task["status"] = stage
         append_stage_history(task, stage, agent)
@@ -949,6 +1375,33 @@ def apply_transition(
     return snapshot_state(root, session_file, session)
 
 
+def auto_transition(
+    root: Path,
+    stage: str,
+    agent: str,
+    task_id: str | None = None,
+    session_file: str | Path | None = None,
+) -> dict:
+    _, _, task = resolve_current_task(root, task_id, session_file)
+    previous = str(task.get("status") or "idle")
+    task_type = str(task.get("type") or "")
+    if not is_automatic_transition(previous, stage, task_type):
+        raise StateError(f"Automatic transition is not allowed: {previous} -> {stage}.")
+
+    pending = task.get("pending_transition")
+    if isinstance(pending, dict) and (
+        pending.get("from") != previous or pending.get("to") != stage
+    ):
+        raise StateError(
+            "A different transition is already pending. Cancel it before automatic transition."
+        )
+
+    snapshot = apply_transition(root, stage, agent, task_id, session_file)
+    snapshot["action"] = "auto-transition"
+    snapshot["automatic_transition"] = {"from": previous, "to": stage}
+    return snapshot
+
+
 def confirm_transition(
     root: Path,
     agent: str,
@@ -961,6 +1414,7 @@ def confirm_transition(
     if not isinstance(pending, dict):
         raise StateError("No transition is pending user confirmation.")
     previous = str(task.get("status") or "idle")
+    task_type = str(task.get("type") or "")
     source = str(pending.get("from") or "")
     target = str(pending.get("to") or "")
     if source != previous:
@@ -969,6 +1423,10 @@ def confirm_transition(
         )
     if stage and stage != target:
         raise StateError(f"Pending transition targets {target}, not {stage}.")
+    if is_automatic_transition(source, target, task_type):
+        raise StateError(
+            f"Transition {source} -> {target} is automatic; use auto-transition instead."
+        )
 
     snapshot = apply_transition(root, target, agent, task_id, session_file)
     snapshot["action"] = "confirm-transition"
@@ -1191,7 +1649,9 @@ def record_seen_stage(
 
     violation = None
     if last_seen_task == task_id and last_seen_stage:
-        violation = validate_transition(str(last_seen_stage), stage)
+        task = load_task(root, task_id)
+        task_type = str(task.get("type") or "") if task else ""
+        violation = validate_transition(str(last_seen_stage), stage, task_type)
 
     if last_seen_task != task_id or last_seen_stage != stage:
         session["last_seen_task"] = task_id
@@ -1262,6 +1722,11 @@ def main() -> int:
     confirm_transition_parser.add_argument("--stage")
     confirm_transition_parser.add_argument("--agent", required=True)
     confirm_transition_parser.add_argument("--task-id")
+
+    auto_transition_parser = subcommands.add_parser("auto-transition", parents=[common])
+    auto_transition_parser.add_argument("--stage", required=True)
+    auto_transition_parser.add_argument("--agent", required=True)
+    auto_transition_parser.add_argument("--task-id")
 
     # Compatibility alias: pre-0.6 callers still consume the pending gate instead of bypassing it.
     transition = subcommands.add_parser("transition", parents=[common])
@@ -1381,6 +1846,15 @@ def main() -> int:
                 attach_status_context(
                     root,
                     confirm_transition(root, args.agent, args.stage, args.task_id, session_file),
+                    args.agent,
+                    session_file,
+                )
+            )
+        elif command == "auto-transition":
+            emit(
+                attach_status_context(
+                    root,
+                    auto_transition(root, args.stage, args.agent, args.task_id, session_file),
                     args.agent,
                     session_file,
                 )

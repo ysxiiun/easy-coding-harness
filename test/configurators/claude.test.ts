@@ -17,6 +17,58 @@ function hookCommand(root: string, scriptName: string): string {
   return renderHookCommand(root, PLATFORM_META["claude-code"].templateContext, scriptName);
 }
 
+async function writeReadyAnalysisArtifacts(root: string, taskId: string): Promise<void> {
+  const taskDir = path.join(root, ".easy-coding", "tasks", taskId);
+  await writeFile(
+    path.join(taskDir, "dev-spec.md"),
+    [
+      "## 技术方案：Fixture",
+      "### 项目模式",
+      "迭代项目",
+      "### 任务类型",
+      "新功能",
+      "### 需求解析",
+      "目标和边界已确认。",
+      "### 现状",
+      "证据：src/example.ts:1。",
+      "### 冲突摘要",
+      "无冲突。",
+      "### 影响面分析",
+      "仅影响 fixture。",
+      "### 改动范围",
+      "src/example.ts，保持 UTF-8。",
+      "### 修改方案",
+      "实现 fixture。",
+      "### 实施拆解",
+      "U1：实现 fixture。",
+      "### 测试策略",
+      "执行 fixture 测试。",
+      "### 风险与注意事项",
+      "无额外风险。",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  await writeFile(
+    path.join(taskDir, "execution.jsonl"),
+    `${JSON.stringify({
+      type: "plan",
+      strategy: "single",
+      units: [
+        {
+          id: "U1",
+          title: "实现 fixture",
+          type: "backend",
+          files: ["src/example.ts"],
+          depends_on: [],
+        },
+      ],
+    })}\n`,
+    "utf8",
+  );
+  await writeFile(path.join(taskDir, "test-strategy.md"), "# Test strategy\n", "utf8");
+}
+
 beforeEach(async () => {
   tempDir = await mkdtemp(path.join(os.tmpdir(), "ec-claude-"));
 });
@@ -28,6 +80,7 @@ afterEach(async () => {
 describe("configureClaude", () => {
   it("writes Claude Code skills, hooks, agents, and CLAUDE.md", async () => {
     await configureClaude(tempDir);
+    await writeRuntimeScaffold(tempDir, ["claude-code"]);
 
     const skill = await readFile(
       path.join(tempDir, ".claude", "skills", "ec-workflow", "SKILL.md"),
@@ -42,9 +95,65 @@ describe("configureClaude", () => {
     expect(skill).toContain("Plain-text numbered choices are fallback only");
     expect(skill).toContain("Current task pointer exists");
     expect(skill).toContain("No current task pointer");
+    expect(skill).toContain("treat it as an upgrade-era automatic edge");
+    expect(skill).toContain("the user may enter REVIEW or skip directly to");
+    expect(skill).toContain("missing user-visible delivery keeps");
+    expect(skill).not.toContain("before re-walking\n  REVIEW -> VERIFICATION");
     expect(skill).not.toContain("open the target agent");
     expect(skill).not.toContain("next_agent");
     expect(skill).not.toContain("{{");
+
+    const analysisSkill = await readFile(
+      path.join(tempDir, ".claude", "skills", "ec-analysis", "SKILL.md"),
+      "utf8",
+    );
+    expect(analysisSkill).toContain("Resolve the decision gate");
+    expect(analysisSkill).toContain("Do not fill dev-spec.md");
+    expect(analysisSkill).toContain("all 12 must be present");
+    expect(analysisSkill).toContain("explicitly no-code");
+    expect(analysisSkill).toContain("MUST NOT create\n   `test-strategy.md`");
+    const planExampleMatch = analysisSkill.match(/```json\n([^\n]+)\n```/);
+    expect(planExampleMatch).not.toBeNull();
+    const planExample = JSON.parse(planExampleMatch?.[1] ?? "{}") as {
+      units: Array<{ id: string; type?: string }>;
+      parallel_groups: Array<{ units: string[] }>;
+    };
+    const exampleUnitIds = planExample.units.map((unit) => unit.id).sort();
+    const groupedUnitIds = planExample.parallel_groups.flatMap((group) => group.units).sort();
+    expect(groupedUnitIds).toEqual(exampleUnitIds);
+    expect(planExample.units.every((unit) => Boolean(unit.type))).toBe(true);
+
+    const implementingSkill = await readFile(
+      path.join(tempDir, ".claude", "skills", "ec-implementing", "SKILL.md"),
+      "utf8",
+    );
+    expect(implementingSkill).toContain("output the complete `deliverable` to the user");
+    expect(implementingSkill).toContain("Never replace,\n   truncate, or hide it");
+    expect(implementingSkill).toContain("Do not request or\n  enter REVIEW, VERIFICATION, or MEMORY");
+    expect(implementingSkill).toContain("`auto-transition --stage COMPLETE`");
+
+    const implementerAgent = await readFile(
+      path.join(tempDir, ".claude", "agents", "ec-implementer.md"),
+      "utf8",
+    );
+    expect(implementerAgent).toContain("NONE — read-only deliverable");
+    expect(implementerAgent).toContain("`deliverable`");
+
+    const reviewingSkill = await readFile(
+      path.join(tempDir, ".claude", "skills", "ec-reviewing", "SKILL.md"),
+      "utf8",
+    );
+    expect(reviewingSkill).toContain("auto-complete from IMPLEMENT and never enter REVIEW");
+    expect(reviewingSkill).not.toContain("Deliverable mode");
+
+    const devSpecSkeleton = await readFile(
+      path.join(tempDir, ".easy-coding", "templates", "dev-spec-skeleton.md"),
+      "utf8",
+    );
+    expect(devSpecSkeleton.startsWith("## 技术方案：[[EC_TODO:任务标题]]")).toBe(true);
+    expect(devSpecSkeleton).toContain("[[EC_TODO:");
+    expect(devSpecSkeleton).not.toContain("[阶段：ANALYSIS]");
+    expect(devSpecSkeleton).not.toContain("### 待用户决策");
 
     const taskManagementSkill = await readFile(
       path.join(tempDir, ".claude", "skills", "ec-task-management", "SKILL.md"),
@@ -107,13 +216,19 @@ describe("configureClaude", () => {
     expect(main).toContain("`/ec-init`");
     expect(main).toContain("`/ec-meta`");
     expect(main).toContain("`pending_transition`");
-    expect(main).toContain("use the agent's native user-choice tool");
+    expect(main).toContain("free-form Other through native UI");
+    expect(main).toContain("`auto-transition`");
+    expect(main).toContain("IMPLEMENT additionally offers direct entry");
+    expect(main).toContain("read-only task creates no test-strategy.md");
+    expect(main).toContain("ask every unresolved decision during analysis");
 
     const verificationSkill = await readFile(
       path.join(tempDir, ".claude", "skills", "ec-verification", "SKILL.md"),
       "utf8",
     );
     expect(verificationSkill).toContain("request-transition --stage MEMORY");
+    expect(verificationSkill).toContain("the IMPLEMENT completion choice decides whether REVIEW");
+    expect(verificationSkill).not.toContain("then re-REVIEW");
     expect(verificationSkill).not.toContain("MEMORY_SHORT");
     expect(verificationSkill).not.toContain("MEMORY_LONG");
 
@@ -123,6 +238,7 @@ describe("configureClaude", () => {
     );
     expect(memorySkill).toContain("memory-short-complete");
     expect(memorySkill).toContain("memory-instruction");
+    expect(memorySkill).toContain("auto-transition");
     expect(memorySkill).toContain("memory-complete");
     expect(memorySkill).toContain("source_task: {current task id, exact}");
 
@@ -889,41 +1005,59 @@ describe("configureClaude", () => {
           { cwd: tempDir, encoding: "utf8" },
         );
       }
-      const requestStdout = execFileSync(
-        "python3",
-        [
-          stateApi,
-          "request-transition",
-          "--session-file",
-          sessionFile,
-          "--stage",
-          stage,
-          "--agent",
-          "claude-code",
-        ],
-        { cwd: tempDir, encoding: "utf8" },
-      );
-      const requestOutput = JSON.parse(requestStdout) as {
-        status: string;
-        pending_transition: { to: string };
-      };
-      expect(requestOutput.pending_transition.to).toBe(stage);
-      expect(requestOutput.status).not.toBe(stage);
+      let transitionStdout: string;
+      if (stage === "ANALYSIS" || stage === "COMPLETE") {
+        transitionStdout = execFileSync(
+          "python3",
+          [
+            stateApi,
+            "auto-transition",
+            "--session-file",
+            sessionFile,
+            "--stage",
+            stage,
+            "--agent",
+            "claude-code",
+          ],
+          { cwd: tempDir, encoding: "utf8" },
+        );
+      } else {
+        const requestStdout = execFileSync(
+          "python3",
+          [
+            stateApi,
+            "request-transition",
+            "--session-file",
+            sessionFile,
+            "--stage",
+            stage,
+            "--agent",
+            "claude-code",
+          ],
+          { cwd: tempDir, encoding: "utf8" },
+        );
+        const requestOutput = JSON.parse(requestStdout) as {
+          status: string;
+          pending_transition: { to: string };
+        };
+        expect(requestOutput.pending_transition.to).toBe(stage);
+        expect(requestOutput.status).not.toBe(stage);
 
-      const transitionStdout = execFileSync(
-        "python3",
-        [
-          stateApi,
-          "confirm-transition",
-          "--session-file",
-          sessionFile,
-          "--stage",
-          stage,
-          "--agent",
-          "claude-code",
-        ],
-        { cwd: tempDir, encoding: "utf8" },
-      );
+        transitionStdout = execFileSync(
+          "python3",
+          [
+            stateApi,
+            "confirm-transition",
+            "--session-file",
+            sessionFile,
+            "--stage",
+            stage,
+            "--agent",
+            "claude-code",
+          ],
+          { cwd: tempDir, encoding: "utf8" },
+        );
+      }
       const transitionOutput = JSON.parse(transitionStdout) as {
         status: string;
         status_line: string;
@@ -945,6 +1079,7 @@ describe("configureClaude", () => {
         expect(transitionOutput.status_context).toContain(
           "[easy-coding:analysis-gate:skeleton-first-then-fill]",
         );
+        await writeReadyAnalysisArtifacts(tempDir, "06-12-api");
       }
     }
 

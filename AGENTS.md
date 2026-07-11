@@ -36,10 +36,13 @@ src/
 ### Runtime State Machine (agent-side, not CLI)
 
 ```
-INIT → ANALYSIS → IMPLEMENT → REVIEW → VERIFICATION → MEMORY → COMPLETE
-          ↑            ↑          │             │
-          └── replan ───┘          └── repair ───┘
-every edge requires explicit user confirmation by default; prefer native choice UI
+INIT ─auto→ ANALYSIS → IMPLEMENT → REVIEW → VERIFICATION → MEMORY ─auto→ COMPLETE
+                                  └──────────────→ VERIFICATION
+                                  └─read-only auto────────────────────→ COMPLETE
+          ↑            ↑          │
+          └── replan ───┘          └── repair
+user-decision edges require explicit confirmation; code tasks may skip REVIEW, while validated
+read-only tasks auto-complete after IMPLEMENT without VERIFICATION or MEMORY
 ```
 
 ## Development Conventions

@@ -6,6 +6,22 @@
 - `y`：常规功能升级
 - `z`：日常 bug 修复
 
+## 0.6.1
+
+- 状态迁移按是否需要用户决策分层：`INIT → ANALYSIS` 在 INIT 工作完成后自动流转，`MEMORY → COMPLETE` 在记忆处理检查点完成后自动流转；这两条机械边不再创建 `pending_transition`，也不再展示确认或交接选项。
+- 新增受限的 `auto-transition` 状态 API，只允许上述两条自动边；其他前进、修复和重规划边继续通过 `request-transition` / `confirm-transition` 显式确认，Hook 仍保持只读。
+- IMPLEMENT 完成后允许用户选择进入 REVIEW，或明确跳过 REVIEW 直接进入 VERIFICATION；交接和 free-form Other 仍保留，跳过 REVIEW 不能绕过 VERIFICATION 硬门控。
+- ANALYSIS 改为先原样落盘无阶段标签的 dev-spec 骨架，再在分析过程中即时询问并解决技术路线、接口、范围等决策问题，最后才填充完整方案；最终报告不再包含“待用户决策”章节。
+- `ANALYSIS → IMPLEMENT` 在申请和确认迁移时都会校验完整 dev-spec 和最新有效 execution plan；代码任务还必须提供非空 test strategy，只读任务则禁止生成 `test-strategy.md`。必填章节正文、实施单元任务卡字段和并行分组均需完整，原始骨架、空章节、无界单元或缺失产物不能进入实施。
+- dev-spec 骨架使用专用 `[[EC_TODO:...]]` 占位标记，既能可靠拦截未填字段，也不会把方案中合法的 `{title}`、`{type}` 等模板文本误判为残留占位符。
+- execution plan 门禁校验依赖图无环及并行层级顺序；`doc` / `analysis` / `report` 显式无代码任务允许受限空文件范围并通过 `deliverable` 返回只读结果，代码任务仍禁止无界实施。
+- 无代码 IMPLEMENT 单元必须返回非空 `deliverable` 且不得修改文件；主 Agent 在展示摘要或迁移选项前必须向用户原样输出完整 deliverable，避免结果只留在执行日志中。
+- 无代码任务展示完整 deliverable 后直接通过受限 `IMPLEMENT → COMPLETE` 自动边结束；状态 API 会校验 single 空文件计划、匹配的 dispatch/result、零文件改动、非空 deliverable 和无遗留问题，不生成 `test-strategy.md`，不进入 REVIEW、VERIFICATION、MEMORY，也不写任务记忆。
+- 介绍页展示版本与 `package.json` 保持一致，并由版本元数据测试防止后续发布再次漂移。
+- 升级遗留的自动 `pending_transition` 在状态上下文中标记为 `auto-transition-ready`，不再错误注入用户确认提示。
+- `single` / `sequential` / `parallel` 三种执行策略统一派发子代理，仅编排形态不同；技术方案骨架不再生成“主 Agent 直接执行”的冲突指令。
+- 工作流 skills、主约束、README、设计/介绍/使用文档和状态 API 测试统一对齐新的自动边与可选 REVIEW 语义。
+
 ## 0.6.0
 
 - 状态机移除无实际工作内容的 `WAITING_CONFIRM`；阶段完成后通过 `task.json.pending_transition` 记录待确认边，状态仍停留在当前阶段，直到用户明确确认。
