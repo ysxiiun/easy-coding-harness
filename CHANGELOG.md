@@ -6,6 +6,12 @@
 - `y`：常规功能升级
 - `z`：日常 bug 修复
 
+## 0.7.1
+
+- 正式发布确认模式可见性增强：状态栏品牌名统一展示当前生效模式，例如 `**Easy Coding [Auto]**`，覆盖 Ready、Waiting init、活动任务和 Handoff 场景；机器 breadcrumb 与 no-harness 行为保持不变。
+- `ec-task-management` 默认面板始终展示项目模式、session 覆盖和最终生效模式，并支持通过对话设置或清除当前 session 覆盖。
+- 汇总 `0.7.1-beta0` 与 `0.7.1-beta1` 的验证结果，Claude、Codex、Qoder 主约束、安装测试、状态 API 回归测试和使用示例均已对齐。
+
 ## 0.7.1-beta1
 
 - 状态栏品牌名展示当前生效确认模式，例如 `**Easy Coding [Auto]**`；项目级 `behavior.confirm_mode` 与 session 覆盖仍沿用既有优先级，Ready、Waiting init、活动任务和 Handoff 使用同一格式。
