@@ -440,7 +440,7 @@
         <p class="tagline">给 AI 编程套上一套工作流规范——让它有章可循，而不是全凭 agent 当时的发挥。</p>
         <div class="chip-row">
           <span class="chip">固定阶段状态机</span>
-          <span class="chip">approve / guard / auto 确认模式</span>
+          <span class="chip">approve / guard / lite / auto 确认模式</span>
           <span class="chip">子代理隔离上下文</span>
           <span class="chip">项目记忆分层</span>
           <span class="chip">一份模板 · 三平台</span>
@@ -448,7 +448,7 @@
         </div>
         <div class="meta">
           <span>来源：<code>docs/introduction.md</code></span>
-          <span>版本：<code>0.7.1</code></span>
+          <span>版本：<code>0.8.0-beta.0</code></span>
           <span>适配：Claude Code · Codex · Qoder</span>
         </div>
       </header>
@@ -499,7 +499,7 @@
             <div class="idea-card">
               <div class="num">2</div>
               <h3>人机共创，关键节点设硬门控</h3>
-              <p>状态边由 <code>approve</code>、<code>guard</code>（默认）、<code>auto</code> 控制，session 可覆盖项目配置。自动代码主链默认进入 REVIEW，所有模式都保留 VERIFICATION 与产物门控。</p>
+              <p>状态边由 <code>approve</code>、<code>guard</code>（默认）、<code>lite</code>、<code>auto</code> 控制，session 可覆盖项目配置。guard/auto 的代码主链进入 REVIEW，lite 直接进入 VERIFICATION；所有模式都保留 VERIFICATION 与产物门控。</p>
             </div>
             <div class="idea-card">
               <div class="num">3</div>
@@ -540,7 +540,7 @@
             <div class="loops">
               <div class="loop-item"><span class="loop-tag">repair loop</span><span>审查或验证发现问题，回到 IMPLEMENT 重新实现。</span></div>
               <div class="loop-item"><span class="loop-tag">replan</span><span>需要重新对齐方案时，确认后回到 ANALYSIS。</span></div>
-              <div class="loop-item"><span class="loop-tag mem">confirm mode</span><span>approve 逐边确认，guard 只把关两个关键边，auto 自动执行全部合法工作流边；关闭任务始终要求显式操作。</span></div>
+              <div class="loop-item"><span class="loop-tag mem">confirm mode</span><span>approve 逐边确认，guard 与 lite 只把关两个关键边，lite 跳过 REVIEW，auto 自动执行全部合法工作流边；关闭任务始终要求显式操作。</span></div>
             </div>
           </div>
 
@@ -555,7 +555,7 @@
                  +-- replan ---+          +--- fix -----+
                               ^                         |
                               +------- repair ----------+
-edge behavior --[approve / guard / auto]--> target stage</code></pre>
+edge behavior --[approve / guard / lite / auto]--> target stage</code></pre>
           </details>
 
           <h3>一份模板，喂三个平台</h3>

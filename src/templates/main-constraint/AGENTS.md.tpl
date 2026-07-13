@@ -11,13 +11,13 @@ user in the user's language.
 Start every work reply with the single Markdown blockquote status line injected by the hook,
 then a blank line. Do not render the machine breadcrumbs to the user.
 
-`{confirm-mode}` is the capitalized effective mode (`Approve`, `Guard`, or `Auto`); a session
+`{confirm-mode}` is the capitalized effective mode (`Approve`, `Guard`, `Lite`, or `Auto`); a session
 override takes precedence over the project mode.
 
-- Ready: > **Easy Coding [{confirm-mode}]** · Ready · Use `ec-workflow` to start or resume a task, `ec-brainstorming` to brainstorm, or `ec-task-management` to manage tasks or session settings
-- Waiting init: > **Easy Coding [{confirm-mode}]** · Waiting init · Use `ec-init` to initialize
-- Active task: > **Easy Coding [{confirm-mode}]** · `{current-task}` · `{workflow-state}`
-- Handoff: > **Easy Coding [{confirm-mode}]** · `{current-task}` · `{workflow-state}` · Handoff -> `{source-agent}`
+- Ready: > **Easy Coding** · **{confirm-mode}** · Ready · Use `ec-workflow` to start or resume a task, `ec-brainstorming` to brainstorm, or `ec-task-management` to manage tasks or session settings
+- Waiting init: > **Easy Coding** · **{confirm-mode}** · Waiting init · Use `ec-init` to initialize
+- Active task: > **Easy Coding** · **{confirm-mode}** · `{current-task}` · `{workflow-state}`
+- Handoff: > **Easy Coding** · **{confirm-mode}** · `{current-task}` · `{workflow-state}` · Handoff -> `{source-agent}`
 
 Skill names in the status line are bare names (`ec-init`, `ec-workflow`) and never include
 platform prefixes such as `/` or `$`. If no status line is injected, do not invent one.
@@ -41,9 +41,9 @@ First run `ec-init`; daily work goes through `ec-workflow`.
 
 - Effective confirm mode is session override > project `behavior.confirm_mode` > `guard`.
   `approve` confirms every legal edge except INIT -> ANALYSIS and MEMORY -> COMPLETE; `guard`
-  confirms only ANALYSIS -> IMPLEMENT and VERIFICATION -> MEMORY; `auto` confirms none.
-  Automatic code flow chooses IMPLEMENT -> REVIEW. Confirmation mode never changes scope,
-  delivery form, evidence gates, or the legal transition graph.
+  and `lite` confirm only ANALYSIS -> IMPLEMENT and VERIFICATION -> MEMORY; `auto` confirms none.
+  Guard/auto code flow chooses IMPLEMENT -> REVIEW; lite chooses IMPLEMENT -> VERIFICATION and
+  never runs REVIEW. Confirmation mode never changes scope, delivery form, or evidence gates.
 - Confirmation-required edges use `pending_transition`; automatic edges use the restricted
   `auto-transition` API. A read-only task creates no test-strategy.md, never enters REVIEW,
   VERIFICATION, or MEMORY, and writes no task memory.

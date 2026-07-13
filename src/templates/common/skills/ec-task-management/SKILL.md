@@ -23,7 +23,7 @@ panel", not just the unfinished task list. On every invocation:
    - `session_confirm_mode` (`project default` when null)
    - `effective_confirm_mode`
 4. Show the supported conversational changes in the user's language: set this session to
-   `approve`, `guard`, or `auto`, and restore the project default.
+   `approve`, `guard`, `lite`, or `auto`, and restore the project default.
 
 Never omit the confirm-mode section, even when the unfinished task list is empty. A bare panel
 invocation is read-only: do not set or clear the session override until the user explicitly asks
@@ -87,20 +87,22 @@ Use the snapshot already required by the default panel and show:
 - `session_confirm_mode` (`project default` when null)
 - `effective_confirm_mode`
 
-When the user asks to change the current session, use native choice UI when available and offer
-exactly `approve`, `guard` (recommended default), and `auto`. The native free-form Other input
-may receive `restore project default`; do not invent a fourth button when the UI is limited to
-three choices.
+When the user asks to change the current session, use native choice UI when available. When the
+UI is limited to three choices, offer `guard` (recommended default), `lite`, and `auto`; accept
+`approve` or `restore project default` through the native free-form Other input. A text fallback
+must list all four modes and the restore action.
 
 Set an override through the state API, never by editing the session JSON:
-`{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py set-confirm-mode --session-file <P> --mode <approve|guard|auto> --agent <agent-id>`.
+`{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py set-confirm-mode --session-file <P> --mode <approve|guard|lite|auto> --agent <agent-id>`.
 
 Restore project configuration through:
 `{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py clear-confirm-mode --session-file <P> --agent <agent-id>`.
 
 Use the returned snapshot as authoritative and report the effective mode. Preserve any existing
 `pending_transition`; when it becomes automatic, ec-workflow consumes its original target via
-`auto-transition` instead of losing the completed stage outcome.
+`auto-transition` instead of losing the completed stage outcome. The exception is an existing
+IMPLEMENT -> REVIEW edge after switching to lite: ec-workflow must cancel it and automatically
+enter VERIFICATION because lite never runs REVIEW.
 
 ## Boundaries
 

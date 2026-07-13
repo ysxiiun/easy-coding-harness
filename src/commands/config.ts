@@ -55,6 +55,11 @@ export async function config(): Promise<void> {
         hint: "ANALYSIS -> IMPLEMENT and VERIFICATION -> MEMORY",
       },
       {
+        value: "lite",
+        label: "lite — guard gates without code review",
+        hint: "IMPLEMENT -> VERIFICATION",
+      },
+      {
         value: "auto",
         label: "auto — advance workflow stages automatically",
         hint: "task closure remains explicit",

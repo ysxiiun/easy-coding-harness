@@ -268,7 +268,7 @@ describe("upgrade command", () => {
       input: "{}",
       encoding: "utf8",
     });
-    expect(stdout).toContain(`> **Easy Coding [Guard]** · Waiting init · Upgrade to v${VERSION}`);
+    expect(stdout).toContain(`> **Easy Coding** · **Guard** · Waiting init · Upgrade to v${VERSION}`);
     expect(stdout).toContain(`[easy-coding:upgrade-init-pending:${VERSION}]`);
 
     const task = JSON.parse(
@@ -350,6 +350,21 @@ describe("upgrade command", () => {
     expect(migrated).toContain("confirm_mode: auto");
     expect(migrated).not.toContain("strict_confirm");
     expect(migrated).not.toContain("auto_mode");
+  });
+
+  it("preserves lite confirm mode while refreshing the harness version", async () => {
+    await init({ agent: "codex" });
+    const configPath = path.join(tempDir, ".easy-coding", "config.yaml");
+    const liteConfig = (await readFile(configPath, "utf8"))
+      .replace("confirm_mode: guard", "confirm_mode: lite")
+      .replace(/harness_version: .+/, "harness_version: 0.7.1");
+    await writeFile(configPath, liteConfig, "utf8");
+
+    await upgrade({ yes: true });
+
+    const upgraded = await readFile(configPath, "utf8");
+    expect(upgraded).toContain(`harness_version: ${VERSION}`);
+    expect(upgraded).toContain("confirm_mode: lite");
   });
 
   it("normalizes an equal-core prerelease harness version to the exact CLI version", async () => {

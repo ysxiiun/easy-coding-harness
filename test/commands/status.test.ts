@@ -9,7 +9,7 @@ let tempDir: string;
 let originalCwd: string;
 let logSpy: ReturnType<typeof vi.spyOn>;
 
-async function writeConfig(harnessVersion: string): Promise<void> {
+async function writeConfig(harnessVersion: string, confirmMode = "guard"): Promise<void> {
   await writeFile(
     path.join(tempDir, ".easy-coding", "config.yaml"),
     [
@@ -21,7 +21,7 @@ async function writeConfig(harnessVersion: string): Promise<void> {
       "  id: ec-status-test",
       "  name: status-test",
       "behavior:",
-      "  confirm_mode: guard",
+      `  confirm_mode: ${confirmMode}`,
       "",
     ].join("\n"),
     "utf8",
@@ -62,5 +62,14 @@ describe("status command", () => {
     await status();
 
     expect(output()).toContain("upgrade: up to date");
+  });
+
+  it("reports lite as the project and effective confirm mode", async () => {
+    await writeConfig(VERSION, "lite");
+
+    await status();
+
+    expect(output()).toContain("confirm_mode: lite");
+    expect(output()).toContain("effective_confirm_mode: lite");
   });
 });

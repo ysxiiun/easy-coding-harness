@@ -76,7 +76,7 @@ INIT --[always auto]--> ANALYSIS -> IMPLEMENT -> REVIEW -> VERIFICATION -> MEMOR
                  +-- replan ---+          +--- fix -----+
                               ^                         |
                               +------- repair ----------+
-edge behavior --[effective confirm mode: approve / guard / auto]--> target stage
+edge behavior --[effective confirm mode: approve / guard / lite / auto]--> target stage
 any stage --[user abort via ec-task-close]--> CLOSED
 ```
 
@@ -84,7 +84,7 @@ any stage --[user abort via ec-task-close]--> CLOSED
 |---|---|---|---|
 | INIT | ec-workflow | collect context, settle scope AND delivery form (change code vs. produce a document) | work complete; auto-transition to ANALYSIS |
 | ANALYSIS | ec-analysis | dev-spec + execution plan; code tasks also get test strategy | mode-aware transition to IMPLEMENT |
-| IMPLEMENT | ec-implementing | code changes or one read-only deliverable | code defaults to REVIEW when automatic; approve may choose VERIFICATION |
+| IMPLEMENT | ec-implementing | code changes or one read-only deliverable | guard/auto default to REVIEW; lite enters VERIFICATION; approve chooses |
 | REVIEW | ec-reviewing | multi-dimension code review | verdict selects a legal mode-aware target |
 | VERIFICATION | ec-verification | hard gate: lint/typecheck/test + coverage | mode-aware transition to MEMORY or IMPLEMENT |
 | MEMORY | ec-memory | write short memory, then run the conditional long-memory gate | memory work complete; auto-transition to COMPLETE |
@@ -120,8 +120,9 @@ it, routing matches, and switching happens again.
 
 - **Code tasks may skip only REVIEW.** ANALYSIS cannot jump to VERIFICATION and code tasks never
   skip VERIFICATION. In `guard` and `auto`, an automatic code path chooses REVIEW as the default
-  successor to IMPLEMENT. In `approve`, the user may explicitly choose REVIEW or skip it and
-  enter VERIFICATION.
+  successor to IMPLEMENT. In `lite`, IMPLEMENT must enter VERIFICATION directly and the state
+  API rejects IMPLEMENT -> REVIEW. In `approve`, the user may explicitly choose REVIEW or skip
+  it and enter VERIFICATION.
 - **Resolve the effective confirm mode first.** Read `[easy-coding:confirm-mode:X]` or the state
   API snapshot. Session mode overrides project `behavior.confirm_mode`; missing project
   configuration defaults to `guard`.
@@ -130,11 +131,16 @@ it, routing matches, and switching happens again.
   - `guard` (default): only ANALYSIS -> IMPLEMENT and VERIFICATION -> MEMORY require explicit
     confirmation. Every other legal edge uses `auto-transition` after its owner selects the
     evidence-backed target.
+  - `lite`: uses the same two confirmation gates as guard, but code IMPLEMENT automatically
+    enters VERIFICATION and never dispatches REVIEW.
   - `auto`: every legal edge uses `auto-transition`.
   `ec-task-close` remains an explicit user abort and is not triggered by confirm mode.
 - **Confirmation policy changes prompts, not evidence.** No mode chooses product scope,
-  delivery form, API contracts, or risk decisions for the user. No mode bypasses dev-spec,
-  execution, review, verification, or memory checkpoints.
+  delivery form, API contracts, or risk decisions for the user. Lite intentionally omits REVIEW;
+  every mode still preserves its applicable dev-spec, execution, verification, and memory gates.
+- **Lite pending-edge compatibility.** If the status context contains
+  `[easy-coding:lite-review-bypass-required:IMPLEMENT->REVIEW]`, cancel that stale pending edge,
+  then call `auto-transition --stage VERIFICATION`. Never consume or re-request REVIEW in lite.
 - **Always-automatic mechanical edges.** After INIT work completes, call `auto-transition` for
   ANALYSIS. After `memory-complete`, call `auto-transition` for COMPLETE. These two edges never
   create `pending_transition` in any mode.
@@ -183,7 +189,7 @@ it, routing matches, and switching happens again.
   A summary or execution.jsonl record is not a substitute; missing user-visible delivery keeps
   the task in IMPLEMENT. The execution log must contain a matching `dispatch` immediately before
   the accepted result for that unit. After delivery, use `request-transition` in approve mode
-  or `auto-transition` in guard/auto mode for COMPLETE; do not enter REVIEW, VERIFICATION, or
+  or `auto-transition` in guard/lite/auto mode for COMPLETE; do not enter REVIEW, VERIFICATION, or
   MEMORY and do not write memory.
 - **On an automatic edge** call:
   `{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py auto-transition --session-file <P> --stage <TARGET> --agent <agent-id>`.
@@ -206,14 +212,15 @@ it, routing matches, and switching happens again.
 - **Repair loop sizing** (after VERIFICATION): a trivial tweak may be fixed inside
   VERIFICATION and re-verified without a status change; a logic or structure change selects
   VERIFICATION -> IMPLEMENT and follows the effective mode. After repair, approve mode presents
-  the IMPLEMENT choice again; guard/auto follow the default REVIEW path.
+  the IMPLEMENT choice again; guard/auto follow the default REVIEW path, while lite returns
+  directly to VERIFICATION.
 - **Scope guard** (repair loop): if the user's fix request falls outside the dev-spec scope
   (features or files absent from the change-scope table), say so explicitly and propose a
   new task with `spawned_from` set to the current task id. Never silently absorb scope creep.
 - **Task switching is allowed at any stage.** The suspended task retains its stage in
   task.json. Do not run memory flows for suspended tasks — only completed tasks get archived.
 - **Archive only after the configured acceptance gate.** VERIFICATION passing does not complete
-  the task. A green gate requests VERIFICATION -> MEMORY in approve/guard, or advances
+  the task. A green gate requests VERIFICATION -> MEMORY in approve/guard/lite, or advances
   automatically in auto. After entry, MEMORY writes one short entry first, records it through `memory-short-complete`,
   then asks the state API for the authoritative `memory` instruction. `action == "no-op"`
   skips long-memory reads/writes; `action == "distill"` processes exactly `trim_count` older
@@ -228,6 +235,7 @@ it, routing matches, and switching happens again.
 Hook breadcrumbs you may receive: `[workflow-state:X]`, `[current-task:Y]`,
 `[easy-coding:session-file:P]`, `[easy-coding:confirm-mode:M]`,
 `[easy-coding:handoff-from:Z]`,
+`[easy-coding:lite-review-bypass-required:IMPLEMENT->REVIEW]`,
 `[easy-coding:init-required]`.
 
 Resuming an active task (whether from session restart, claim, handoff, or task switch):
@@ -236,12 +244,14 @@ Resuming an active task (whether from session restart, claim, handoff, or task s
    records tell you exactly where work stopped.
 3. If the task was claimed from another agent, read the latest `handoff` record first for the
    fast summary and tell the user which previous agent handed it off.
-4. If `pending_transition` exists, do not rerun the completed stage action. Compare the stored
-   edge with `effective_confirm_mode`. If the edge is now automatic, call `auto-transition` for
-   its stored target; otherwise re-present the confirmation/handoff/Other choices. For a
-   read-only task in IMPLEMENT, cancel any stale REVIEW/VERIFICATION edge before the terminal
-   check below. At an approve-mode IMPLEMENT boundary for a code task, re-present the special
-   REVIEW / skip to VERIFICATION / handoff choices.
+4. If `pending_transition` exists, do not rerun the completed stage action. Handle
+   `[easy-coding:lite-review-bypass-required:IMPLEMENT->REVIEW]` before the generic pending-edge
+   rule: call `cancel-transition`, then `auto-transition --stage VERIFICATION`. Otherwise compare
+   the stored edge with `effective_confirm_mode`. If the edge is now automatic, call
+   `auto-transition` for its stored target; otherwise re-present the confirmation/handoff/Other
+   choices. For a read-only task in IMPLEMENT, cancel any stale REVIEW/VERIFICATION edge before
+   the terminal check below. At an approve-mode IMPLEMENT boundary for a code task, re-present
+   the special REVIEW / skip to VERIFICATION / handoff choices.
 5. If a read-only task resumes in IMPLEMENT with a valid successful result, output its complete
    deliverable again and follow the effective mode to COMPLETE. Otherwise tell the user what is
    being resumed and from which stage, then continue.

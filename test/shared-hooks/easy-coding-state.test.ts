@@ -155,7 +155,7 @@ async function writeMemoryConfig(shortTermMax: number, shortTermKeep: number): P
   );
 }
 
-async function writeConfirmModeConfig(mode: "approve" | "guard" | "auto"): Promise<void> {
+async function writeConfirmModeConfig(mode: "approve" | "guard" | "lite" | "auto"): Promise<void> {
   await mkdir(path.join(tempDir, ".easy-coding"), { recursive: true });
   await writeFile(
     path.join(tempDir, ".easy-coding", "config.yaml"),
@@ -484,7 +484,7 @@ describe("easy_coding_state.py MEMORY instruction", () => {
       kept_files: [".easy-coding/memory/short/001_20260623_item-1.md"],
       checkpoint_disposition: "kept",
     });
-    expect(snapshot.status_line).toContain("> **Easy Coding [Guard]** · `06-23-memory` · `MEMORY`");
+    expect(snapshot.status_line).toContain("> **Easy Coding** · **Guard** · `06-23-memory` · `MEMORY`");
     expect(snapshot.status_context).toContain("[workflow-state:MEMORY]");
   });
 
@@ -511,7 +511,7 @@ describe("easy_coding_state.py MEMORY instruction", () => {
       ),
       checkpoint_disposition: "kept",
     });
-    expect(snapshot.status_line).toContain("> **Easy Coding [Guard]** · `06-23-memory` · `MEMORY`");
+    expect(snapshot.status_line).toContain("> **Easy Coding** · **Guard** · `06-23-memory` · `MEMORY`");
     expect(snapshot.status_context).toContain("[workflow-state:MEMORY]");
 
     for (let index = 1; index <= 7; index += 1) {
@@ -1509,7 +1509,7 @@ describe("easy_coding_state.py automatic and optional transitions", () => {
     expect(output.session_confirm_mode).toBe("auto");
     expect(output.effective_confirm_mode).toBe("auto");
     expect(output.status_line).toContain(
-      "> **Easy Coding [Auto]** · `07-11-session-auto` · `IMPLEMENT`",
+      "> **Easy Coding** · **Auto** · `07-11-session-auto` · `IMPLEMENT`",
     );
   });
 
@@ -1538,11 +1538,59 @@ describe("easy_coding_state.py automatic and optional transitions", () => {
     expect(output.status).toBe("REVIEW");
     expect(output.effective_confirm_mode).toBe("guard");
     expect(output.status_line).toContain(
-      "> **Easy Coding [Guard]** · `07-11-guard-review` · `REVIEW`",
+      "> **Easy Coding** · **Guard** · `07-11-guard-review` · `REVIEW`",
     );
   });
 
-  it.each(["approve", "guard", "auto"] as const)(
+  it("automatically follows IMPLEMENT to VERIFICATION and rejects REVIEW in lite mode", async () => {
+    await writeConfirmModeConfig("lite");
+    await writeSessionFixture("07-13-lite-verification");
+    await writeTaskFixture("07-13-lite-verification", "IMPLEMENT", "codex");
+
+    const reviewResult = spawnSync(
+      "python3",
+      [
+        stateApiPath(),
+        "auto-transition",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--stage",
+        "REVIEW",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    expect(reviewResult.status).toBe(1);
+    expect(reviewResult.stderr).toContain(
+      "LITE MODE TRANSITION: IMPLEMENT -> REVIEW is disabled",
+    );
+
+    const output = JSON.parse(
+      execFileSync(
+        "python3",
+        [
+          stateApiPath(),
+          "auto-transition",
+          "--session-file",
+          ".easy-coding/sessions/test.json",
+          "--stage",
+          "VERIFICATION",
+          "--agent",
+          "codex",
+        ],
+        { cwd: tempDir, encoding: "utf8" },
+      ),
+    ) as { status: string; effective_confirm_mode: string; status_line: string };
+
+    expect(output.status).toBe("VERIFICATION");
+    expect(output.effective_confirm_mode).toBe("lite");
+    expect(output.status_line).toContain(
+      "> **Easy Coding** · **Lite** · `07-13-lite-verification` · `VERIFICATION`",
+    );
+  });
+
+  it.each(["approve", "guard", "lite", "auto"] as const)(
     "shows the effective %s mode in the Ready status line",
     async (mode) => {
       await writeConfirmModeConfig("guard");
@@ -1567,7 +1615,7 @@ describe("easy_coding_state.py automatic and optional transitions", () => {
 
       expect(output.effective_confirm_mode).toBe(mode);
       expect(output.status_line).toContain(
-        `> **Easy Coding [${mode[0].toUpperCase()}${mode.slice(1)}]** · Ready`,
+        `> **Easy Coding** · **${mode[0].toUpperCase()}${mode.slice(1)}** · Ready`,
       );
     },
   );
@@ -1630,6 +1678,43 @@ describe("easy_coding_state.py automatic and optional transitions", () => {
     expect(transitioned.pending_transition).toBeNull();
   });
 
+  it("marks a pending REVIEW edge for bypass after switching to lite mode", async () => {
+    await writeConfirmModeConfig("approve");
+    await writeSessionFixture("07-13-lite-mode-change");
+    await writeTaskFixture("07-13-lite-mode-change", "IMPLEMENT", "codex", {
+      pending_transition: {
+        from: "IMPLEMENT",
+        to: "REVIEW",
+        requested_at: "2026-07-13T00:00:00Z",
+        requested_by: "codex",
+      },
+    });
+
+    const output = JSON.parse(
+      execFileSync(
+        "python3",
+        [
+          stateApiPath(),
+          "set-confirm-mode",
+          "--session-file",
+          ".easy-coding/sessions/test.json",
+          "--mode",
+          "lite",
+          "--agent",
+          "codex",
+        ],
+        { cwd: tempDir, encoding: "utf8" },
+      ),
+    ) as { status_context: string };
+
+    expect(output.status_context).toContain(
+      "[easy-coding:lite-review-bypass-required:IMPLEMENT->REVIEW]",
+    );
+    expect(output.status_context).not.toContain(
+      "[easy-coding:auto-transition-ready:IMPLEMENT->REVIEW]",
+    );
+  });
+
   it("bypasses only harness context for the current session and preserves task state", async () => {
     await writeSessionFixture("07-11-native-session");
     await writeTaskFixture("07-11-native-session", "IMPLEMENT", "codex");
@@ -1681,32 +1766,36 @@ describe("easy_coding_state.py automatic and optional transitions", () => {
     expect(enabled.harness_disabled).toBe(false);
   });
 
-  it("keeps the two guard gates confirmation-required", async () => {
-    await writeSessionFixture("07-11-no-auto-bypass");
-    await writeTaskFixture("07-11-no-auto-bypass", "ANALYSIS", "codex");
+  it.each(["guard", "lite"] as const)(
+    "keeps the two %s gates confirmation-required",
+    async (confirmMode) => {
+      await writeConfirmModeConfig(confirmMode);
+      await writeSessionFixture(`07-11-no-auto-bypass-${confirmMode}`);
+      await writeTaskFixture(`07-11-no-auto-bypass-${confirmMode}`, "ANALYSIS", "codex");
 
-    const result = spawnSync(
-      "python3",
-      [
-        stateApiPath(),
-        "auto-transition",
-        "--session-file",
-        ".easy-coding/sessions/test.json",
-        "--stage",
-        "IMPLEMENT",
-        "--agent",
-        "codex",
-      ],
-      { cwd: tempDir, encoding: "utf8" },
-    );
+      const result = spawnSync(
+        "python3",
+        [
+          stateApiPath(),
+          "auto-transition",
+          "--session-file",
+          ".easy-coding/sessions/test.json",
+          "--stage",
+          "IMPLEMENT",
+          "--agent",
+          "codex",
+        ],
+        { cwd: tempDir, encoding: "utf8" },
+      );
 
-    expect(result.status).toBe(1);
-    expect(result.stderr).toContain(
-      "Automatic transition is not allowed in guard mode: ANALYSIS -> IMPLEMENT",
-    );
-  });
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(
+        `Automatic transition is not allowed in ${confirmMode} mode: ANALYSIS -> IMPLEMENT`,
+      );
+    },
+  );
 
-  it.each(["guard", "auto"] as const)(
+  it.each(["guard", "lite", "auto"] as const)(
     "does not allow %s mode to auto-close a task",
     async (confirmMode) => {
       await writeConfirmModeConfig(confirmMode);

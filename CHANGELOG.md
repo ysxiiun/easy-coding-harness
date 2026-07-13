@@ -6,6 +6,13 @@
 - `y`：常规功能升级
 - `z`：日常 bug 修复
 
+## 0.8.0-beta.0
+
+- 新增 `lite` 确认模式：确认门与 `guard` 相同，仍在 `ANALYSIS → IMPLEMENT` 和 `VERIFICATION → MEMORY` 等待用户确认，但代码任务跳过 REVIEW，直接从 IMPLEMENT 进入 VERIFICATION。
+- Lite 模式在状态 API 层禁止 `IMPLEMENT → REVIEW`；切换模式时若存在遗留 REVIEW 待流转边，工作流会取消旧边并改走 VERIFICATION，避免旧状态绕过 Lite 语义。
+- 状态栏将品牌与生效模式拆分显示，例如 `**Easy Coding** · **Lite**`；任务名、工作流状态和 Handoff agent 继续保留行内代码背景。
+- Claude、Codex、Qoder 主约束、阶段 skills、配置入口、文档与回归测试同步支持四种确认模式。
+
 ## 0.7.1
 
 - 正式发布确认模式可见性增强：状态栏品牌名统一展示当前生效模式，例如 `**Easy Coding [Auto]**`，覆盖 Ready、Waiting init、活动任务和 Handoff 场景；机器 breadcrumb 与 no-harness 行为保持不变。

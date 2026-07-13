@@ -67,14 +67,14 @@ afterEach(async () => {
 
 describe("config command", () => {
   it("interactively updates the project confirm mode", async () => {
-    promptMocks.select.mockResolvedValue("auto");
+    promptMocks.select.mockResolvedValue("lite");
     promptMocks.confirm.mockResolvedValue(true);
 
     await config();
 
-    expect(await readFile(configPath, "utf8")).toContain("confirm_mode: auto");
+    expect(await readFile(configPath, "utf8")).toContain("confirm_mode: lite");
     expect(promptMocks.outro).toHaveBeenCalledWith(
-      expect.stringContaining("Project confirm mode updated to auto"),
+      expect.stringContaining("Project confirm mode updated to lite"),
     );
   });
 

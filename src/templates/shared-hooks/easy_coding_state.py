@@ -50,12 +50,13 @@ ALWAYS_AUTO_TRANSITIONS = {
 }
 READ_ONLY_COMPLETION_TRANSITION = ("IMPLEMENT", "COMPLETE")
 NO_CODE_TASK_TYPES = {"analysis", "doc", "report"}
-CONFIRM_MODES = {"approve", "guard", "auto"}
+CONFIRM_MODES = {"approve", "guard", "lite", "auto"}
 DEFAULT_CONFIRM_MODE = "guard"
-GUARD_CONFIRM_TRANSITIONS = {
+CRITICAL_CONFIRM_TRANSITIONS = {
     ("ANALYSIS", "IMPLEMENT"),
     ("VERIFICATION", "MEMORY"),
 }
+LITE_SKIPPED_TRANSITION = ("IMPLEMENT", "REVIEW")
 
 LEGACY_STAGE_MAP = {
     "WAITING_CONFIRM": "ANALYSIS",
@@ -198,7 +199,7 @@ def read_project_confirm_mode(root: Path) -> str:
         if mode not in CONFIRM_MODES:
             raise StateError(
                 "Invalid behavior.confirm_mode in .easy-coding/config.yaml: "
-                "expected approve, guard, or auto."
+                "expected approve, guard, lite, or auto."
             )
         return mode
     return DEFAULT_CONFIRM_MODE
@@ -208,7 +209,7 @@ def resolve_confirm_mode(root: Path, session: dict) -> tuple[str, str | None, st
     project_mode = read_project_confirm_mode(root)
     session_mode = session.get("confirm_mode")
     if session_mode is not None and session_mode not in CONFIRM_MODES:
-        raise StateError("Invalid session confirm_mode: expected approve, guard, or auto.")
+        raise StateError("Invalid session confirm_mode: expected approve, guard, lite, or auto.")
     effective_mode = str(session_mode or project_mode)
     return project_mode, str(session_mode) if session_mode else None, effective_mode
 
@@ -950,11 +951,21 @@ def transition_requires_confirmation(
         return True
     if confirm_mode == "auto":
         return False
-    if confirm_mode == "guard":
-        return (previous, current) in GUARD_CONFIRM_TRANSITIONS
+    if confirm_mode in {"guard", "lite"}:
+        return (previous, current) in CRITICAL_CONFIRM_TRANSITIONS
     if confirm_mode == "approve":
         return True
     raise StateError(f"Unknown confirm mode: {confirm_mode}")
+
+
+def validate_confirm_mode_transition(
+    previous: str,
+    current: str,
+    confirm_mode: str,
+) -> str | None:
+    if confirm_mode == "lite" and (previous, current) == LITE_SKIPPED_TRANSITION:
+        return "LITE MODE TRANSITION: IMPLEMENT -> REVIEW is disabled; use IMPLEMENT -> VERIFICATION."
+    return None
 
 
 def is_automatic_transition(
@@ -1040,7 +1051,7 @@ def build_status_line(
     session_file: str | Path | None = None,
 ) -> str:
     state = snapshot_state(root, session_file, session)
-    status_brand = f"> **Easy Coding [{str(state['effective_confirm_mode']).capitalize()}]**"
+    status_brand = f"> **Easy Coding** · **{str(state['effective_confirm_mode']).capitalize()}**"
     task_id = state["current_task"]
     if task_id:
         status = str(state["status"])
@@ -1096,7 +1107,15 @@ def build_machine_breadcrumbs(
             if target:
                 lines.append(f"[easy-coding:pending-transition:{source}->{target}]")
                 task_type = str(task.get("type") or "") if task else ""
-                if is_automatic_transition(
+                # A mode switch can leave a REVIEW edge that lite must bypass instead of consume.
+                mode_violation = validate_confirm_mode_transition(
+                    source,
+                    target,
+                    str(state["effective_confirm_mode"]),
+                )
+                if mode_violation:
+                    lines.append(f"[easy-coding:lite-review-bypass-required:{source}->{target}]")
+                elif is_automatic_transition(
                     source,
                     target,
                     task_type,
@@ -1257,7 +1276,7 @@ def set_session_confirm_mode(
     session_file: str | Path | None = None,
 ) -> dict:
     if mode not in CONFIRM_MODES:
-        raise StateError("Invalid confirm mode: expected approve, guard, or auto.")
+        raise StateError("Invalid confirm mode: expected approve, guard, lite, or auto.")
     session = ensure_session(root, session_file)
     session["confirm_mode"] = mode
     session["last_agent"] = agent
@@ -1446,6 +1465,9 @@ def request_transition(
     violation = validate_transition(previous, stage, task_type)
     if violation:
         raise StateError(violation)
+    mode_violation = validate_confirm_mode_transition(previous, stage, confirm_mode)
+    if mode_violation:
+        raise StateError(mode_violation)
     if is_automatic_transition(previous, stage, task_type, confirm_mode):
         raise StateError(
             f"Transition {previous} -> {stage} is automatic in {confirm_mode} mode; "
@@ -1488,9 +1510,13 @@ def apply_transition(
 
     previous = str(task.get("status") or "idle")
     task_type = str(task.get("type") or "")
+    confirm_mode = resolve_confirm_mode(root, session)[2]
     violation = validate_transition(previous, stage, task_type)
     if violation:
         raise StateError(violation)
+    mode_violation = validate_confirm_mode_transition(previous, stage, confirm_mode)
+    if mode_violation:
+        raise StateError(mode_violation)
     if previous == "ANALYSIS" and stage == "IMPLEMENT":
         validate_analysis_readiness(root, resolved_task_id)
     if previous == "MEMORY" and stage == "COMPLETE":
@@ -1571,6 +1597,9 @@ def confirm_transition(
         )
     if stage and stage != target:
         raise StateError(f"Pending transition targets {target}, not {stage}.")
+    mode_violation = validate_confirm_mode_transition(source, target, confirm_mode)
+    if mode_violation:
+        raise StateError(mode_violation)
     if is_automatic_transition(source, target, task_type, confirm_mode):
         raise StateError(
             f"Transition {source} -> {target} is automatic in {confirm_mode} mode; "

@@ -69,9 +69,9 @@ describe("config-yaml", () => {
   });
 
   it("writes an explicit confirm mode without restoring legacy keys", async () => {
-    await setConfirmMode(configPath, "auto");
+    await setConfirmMode(configPath, "lite");
     const content = await readFile(configPath, "utf8");
-    expect(content).toContain("confirm_mode: auto");
+    expect(content).toContain("confirm_mode: lite");
     expect(content).not.toContain("strict_confirm");
     expect(content).not.toContain("auto_mode");
   });

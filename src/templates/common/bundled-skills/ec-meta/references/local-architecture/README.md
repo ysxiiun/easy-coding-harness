@@ -47,8 +47,9 @@ analysis, workflow operation). The CLI never analyzes the project.
 (user abort, no memory flow). INIT → ANALYSIS and completed MEMORY → COMPLETE are restricted
 automatic edges. A validated read-only `doc` / `analysis` / `report` task also auto-completes
 from IMPLEMENT after its full deliverable is shown, without REVIEW, VERIFICATION, MEMORY, or
-task memory. Other stage edges record `task.json.pending_transition` and require explicit user
-confirmation; code tasks may skip REVIEW and enter VERIFICATION directly. VERIFICATION remains
+task memory. Confirm mode controls non-mechanical edges: approve confirms each edge, guard
+confirms two critical gates, lite uses the same gates but forces IMPLEMENT -> VERIFICATION,
+and auto advances legal edges automatically. Lite never enters REVIEW. VERIFICATION remains
 the code-task fresh-evidence hard gate, and MEMORY keeps the conditional long-memory threshold
 gate. The active task
 pointer lives in `sessions/{ppid}.json`;

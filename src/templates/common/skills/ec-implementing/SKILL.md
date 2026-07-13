@@ -123,9 +123,10 @@ let sub-agents re-dispatch each other.
 
 - **Code task:** after all units are done and self-audited, hand back to ec-workflow. In approve
   mode it records IMPLEMENT -> REVIEW as the recommended pending edge and presents REVIEW /
-  skip to VERIFICATION / handoff. In guard/auto it automatically enters REVIEW.
+  skip to VERIFICATION / handoff. In guard/auto it automatically enters REVIEW. In lite it
+  automatically enters VERIFICATION and must not dispatch REVIEW.
 - **No-code read-only task:** after recording the successful result and showing the complete
-  deliverable, request COMPLETE in approve mode or auto-transition in guard/auto. Do not
+  deliverable, request COMPLETE in approve mode or auto-transition in guard/lite/auto. Do not
   enter REVIEW, VERIFICATION, or MEMORY; do not write short or long memory. The state API only
   accepts this terminal edge when the latest plan is `single` with `files:[]` and the latest
   result has `changed_files:[]`, a non-empty `deliverable`, and no issues/needs_attention.

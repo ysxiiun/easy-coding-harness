@@ -9,7 +9,7 @@ export type Stage =
   | "CLOSED";
 
 export type TaskStatus = "PENDING" | Stage;
-export type ConfirmMode = "approve" | "guard" | "auto";
+export type ConfirmMode = "approve" | "guard" | "lite" | "auto";
 
 export interface StageHistoryEntry {
   stage: Stage;

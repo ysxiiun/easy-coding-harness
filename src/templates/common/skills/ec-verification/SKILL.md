@@ -21,7 +21,7 @@ NO COMPLETION CLAIMS WITHOUT FRESH VERIFICATION EVIDENCE
 
 NO ARCHIVE WITHOUT A GREEN GATE
 - Verification passing evidence is mandatory in every confirm mode.
-- approve/guard require user acceptance before MEMORY; auto advances after the green gate.
+- approve/guard/lite require user acceptance before MEMORY; auto advances after the green gate.
 - Confirmation mode never turns failed or missing evidence into acceptance.
 ```
 
@@ -53,7 +53,7 @@ Append one `verify` record per check:
 
 ## 3. Gate decision
 
-- All three pass AND coverage satisfied → present the verification result; approve/guard wait
+- All three pass AND coverage satisfied → present the verification result; approve/guard/lite wait
   for user acceptance, while auto hands the green result to ec-workflow for automatic MEMORY.
 - Any failure → append the failing `verify` record, summarize failures, select
   VERIFICATION -> IMPLEMENT, and follow the effective confirm mode.
@@ -64,21 +64,23 @@ After a green gate, present an acceptance summary: what changed (files + summari
 verification results (lint/type/test), and the coverage status. Then the user takes time to
 test manually. Their response routes:
 
-- **"accepted"** (approve/guard) → request VERIFICATION -> MEMORY and present the standard boundary gate.
+- **"accepted"** (approve/guard/lite) → request VERIFICATION -> MEMORY and present the standard boundary gate.
 - **"problem here"** → scope judgment against the dev-spec:
   - in scope → select VERIFICATION -> IMPLEMENT and follow the effective confirm mode; after
-    repair, approve presents the IMPLEMENT choice while guard/auto default to REVIEW.
+    repair, approve presents the IMPLEMENT choice, guard/auto default to REVIEW, and lite
+    returns directly to VERIFICATION.
   - out of scope → propose a new task (`spawned_from` = current task id); the current task
     may archive now (if already satisfactory) or stay suspended.
 - **"cancel"** → ec-task-close.
 
 Repair sizing: a trivial tweak is fixed and re-verified inside VERIFICATION; a logic/structure
-change formally returns to IMPLEMENT. After repair, present the standard IMPLEMENT completion
-choice again so the user may enter REVIEW or skip directly to VERIFICATION.
+change formally returns to IMPLEMENT. After repair, approve presents the standard IMPLEMENT
+completion choice again; guard/auto enter REVIEW, while lite returns directly to VERIFICATION
+without offering REVIEW.
 
 ## 5. Archive entry
 
-In approve/guard, acceptance does not mutate the stage directly. Hand control to ec-workflow
+In approve/guard/lite, acceptance does not mutate the stage directly. Hand control to ec-workflow
 to call `request-transition --stage MEMORY`, then present:
 1. Confirm entering MEMORY
 2. Hand off to another agent

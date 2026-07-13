@@ -6,7 +6,7 @@ import type { SupermoduleConfig } from "../types/supermodule.js";
 import { writeTextFile } from "./file-writer.js";
 
 export const CONFIG_SCHEMA_VERSION = 2;
-export const CONFIRM_MODES = ["approve", "guard", "auto"] as const;
+export const CONFIRM_MODES = ["approve", "guard", "lite", "auto"] as const;
 export type ConfirmMode = (typeof CONFIRM_MODES)[number];
 
 export interface EasyCodingConfig {

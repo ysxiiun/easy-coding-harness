@@ -76,13 +76,13 @@ INIT --[always auto]--> ANALYSIS -> IMPLEMENT -> REVIEW -> VERIFICATION -> MEMOR
                  +-- replan ---+          +--- fix -----+
                               ^                         |
                               +------- repair ----------+
-edge behavior --[approve / guard / auto]--> target stage
+edge behavior --[approve / guard / lite / auto]--> target stage
 any stage --[user abort via ec-task-close]--> CLOSED
 ```
 
 - 生效确认模式优先级为 session 覆盖 > 项目 `behavior.confirm_mode` > `guard` 默认值。
-- `approve` 除 `INIT → ANALYSIS`、`MEMORY → COMPLETE` 外逐边确认；`guard` 只确认 `ANALYSIS → IMPLEMENT`、`VERIFICATION → MEMORY`；`auto` 自动执行全部合法工作流边。任何模式下关闭任务都必须显式执行。
-- `guard` / `auto` 的代码主链在 IMPLEMENT 后默认进入 REVIEW；`approve` 可明确跳过 REVIEW 进入 VERIFICATION。确认模式不绕过状态合法性、方案产物或验证门控。
+- `approve` 除 `INIT → ANALYSIS`、`MEMORY → COMPLETE` 外逐边确认；`guard` 与 `lite` 只确认 `ANALYSIS → IMPLEMENT`、`VERIFICATION → MEMORY`；`auto` 自动执行全部合法工作流边。任何模式下关闭任务都必须显式执行。
+- `guard` / `auto` 的代码主链在 IMPLEMENT 后默认进入 REVIEW；`lite` 不执行 REVIEW，直接进入 VERIFICATION；`approve` 可明确选择 REVIEW 或跳过它。确认模式不绕过状态合法性、方案产物或验证门控。
 - 显式 `doc` / `analysis` / `report` 只读任务不生成 `test-strategy.md`；展示完整报告后按生效模式进入 COMPLETE，不执行 REVIEW、VERIFICATION 或 MEMORY，也不写任务记忆。
 - `VERIFICATION` 是验证硬门控，未实际运行的 lint、typecheck、test 不算通过。
 - `MEMORY` 先写入本次任务短期记忆，再执行长期记忆阈值门禁；未超过阈值时长期沉淀为 no-op。

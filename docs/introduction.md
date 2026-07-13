@@ -26,13 +26,13 @@ CLI 本身很克制——它只往 `.claude` / `.agents` / `.qoder` 这些目录
 
 ### 人机共创，关键节点设硬门控
 
-整个工作流是固定状态机，状态边按 `approve / guard / auto` 确认模式流转，机械边始终自动：
+整个工作流是固定状态机，状态边按 `approve / guard / lite / auto` 确认模式流转，机械边始终自动：
 
 - `pending_transition`（需要确认的状态边）——当前阶段完成后仍不改状态，用户确认后才迁移；
 - `auto-transition`（模式允许的自动边）——只在合法边和产物检查通过后迁移；
 - `VERIFICATION`（验证）——代码任务没有真实跑过的 lint、typecheck、test，不算通过；只读任务不进入该阶段。
 
-`approve` 除 INIT → ANALYSIS、MEMORY → COMPLETE 外逐边确认；`guard`（默认）只确认 ANALYSIS → IMPLEMENT、VERIFICATION → MEMORY；`auto` 自动执行全部合法工作流边。任何模式下关闭任务都必须显式执行。需要确认时优先使用智能体原生选项。只读任务展示完整报告后按生效模式结束，不审查、不验证、不归档记忆。
+`approve` 除 INIT → ANALYSIS、MEMORY → COMPLETE 外逐边确认；`guard`（默认）与 `lite` 只确认 ANALYSIS → IMPLEMENT、VERIFICATION → MEMORY；lite 不执行 REVIEW，直接从 IMPLEMENT 进入 VERIFICATION；`auto` 自动执行全部合法工作流边。任何模式下关闭任务都必须显式执行。需要确认时优先使用智能体原生选项。只读任务展示完整报告后按生效模式结束，不审查、不验证、不归档记忆。
 
 ### 上下文卫生
 
@@ -58,7 +58,7 @@ INIT --[always auto]--> ANALYSIS -> IMPLEMENT -> REVIEW -> VERIFICATION -> MEMOR
                  +-- replan ---+          +--- fix -----+
                               ^                         |
                               +------- repair ----------+
-edge behavior --[approve / guard / auto]--> target stage
+edge behavior --[approve / guard / lite / auto]--> target stage
 ```
 
 任务状态持久化在 `.easy-coding/` 里，不绑死在某次会话上。所以：
@@ -125,7 +125,7 @@ agent 会读项目，生成 `SOUL.md`、`RULES.md`、`ABSTRACT.md`、`TEST_STRAT
 /ec-workflow 实现 xxx 功能
 ```
 
-`ec-workflow` 负责创建或恢复任务。项目可用 `approve`、`guard`（默认）、`auto` 控制状态边确认范围，当前 session 可通过 `ec-task-management` 临时覆盖；自动代码主链在 IMPLEMENT 后进入 REVIEW。只读任务展示完整报告后按生效模式进入 COMPLETE，不执行 REVIEW、VERIFICATION 或 MEMORY。
+`ec-workflow` 负责创建或恢复任务。项目可用 `approve`、`guard`（默认）、`lite`、`auto` 控制状态边确认范围，当前 session 可通过 `ec-task-management` 临时覆盖；guard/auto 的自动代码主链在 IMPLEMENT 后进入 REVIEW，lite 直接进入 VERIFICATION。只读任务展示完整报告后按生效模式进入 COMPLETE，不执行 REVIEW、VERIFICATION 或 MEMORY。
 
 如果当前会话不希望 Harness 接管，显式调用 `/ec-no-harness`（Codex 使用 `$ec-no-harness`）。它只旁路 Easy Coding，其他 skills 和 hooks 仍正常工作，任务状态也会原样保留。
 

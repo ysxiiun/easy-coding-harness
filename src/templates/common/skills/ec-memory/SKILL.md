@@ -5,7 +5,7 @@ description: MEMORY-stage skill — archive flow entered after a green VERIFICAT
 
 # ec-memory — archive what was learned
 
-ec-workflow dispatches you during MEMORY after approve/guard acceptance or an auto-mode green
+ec-workflow dispatches you during MEMORY after approve/guard/lite acceptance or an auto-mode green
 VERIFICATION gate. Inputs: the task's `dev-spec.md`, `execution.jsonl` (the `result` and
 `verify` records are precise source material), the changed-files list, existing memory files.
 Read-only `doc` / `analysis` / `report` tasks auto-complete from IMPLEMENT and never enter

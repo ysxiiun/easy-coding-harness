@@ -9,6 +9,7 @@ ec-workflow dispatches you when code IMPLEMENT finishes. Read-only `doc` / `anal
 tasks auto-complete from IMPLEMENT and never enter REVIEW. You judge the code change set and
 return a verdict that drives the next transition. Inputs: the changed files (from
 execution.jsonl `result` records), `dev-spec.md`, `.easy-coding/RULES.md`, `test-strategy.md`.
+Lite-mode code tasks never enter REVIEW; they proceed from IMPLEMENT to VERIFICATION.
 
 Communicate with the user in the user's language.
 
