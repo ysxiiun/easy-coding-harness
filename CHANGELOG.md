@@ -6,6 +6,12 @@
 - `y`：常规功能升级
 - `z`：日常 bug 修复
 
+## 0.8.1-beta.0
+
+- 修复分析阶段结束后的确认门可能退化为单一“回复确认执行”提示的问题：存在 `pending_transition` 时必须实际调用平台原生选择能力，完整提供确认目标阶段、交接给其他智能体和 free-form Other。
+- 普通确认门与 Approve 模式代码 IMPLEMENT 特殊门分别保留各自完整分支，文本回退不会遗漏“跳过 REVIEW 进入 VERIFICATION”；原生选择返回空值、取消、超时或无法解析时继续保留待确认边，同一 assistant 轮最多重试一次，避免无限重复调用。
+- workflow、analysis、Claude/Codex/Qoder 主约束、设计与使用文档及三平台安装回归测试同步固化上述展示契约。
+
 ## 0.8.0
 
 - 正式发布 `lite` 确认模式：沿用 Guard 的关键确认门，代码任务完成 IMPLEMENT 后跳过 REVIEW，直接进入 VERIFICATION。

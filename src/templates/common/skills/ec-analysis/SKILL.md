@@ -263,11 +263,29 @@ Re-output the COMPLETE revised dev-spec.md:
 3. Overwrite the `plan` record in execution.jsonl with the new strategy.
 4. For code tasks, update test-strategy.md if test scope changed. For read-only tasks, keep the
    file absent.
-5. Request ANALYSIS -> IMPLEMENT again and present the standard confirmation/handoff/Other gate.
+5. Request ANALYSIS -> IMPLEMENT again and present the complete confirmation/handoff/Other gate
+   defined below.
+
+## ANALYSIS -> IMPLEMENT choice gate (hard)
+
+The same turn that `request-transition` succeeds must invoke the platform's native user-choice
+tool when one is available. The visible branches are:
+
+1. Confirm entering IMPLEMENT (recommended)
+2. Hand off to another agent
+3. Other — use the native free-form Other input for revisions or another instruction.
+
+If no native choice tool exists, render all three branches as a numbered text fallback. An empty,
+dismissed, timed-out, or unparseable result keeps the task in ANALYSIS with its pending edge and
+may retry the native choice at most once per assistant turn. If that retry also fails, stop the
+current turn and re-present the complete gate on the next user interaction. Never replace the gate
+with only "reply confirm", "confirm execution", or a statement that no valid choice was received,
+and never invoke native choice repeatedly in the same turn. Choosing handoff delegates to
+ec-workflow's existing target-less `handoff-task` flow; do not ask the user to name the next agent.
 
 ## End state
 
 Read dev-spec.md back from disk and output the COMPLETE content as your reply to the user —
-not a summary, not a different format, not a table you invented. Then ask ec-workflow to
-record `pending_transition: ANALYSIS -> IMPLEMENT`, present the standard boundary choices,
+not a summary, not a different format, not a table you invented. Then ask ec-workflow to record
+`pending_transition: ANALYSIS -> IMPLEMENT`, immediately present the complete choice gate above,
 and stop. Never start implementing from this skill.

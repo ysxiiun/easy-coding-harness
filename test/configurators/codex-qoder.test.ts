@@ -65,7 +65,21 @@ describe("configureCodex", () => {
       "utf8",
     );
     expect(skill).toContain("`$ec-init`");
+    expect(skill).toContain("MUST actually invoke it in the same turn");
+    expect(skill).toContain("The code-task IMPLEMENT completion fallback must preserve");
+    expect(skill).toContain("Skip REVIEW and enter VERIFICATION");
+    expect(skill).toContain("An empty, dismissed, timed-out, or unparseable choice result");
+    expect(skill).toContain("at most once per assistant turn");
     expect(skill).not.toContain("{{");
+    const analysisSkill = await readFile(
+      path.join(tempDir, ".agents", "skills", "ec-analysis", "SKILL.md"),
+      "utf8",
+    );
+    expect(analysisSkill).toContain("Confirm entering IMPLEMENT (recommended)");
+    expect(analysisSkill).toContain("Hand off to another agent");
+    expect(analysisSkill).toContain("Other — use the native free-form Other input");
+    expect(analysisSkill).toContain("at most once per assistant turn");
+    expect(analysisSkill).toContain("stop the\ncurrent turn");
     const noHarnessSkill = await readFile(
       path.join(tempDir, ".agents", "skills", "ec-no-harness", "SKILL.md"),
       "utf8",
@@ -124,6 +138,9 @@ describe("configureCodex", () => {
       "- Ready: > **Easy Coding** · **{confirm-mode}** · Ready · Use `ec-workflow` to start or resume a task, `ec-brainstorming` to brainstorm, or `ec-task-management` to manage tasks or session settings",
     );
     expect(main).toContain("lite chooses IMPLEMENT -> VERIFICATION");
+    expect(main).toContain("A confirmation-required boundary is not fully presented");
+    expect(main).toContain("approve-mode code IMPLEMENT gate must instead preserve");
+    expect(main).toContain("at most once per assistant turn");
     expect(main).not.toContain("[ Easy Coding ] ready");
     expect(main).not.toContain("tasks``");
     expect(main).not.toContain("}```");
@@ -190,7 +207,21 @@ describe("configureQoder", () => {
       "utf8",
     );
     expect(skill).toContain("`/ec-init`");
+    expect(skill).toContain("MUST actually invoke it in the same turn");
+    expect(skill).toContain("The code-task IMPLEMENT completion fallback must preserve");
+    expect(skill).toContain("Skip REVIEW and enter VERIFICATION");
+    expect(skill).toContain("An empty, dismissed, timed-out, or unparseable choice result");
+    expect(skill).toContain("at most once per assistant turn");
     expect(skill).not.toContain("{{");
+    const analysisSkill = await readFile(
+      path.join(tempDir, ".qoder", "skills", "ec-analysis", "SKILL.md"),
+      "utf8",
+    );
+    expect(analysisSkill).toContain("Confirm entering IMPLEMENT (recommended)");
+    expect(analysisSkill).toContain("Hand off to another agent");
+    expect(analysisSkill).toContain("Other — use the native free-form Other input");
+    expect(analysisSkill).toContain("at most once per assistant turn");
+    expect(analysisSkill).toContain("stop the\ncurrent turn");
     const taskManagementSkill = await readFile(
       path.join(tempDir, ".qoder", "skills", "ec-task-management", "SKILL.md"),
       "utf8",
@@ -201,6 +232,11 @@ describe("configureQoder", () => {
       "Never omit the confirm-mode section, even when the unfinished task list is empty",
     );
     expect(taskManagementSkill).not.toContain("{{");
+
+    const main = await readFile(path.join(tempDir, "AGENTS.md"), "utf8");
+    expect(main).toContain("A confirmation-required boundary is not fully presented");
+    expect(main).toContain("approve-mode code IMPLEMENT gate must instead preserve");
+    expect(main).toContain("at most once per assistant turn");
 
     const settings = await readFile(path.join(tempDir, ".qoder", "settings.json"), "utf8");
     expect(settings).toContain(".qoder/hooks");

@@ -144,11 +144,12 @@ it, routing matches, and switching happens again.
 - **Always-automatic mechanical edges.** After INIT work completes, call `auto-transition` for
   ANALYSIS. After `memory-complete`, call `auto-transition` for COMPLETE. These two edges never
   create `pending_transition` in any mode.
-- **Native choice first (hard requirement).** When the effective mode requires confirmation,
-  call `request-transition`. After it succeeds, you MUST
-  prefer the agent/platform's native user-choice tool whenever one is available. Do not render
-  a plain-text numbered list on a platform that can present selectable options and a free-form
-  Other input. Offer exactly these business branches through that native UI:
+- **Native choice rendering is mandatory (hard requirement).** When the effective mode requires
+  confirmation, call `request-transition`. After it succeeds, the boundary is not fully presented
+  until the user can actually choose every required business branch. When the agent/platform
+  exposes a native user-choice tool, you MUST actually invoke it in the same turn; mentioning the
+  tool, recommending a reply, or printing only a confirmation sentence is not a substitute. Offer
+  exactly these business branches through that native UI:
   1. Confirm entering/returning to `<target-stage>` (recommended)
   2. Hand off to another agent
   3. Other — use the native tool's built-in free-form Other input.
@@ -158,9 +159,22 @@ it, routing matches, and switching happens again.
   VERIFICATION, cancel that edge, request IMPLEMENT -> VERIFICATION, and immediately confirm it
   because that selection is explicit confirmation of the alternate target.
   Plain-text numbered choices are fallback only: use them only when no native user-choice tool
-  exists. The runtime hook never mutates workflow state from user-prompt text. Native choice
-  results, numbered fallback replies, and every natural-language reply must be interpreted by
-  you against the current task and stored target before calling `confirm-transition` explicitly.
+  exists. An ordinary gate must list all three branches rather than collapsing to "reply confirm":
+  `1. Confirm entering/returning to <target-stage> (recommended)`,
+  `2. Hand off to another agent`, `3. Other (describe revisions or another instruction)`.
+  The code-task IMPLEMENT completion fallback must preserve its special branch set:
+  `1. Enter REVIEW (recommended)`, `2. Skip REVIEW and enter VERIFICATION`,
+  `3. Hand off to another agent`, `4. Other (describe revisions or another instruction)`.
+  An empty, dismissed, timed-out, or unparseable choice result is not confirmation. Preserve the
+  pending edge and re-present the complete native choice UI at most once per assistant turn. If
+  that retry is also empty, dismissed, timed out, or unparseable, stop the current turn with the
+  pending edge intact and re-present the gate on the next user interaction; never call the native
+  choice tool repeatedly in the same turn. If native choice is no longer available, render the
+  appropriate complete numbered fallback. Never report "no valid choice" and then show only a
+  confirmation instruction. The runtime hook never mutates workflow state from user-prompt text.
+  Native choice results, numbered fallback replies, and every natural-language reply must be
+  interpreted by you against the current task and stored target before calling
+  `confirm-transition` explicitly.
   On Other feedback, cancel the pending edge before revising work or requesting a different
   legal target. Never interpret silence, enthusiasm, or topic changes as confirmation.
 - **State before action.** Every confirmation-required stage advance is a two-step protocol: first

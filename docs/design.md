@@ -200,6 +200,7 @@ INIT ─自动→ ANALYSIS → IMPLEMENT → REVIEW → VERIFICATION → MEMORY 
 
 - **确认模式**：session 覆盖优先于项目 `behavior.confirm_mode`，缺失时为 `guard`。`approve` 除 INIT → ANALYSIS、MEMORY → COMPLETE 外逐边确认；`guard` 与 `lite` 只确认 ANALYSIS → IMPLEMENT、VERIFICATION → MEMORY；lite 禁止 IMPLEMENT → REVIEW；`auto` 自动执行全部合法工作流边。CLOSED 始终要求显式关闭操作。
 - **pending_transition**：仅确认模式要求人工确认时记录；自动边走受限 `auto-transition`。guard/auto 的代码主链从 IMPLEMENT 默认进入 REVIEW，lite 直接进入 VERIFICATION，approve 可选择是否 REVIEW。
+- **确认门展示**：存在人工确认边时，Agent 必须实际调用平台原生选项能力。普通确认门完整展示“确认进入/返回目标阶段”“交接给其他智能体”和 free-form Other；Approve 模式代码 IMPLEMENT 特殊门必须保留“进入 REVIEW”“跳过 REVIEW 进入 VERIFICATION”“交接”和 free-form Other。平台无原生能力时按门类型展示对应的完整文本编号。空选择、取消、超时或无法解析时保留 `pending_transition`，同一 assistant 轮最多重试一次；重试仍失败则停止当前轮，并在下一次用户交互重新展示，禁止无限调用或退化为单一“回复确认执行”提示。
 - **VERIFICATION**：lint + typecheck + test 必须全部通过，且必须是本轮新鲜执行的结果——上一轮的结果不算，"should pass" 不是证据。
 - **MEMORY**：进入方式服从确认模式；进入后先写短期记忆，再执行长期记忆阈值门禁，完成后自动进入 COMPLETE。
 

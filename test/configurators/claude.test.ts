@@ -91,8 +91,14 @@ describe("configureClaude", () => {
     expect(skill).toContain("handoff-task --session-file");
     expect(skill).toContain("request-transition --session-file");
     expect(skill).toContain("confirm-transition --session-file");
-    expect(skill).toContain("native user-choice tool whenever one is available");
+    expect(skill).toContain("MUST actually invoke it in the same turn");
     expect(skill).toContain("Plain-text numbered choices are fallback only");
+    expect(skill).toContain("The code-task IMPLEMENT completion fallback must preserve");
+    expect(skill).toContain("Skip REVIEW and enter VERIFICATION");
+    expect(skill).toContain("An empty, dismissed, timed-out, or unparseable choice result");
+    expect(skill).toContain("at most once per assistant turn");
+    expect(skill).toContain("stop the current turn with the");
+    expect(skill).toContain('Never report "no valid choice" and then show');
     expect(skill).toContain("Current task pointer exists");
     expect(skill).toContain("No current task pointer");
     expect(skill).toContain("edge with `effective_confirm_mode`");
@@ -124,6 +130,12 @@ describe("configureClaude", () => {
     expect(analysisSkill).toContain("all 12 must be present");
     expect(analysisSkill).toContain("explicitly no-code");
     expect(analysisSkill).toContain("MUST NOT create\n   `test-strategy.md`");
+    expect(analysisSkill).toContain("ANALYSIS -> IMPLEMENT choice gate (hard)");
+    expect(analysisSkill).toContain("Confirm entering IMPLEMENT (recommended)");
+    expect(analysisSkill).toContain("Hand off to another agent");
+    expect(analysisSkill).toContain("Other — use the native free-form Other input");
+    expect(analysisSkill).toContain("at most once per assistant turn");
+    expect(analysisSkill).toContain("stop the\ncurrent turn");
     const planExampleMatch = analysisSkill.match(/```json\n([^\n]+)\n```/);
     expect(planExampleMatch).not.toBeNull();
     const planExample = JSON.parse(planExampleMatch?.[1] ?? "{}") as {
@@ -239,6 +251,9 @@ describe("configureClaude", () => {
     expect(main).toContain("project `behavior.confirm_mode`");
     expect(main).toContain("`auto-transition`");
     expect(main).toContain("lite chooses IMPLEMENT -> VERIFICATION");
+    expect(main).toContain("A confirmation-required boundary is not fully presented");
+    expect(main).toContain("approve-mode code IMPLEMENT gate must instead preserve");
+    expect(main).toContain("at most once per assistant turn");
     expect(main).toContain("read-only task creates no test-strategy.md");
     expect(main).toContain("ask every unresolved decision during analysis");
 

@@ -45,6 +45,16 @@ First run `/ec-init`; daily work goes through `/ec-workflow`.
 - Confirmation-required edges use `pending_transition`; automatic edges use the restricted
   `auto-transition` API. A read-only task creates no test-strategy.md, never enters REVIEW,
   VERIFICATION, or MEMORY, and writes no task memory.
+- A confirmation-required boundary is not fully presented until the user can choose its complete
+  business branches. When a native user-choice tool is available, invoke it in the same turn with
+  the complete gate. An ordinary gate offers "confirm entering/returning to the target stage"
+  (recommended) and "hand off to another agent", with free-form Other for revisions. The special
+  approve-mode code IMPLEMENT gate must instead preserve enter REVIEW, skip to VERIFICATION, and
+  handoff, with free-form Other. Only when no native choice tool exists may you show the matching
+  complete numbered fallback. Empty, dismissed, timed-out, or unparseable results preserve the
+  pending edge and may retry native choice at most once per assistant turn; after a failed retry,
+  stop the turn and re-present the gate on the next user interaction. Never degrade to only
+  "reply confirm" or repeatedly invoke native choice in the same turn.
 - When `[easy-coding:no-harness]` is injected, do not emit an Easy Coding status line and ignore
   only Easy Coding workflow/stage orchestration for this session. Continue honoring every
   non-Easy-Coding skill, hook, and instruction. Do not clear or mutate the suspended task.
