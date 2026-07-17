@@ -86,6 +86,14 @@ describe("configureCodex", () => {
     );
     expect(noHarnessSkill).toContain("disable-harness --session-file");
     expect(noHarnessSkill).not.toContain("{{");
+    const gitSkill = await readFile(
+      path.join(tempDir, ".agents", "skills", "ec-git", "SKILL.md"),
+      "utf8",
+    );
+    expect(gitSkill).toContain("status is neither\n   `COMPLETE` nor `CLOSED`");
+    expect(gitSkill).toContain("`COMPLETE` and `CLOSED` are terminal states");
+    expect(gitSkill).toContain("Changes written by `easy-coding upgrade`");
+    expect(gitSkill).toContain("current agent did not write them");
     const taskManagementSkill = await readFile(
       path.join(tempDir, ".agents", "skills", "ec-task-management", "SKILL.md"),
       "utf8",
@@ -314,6 +322,14 @@ describe("configureQoder", () => {
       "Never omit the confirm-mode section, even when the unfinished task list is empty",
     );
     expect(taskManagementSkill).not.toContain("{{");
+    const gitSkill = await readFile(
+      path.join(tempDir, ".qoder", "skills", "ec-git", "SKILL.md"),
+      "utf8",
+    );
+    expect(gitSkill).toContain("status is neither\n   `COMPLETE` nor `CLOSED`");
+    expect(gitSkill).toContain("`COMPLETE` and `CLOSED` are terminal states");
+    expect(gitSkill).toContain("Changes written by `easy-coding upgrade`");
+    expect(gitSkill).toContain("current agent did not write them");
 
     const main = await readFile(path.join(tempDir, "AGENTS.md"), "utf8");
     expect(main).toContain("A confirmation-required boundary is not fully presented");

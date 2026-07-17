@@ -28,21 +28,28 @@ with `.easy-coding/sessions/` always excluded. The CLI already added it to `.git
 
 ## Rules
 
-1. **In-progress warning.** If the commit touches a task folder whose status is not COMPLETE,
-   warn: "Task «X» is not finished — commit the intermediate state?" and wait.
-2. **Conflict handling for `.easy-coding/`** (mostly `memory/`): first explain the conflict
+1. **Non-terminal warning.** If the commit touches a task folder whose status is neither
+   `COMPLETE` nor `CLOSED`, warn: "Task «X» is not finished — commit the intermediate state?"
+   and wait. `COMPLETE` and `CLOSED` are terminal states; include their task artifacts without
+   asking for intermediate-state confirmation.
+2. **CLI-managed upgrade changes.** Inspect the complete workspace change list before choosing
+   the commit set. Changes written by `easy-coding upgrade` to managed harness files are in
+   scope by default. Do not exclude them because the current agent did not write them or
+   because they were produced outside the current assistant turn. Preserve the explicit path
+   exclusions above, and report unrelated pre-existing work separately.
+3. **Conflict handling for `.easy-coding/`** (mostly `memory/`): first explain the conflict
    details to the user, get confirmation, then do an inductive semantic merge — never blindly
    pick ours/theirs. This requirement applies only to conflicts inside `.easy-coding/`.
-3. **Cross-repo commit sets.** When a task spans repos (per the dev-spec / current task
+4. **Cross-repo commit sets.** When a task spans repos (per the dev-spec / current task
    `repo_paths`), the commit/push covers every involved repo. Read `repo_paths` from the
    current task state to locate each checkout, check changes, and commit/push them as one
    coherent change set — do not leave a sub-repo behind.
-4. **Supermodule two-step commits.** If the current repo has `.gitmodules`, or the current
+5. **Supermodule two-step commits.** If the current repo has `.gitmodules`, or the current
    task touches a git submodule path, treat each submodule as an independent git boundary:
    commit and push child repos first, then commit and push the parent gitlink update. If a
    child repo is on a detached HEAD, stop and ask the user to choose or create a branch before
    committing there.
-5. **No false success.** Never claim a commit or push succeeded without reading the command
+6. **No false success.** Never claim a commit or push succeeded without reading the command
    output. A failed push reported as success is a serious error.
 
 ## Boundaries
@@ -50,6 +57,8 @@ with `.easy-coding/sessions/` always excluded. The CLI already added it to `.git
 - Do not touch session files, task status fields, or run stage transitions — git only.
 - Do not commit `.easy-coding/sessions/`.
 - Do not commit `spec/dev/` unless the user explicitly asks.
+- Do not omit managed `easy-coding upgrade` changes merely because they were created outside
+  the current agent turn.
 - In a supermodule task launched from the parent root, parent `.easy-coding/` belongs to the
   parent git. Child `.easy-coding/memory/` changes created by memory archive belong to the
   owning child git and must be committed before the parent gitlink update.

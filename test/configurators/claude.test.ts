@@ -200,6 +200,15 @@ describe("configureClaude", () => {
     expect(taskManagementSkill).toContain("clear-confirm-mode --session-file <P>");
     expect(taskManagementSkill).not.toContain("{{");
 
+    const gitSkill = await readFile(
+      path.join(tempDir, ".claude", "skills", "ec-git", "SKILL.md"),
+      "utf8",
+    );
+    expect(gitSkill).toContain("status is neither\n   `COMPLETE` nor `CLOSED`");
+    expect(gitSkill).toContain("`COMPLETE` and `CLOSED` are terminal states");
+    expect(gitSkill).toContain("Changes written by `easy-coding upgrade`");
+    expect(gitSkill).toContain("current agent did not write them");
+
     const settings = await readFile(path.join(tempDir, ".claude", "settings.json"), "utf8");
     expect(settings).toContain(".claude/hooks");
     expect(settings).toContain("session-start.py");

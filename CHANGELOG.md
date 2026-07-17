@@ -6,6 +6,12 @@
 - `y`：常规功能升级
 - `z`：日常 bug 修复
 
+## 0.8.1-beta.2
+
+- `ec-git` 将 `COMPLETE` 与 `CLOSED` 统一识别为终态；提交涉及这两类任务时无需再询问是否提交中间态，任务产物直接按正常提交范围处理。
+- git 提交范围改为基于完整工作区变更而非当前 Agent 的写入来源；`easy-coding upgrade` 生成的受管 Harness 文件默认纳入提交候选，同时继续排除 sessions、默认排除 `spec/dev/`，并分离真正无关的预存改动。
+- Claude Code、Codex、Qoder 安装回归测试与设计文档同步固化终态任务和 CLI 升级产物的提交契约。
+
 ## 0.8.1-beta.1
 
 - 短期记忆不再扫描目录生成 `001/002` 数字前缀，改由状态 API 生成 UUIDv7 通用 ID；文件名前缀与 schema v2 frontmatter `id` 完全一致，同时保留日期和可读摘要，避免多人或多 Agent 并发写入时重名。
