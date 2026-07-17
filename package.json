@@ -1,6 +1,6 @@
 {
   "name": "easy-coding-harness",
-  "version": "0.8.1-beta.2",
+  "version": "0.8.1",
   "description": "CLI scaffold for installing Easy Coding harness files into agent-native directories.",
   "repository": {
     "type": "git",

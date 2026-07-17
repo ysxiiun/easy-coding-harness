@@ -6,6 +6,12 @@
 - `y`：常规功能升级
 - `z`：日常 bug 修复
 
+## 0.8.1
+
+- 正式发布原生确认门完整展示：存在待确认迁移时，Claude Code、Codex、Qoder 必须提供确认目标阶段、交接和 free-form Other，并安全处理取消、超时或无效选择。
+- 短期记忆采用 UUIDv7 通用 ID，session 按逻辑任务隔离并统一使用 agent 前缀；三平台 session 初始化、旧状态接管和 upgrade 迁移链路已完成并发与兼容加固。
+- `ec-git` 将 `COMPLETE`、`CLOSED` 统一视为终态，并把 `easy-coding upgrade` 产生的受管 Harness 文件默认纳入提交候选；汇总 `0.8.1-beta.0` 至 `0.8.1-beta.2` 的验证结果。
+
 ## 0.8.1-beta.2
 
 - `ec-git` 将 `COMPLETE` 与 `CLOSED` 统一识别为终态；提交涉及这两类任务时无需再询问是否提交中间态，任务产物直接按正常提交范围处理。
