@@ -17,6 +17,10 @@ function hookCommand(root: string, scriptName: string): string {
   return renderHookCommand(root, PLATFORM_META["claude-code"].templateContext, scriptName);
 }
 
+function claudeFallbackSessionPath(root: string): string {
+  return path.join(root, ".easy-coding", "sessions", `claude-code-ppid-${process.pid}.json`);
+}
+
 async function writeReadyAnalysisArtifacts(root: string, taskId: string): Promise<void> {
   const taskDir = path.join(root, ".easy-coding", "tasks", taskId);
   await writeFile(
@@ -210,15 +214,12 @@ describe("configureClaude", () => {
     const userPromptCommands = settingsJson.hooks.UserPromptSubmit.map((group) =>
       group.hooks.map((hook) => hook.command),
     );
-    expect(userPromptCommands).toEqual([
-      [hookCommand(tempDir, "session-start.py")],
-      [hookCommand(tempDir, "inject-workflow-state.py")],
-    ]);
+    expect(userPromptCommands).toEqual([[hookCommand(tempDir, "inject-workflow-state.py")]]);
     expect(settings).not.toContain(`${pythonCmd} .claude/hooks/`);
     const userPromptTimeouts = settingsJson.hooks.UserPromptSubmit.map((group) =>
       group.hooks.map((hook) => hook.timeout),
     );
-    expect(userPromptTimeouts).toEqual([[15000], [15000]]);
+    expect(userPromptTimeouts).toEqual([[15000]]);
 
     const hook = await readFile(
       path.join(tempDir, ".claude", "hooks", "inject-workflow-state.py"),
@@ -272,10 +273,42 @@ describe("configureClaude", () => {
       "utf8",
     );
     expect(memorySkill).toContain("memory-short-complete");
+    expect(memorySkill).toContain("memory-new-id");
     expect(memorySkill).toContain("memory-instruction");
     expect(memorySkill).toContain("auto-transition");
     expect(memorySkill).toContain("memory-complete");
     expect(memorySkill).toContain("source_task: {current task id, exact}");
+    expect(memorySkill).toContain("{memory_id}_{YYYYMMDD}_{smart_name}.md");
+
+    const initSkill = await readFile(
+      path.join(tempDir, ".claude", "skills", "ec-init", "SKILL.md"),
+      "utf8",
+    );
+    expect(initSkill).toContain("project-init-complete --session-file <P> --agent <agent-id>");
+    expect(initSkill).toContain("snapshot --agent <agent-id>");
+    expect(initSkill).toContain("Never execute a command with\n   the literal placeholder `<P>`");
+    const preflightIndex = initSkill.indexOf("## Project-init preflight (run first — read-only)");
+    const sessionResolutionIndex = initSkill.indexOf(
+      "## Session path resolution (run after preflight — before any project write)",
+    );
+    const entryDispatchIndex = initSkill.indexOf(
+      "## Entry dispatch (idempotency — run after session resolution)",
+    );
+    expect(preflightIndex).toBeGreaterThanOrEqual(0);
+    expect(sessionResolutionIndex).toBeGreaterThan(preflightIndex);
+    expect(entryDispatchIndex).toBeGreaterThan(sessionResolutionIndex);
+    expect(initSkill).toContain(
+      "Do not call the state API or write any project asset until this file-existence check passes.",
+    );
+
+    const shortMemoryTemplate = await readFile(
+      path.join(tempDir, ".easy-coding", "memory", "SHORT_MEMORY_TEMPLATE.md"),
+      "utf8",
+    );
+    expect(shortMemoryTemplate).toContain("id: {memory_id}");
+    expect(shortMemoryTemplate).not.toMatch(
+      /^id: SM-[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/m,
+    );
 
     const metaReference = await readFile(
       path.join(
@@ -343,7 +376,9 @@ describe("configureClaude", () => {
 
     const nested = path.join(tempDir, ".easy-coding", "memory", "short");
     await mkdir(nested, { recursive: true });
-    const settings = JSON.parse(await readFile(path.join(tempDir, ".claude", "settings.json"), "utf8")) as {
+    const settings = JSON.parse(
+      await readFile(path.join(tempDir, ".claude", "settings.json"), "utf8"),
+    ) as {
       hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
     };
     const command = settings.hooks.SessionStart[0].hooks[0].command;
@@ -384,12 +419,7 @@ describe("configureClaude", () => {
     await writeRuntimeScaffold(tempDir, ["claude-code"]);
     await mkdir(path.join(tempDir, ".easy-coding", "sessions"), { recursive: true });
 
-    const sessionPath = path.join(
-      tempDir,
-      ".easy-coding",
-      "sessions",
-      `${process.pid}.json`,
-    );
+    const sessionPath = claudeFallbackSessionPath(tempDir);
     const hook = path.join(tempDir, ".claude", "hooks", "inject-subagent-context.py");
     const payload = JSON.stringify({ cwd: tempDir, hook_event_name: "PreToolUse" });
 
@@ -524,7 +554,7 @@ describe("configureClaude", () => {
       recursive: true,
     });
     await writeFile(
-      path.join(tempDir, ".easy-coding", "sessions", `${process.pid}.json`),
+      claudeFallbackSessionPath(tempDir),
       JSON.stringify(
         {
           current_task: "06-26-analysis",
@@ -574,7 +604,7 @@ describe("configureClaude", () => {
     await writeRuntimeScaffold(tempDir, ["claude-code"]);
     await mkdir(path.join(tempDir, ".easy-coding", "sessions"), { recursive: true });
     await writeFile(
-      path.join(tempDir, ".easy-coding", "sessions", `${process.pid}.json`),
+      claudeFallbackSessionPath(tempDir),
       JSON.stringify(
         {
           current_task: "missing-task",
@@ -607,7 +637,7 @@ describe("configureClaude", () => {
     await mkdir(path.join(tempDir, ".easy-coding", "tasks", "06-12-done"), { recursive: true });
     await mkdir(path.join(tempDir, ".easy-coding", "tasks", "06-12-active"), { recursive: true });
     await writeFile(
-      path.join(tempDir, ".easy-coding", "sessions", `${process.pid}.json`),
+      claudeFallbackSessionPath(tempDir),
       JSON.stringify({ current_task: "06-12-done", created_at: new Date().toISOString() }, null, 2),
       "utf8",
     );
@@ -657,9 +687,7 @@ describe("configureClaude", () => {
     expect(stdout).toContain("[workflow-state:idle]");
     expect(stdout).not.toContain("[current-task:06-12-done]");
     expect(stdout).not.toContain("[current-task:06-12-active]");
-    const session = JSON.parse(
-      await readFile(path.join(tempDir, ".easy-coding", "sessions", `${process.pid}.json`), "utf8"),
-    );
+    const session = JSON.parse(await readFile(claudeFallbackSessionPath(tempDir), "utf8"));
     expect(session.current_task).toBeNull();
   });
 
@@ -669,7 +697,7 @@ describe("configureClaude", () => {
     await mkdir(path.join(tempDir, ".easy-coding", "sessions"), { recursive: true });
     await mkdir(path.join(tempDir, ".easy-coding", "tasks", "06-25-confirm"), { recursive: true });
     await writeFile(
-      path.join(tempDir, ".easy-coding", "sessions", `${process.pid}.json`),
+      claudeFallbackSessionPath(tempDir),
       JSON.stringify(
         {
           current_task: "06-25-confirm",
@@ -724,12 +752,8 @@ describe("configureClaude", () => {
       ),
     );
     expect(task.status).toBe("ANALYSIS");
-    expect(task.stage_history.map((entry: { stage: string }) => entry.stage)).toEqual([
-      "ANALYSIS",
-    ]);
-    const session = JSON.parse(
-      await readFile(path.join(tempDir, ".easy-coding", "sessions", `${process.pid}.json`), "utf8"),
-    );
+    expect(task.stage_history.map((entry: { stage: string }) => entry.stage)).toEqual(["ANALYSIS"]);
+    const session = JSON.parse(await readFile(claudeFallbackSessionPath(tempDir), "utf8"));
     expect(session.last_seen_stage).toBe("ANALYSIS");
   });
 
@@ -739,7 +763,7 @@ describe("configureClaude", () => {
     await mkdir(path.join(tempDir, ".easy-coding", "sessions"), { recursive: true });
     await mkdir(path.join(tempDir, ".easy-coding", "tasks", "06-25-revise"), { recursive: true });
     await writeFile(
-      path.join(tempDir, ".easy-coding", "sessions", `${process.pid}.json`),
+      claudeFallbackSessionPath(tempDir),
       JSON.stringify(
         {
           current_task: "06-25-revise",
@@ -794,9 +818,7 @@ describe("configureClaude", () => {
       ),
     );
     expect(task.status).toBe("ANALYSIS");
-    expect(task.stage_history.map((entry: { stage: string }) => entry.stage)).toEqual([
-      "ANALYSIS",
-    ]);
+    expect(task.stage_history.map((entry: { stage: string }) => entry.stage)).toEqual(["ANALYSIS"]);
     expect(task.pending_transition).toMatchObject({ from: "ANALYSIS", to: "IMPLEMENT" });
   });
 
@@ -808,7 +830,7 @@ describe("configureClaude", () => {
       recursive: true,
     });
     await writeFile(
-      path.join(tempDir, ".easy-coding", "sessions", `${process.pid}.json`),
+      claudeFallbackSessionPath(tempDir),
       JSON.stringify(
         {
           current_task: "06-25-discuss",
@@ -822,13 +844,7 @@ describe("configureClaude", () => {
       ),
       "utf8",
     );
-    const taskPath = path.join(
-      tempDir,
-      ".easy-coding",
-      "tasks",
-      "06-25-discuss",
-      "task.json",
-    );
+    const taskPath = path.join(tempDir, ".easy-coding", "tasks", "06-25-discuss", "task.json");
     await writeFile(
       taskPath,
       JSON.stringify(
@@ -874,9 +890,7 @@ describe("configureClaude", () => {
 
     const task = JSON.parse(await readFile(taskPath, "utf8"));
     expect(task.status).toBe("ANALYSIS");
-    expect(task.stage_history.map((entry: { stage: string }) => entry.stage)).toEqual([
-      "ANALYSIS",
-    ]);
+    expect(task.stage_history.map((entry: { stage: string }) => entry.stage)).toEqual(["ANALYSIS"]);
     expect(task.pending_transition).toMatchObject({ from: "ANALYSIS", to: "IMPLEMENT" });
   });
 
@@ -886,7 +900,7 @@ describe("configureClaude", () => {
     await mkdir(path.join(tempDir, ".easy-coding", "sessions"), { recursive: true });
     await mkdir(path.join(tempDir, ".easy-coding", "tasks", "06-25-verify"), { recursive: true });
     await writeFile(
-      path.join(tempDir, ".easy-coding", "sessions", `${process.pid}.json`),
+      claudeFallbackSessionPath(tempDir),
       JSON.stringify(
         {
           current_task: "06-25-verify",
@@ -952,7 +966,7 @@ describe("configureClaude", () => {
     await mkdir(path.join(tempDir, ".easy-coding", "sessions"), { recursive: true });
     await mkdir(path.join(tempDir, ".easy-coding", "tasks", "06-25-review"), { recursive: true });
     await writeFile(
-      path.join(tempDir, ".easy-coding", "sessions", `${process.pid}.json`),
+      claudeFallbackSessionPath(tempDir),
       JSON.stringify(
         {
           current_task: "06-25-review",
@@ -1000,9 +1014,7 @@ describe("configureClaude", () => {
       ),
     );
     expect(task.status).toBe("REVIEW");
-    expect(task.stage_history.map((entry: { stage: string }) => entry.stage)).toEqual([
-      "REVIEW",
-    ]);
+    expect(task.stage_history.map((entry: { stage: string }) => entry.stage)).toEqual(["REVIEW"]);
   });
 
   it("state API creates a task and advances it through legal transitions", async () => {
@@ -1035,24 +1047,21 @@ describe("configureClaude", () => {
       status_context: string;
     };
     expect(createOutput.status).toBe("INIT");
-    expect(createOutput.status_line).toContain("> **Easy Coding** · **Guard** · `06-12-api` · `INIT`");
+    expect(createOutput.status_line).toContain(
+      "> **Easy Coding** · **Guard** · `06-12-api` · `INIT`",
+    );
     expect(createOutput.status_context).toContain("[workflow-state:INIT]");
     expect(createOutput.status_context).toContain("[current-task:06-12-api]");
 
-    const stages = [
-      "ANALYSIS",
-      "IMPLEMENT",
-      "REVIEW",
-      "VERIFICATION",
-      "MEMORY",
-      "COMPLETE",
-    ];
+    const stages = ["ANALYSIS", "IMPLEMENT", "REVIEW", "VERIFICATION", "MEMORY", "COMPLETE"];
     const automaticStages = new Set(["ANALYSIS", "REVIEW", "VERIFICATION", "COMPLETE"]);
     for (const stage of stages) {
       if (stage === "COMPLETE") {
+        const memoryId = "SM-019f69d3-5c86-7a10-87a1-7f1774ccb959";
+        const memoryName = `${memoryId}_20260612_fixture.md`;
         await writeFile(
-          path.join(tempDir, ".easy-coding", "memory", "short", "001_fixture.md"),
-          "---\nmemory_schema: 2\nsource_task: 06-12-api\n---\n",
+          path.join(tempDir, ".easy-coding", "memory", "short", memoryName),
+          `---\nmemory_schema: 2\nid: ${memoryId}\nsource_task: 06-12-api\ndate: 2026-06-12\n---\n`,
           "utf8",
         );
         execFileSync(
@@ -1063,17 +1072,16 @@ describe("configureClaude", () => {
             "--session-file",
             sessionFile,
             "--file",
-            ".easy-coding/memory/short/001_fixture.md",
+            `.easy-coding/memory/short/${memoryName}`,
             "--agent",
             "claude-code",
           ],
           { cwd: tempDir, encoding: "utf8" },
         );
-        execFileSync(
-          "python3",
-          [stateApi, "memory-instruction", "--session-file", sessionFile],
-          { cwd: tempDir, encoding: "utf8" },
-        );
+        execFileSync("python3", [stateApi, "memory-instruction", "--session-file", sessionFile], {
+          cwd: tempDir,
+          encoding: "utf8",
+        });
         execFileSync(
           "python3",
           [
@@ -1203,14 +1211,7 @@ describe("configureClaude", () => {
     );
     execFileSync(
       "python3",
-      [
-        stateApi,
-        "close-current",
-        "--reason",
-        "no longer needed",
-        "--agent",
-        "claude-code",
-      ],
+      [stateApi, "close-current", "--reason", "no longer needed", "--agent", "claude-code"],
       { cwd: tempDir, encoding: "utf8" },
     );
 
@@ -1223,9 +1224,7 @@ describe("configureClaude", () => {
     expect(task.status).toBe("CLOSED");
     expect(task.closed_reason).toBe("no longer needed");
 
-    const session = JSON.parse(
-      await readFile(path.join(tempDir, ".easy-coding", "sessions", `${process.pid}.json`), "utf8"),
-    );
+    const session = JSON.parse(await readFile(claudeFallbackSessionPath(tempDir), "utf8"));
     expect(session.current_task).toBeNull();
 
     const hook = path.join(tempDir, ".claude", "hooks", "inject-workflow-state.py");

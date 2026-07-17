@@ -1,4 +1,4 @@
-import { execSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -119,11 +119,14 @@ describe("configureCodex", () => {
     const hooksJson = JSON.parse(hooks) as {
       hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
     };
-    const commands = hooksJson.hooks.UserPromptSubmit.flatMap((group) =>
+    const sessionStartCommands = hooksJson.hooks.SessionStart.flatMap((group) =>
       group.hooks.map((hook) => hook.command),
     );
-    expect(commands).toEqual([
-      hookCommand(tempDir, ".codex", "session-start.py"),
+    const userPromptCommands = hooksJson.hooks.UserPromptSubmit.flatMap((group) =>
+      group.hooks.map((hook) => hook.command),
+    );
+    expect(sessionStartCommands).toEqual([hookCommand(tempDir, ".codex", "session-start.py")]);
+    expect(userPromptCommands).toEqual([
       hookCommand(tempDir, ".codex", "inject-workflow-state.py"),
     ]);
 
@@ -168,20 +171,99 @@ describe("configureCodex", () => {
     expect(hookPaths).toContain(".codex/hooks/inject-workflow-state.py");
   });
 
+  it("uses the same Codex ppid fallback for agent and agentless state API commands", async () => {
+    await configureCodex(tempDir);
+    await mkdir(path.join(tempDir, ".easy-coding"), { recursive: true });
+    const stateApi = path.join(tempDir, ".codex", "hooks", "easy_coding_state.py");
+
+    execFileSync(
+      pythonCmd,
+      [
+        stateApi,
+        "create-task",
+        "--task-id",
+        "fallback-task",
+        "--type",
+        "feature",
+        "--title",
+        "fallback",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    const snapshot = JSON.parse(
+      execFileSync(pythonCmd, [stateApi, "snapshot"], {
+        cwd: tempDir,
+        encoding: "utf8",
+      }),
+    );
+
+    expect(snapshot.current_task).toBe("fallback-task");
+    expect(snapshot.session_file).toMatch(/codex-ppid-\d+\.json$/);
+  });
+
   it("runs portable launcher hook commands from paths with special characters", async () => {
     const specialDir = path.join(tempDir, 'repo $HOME `echo bad` "quote"');
     await mkdir(specialDir, { recursive: true });
 
     const artifacts = await configureCodex(specialDir);
+    await mkdir(path.join(specialDir, ".easy-coding"), { recursive: true });
 
     const hooksJson = JSON.parse(await readFile(path.join(specialDir, ".codex", "hooks.json"), "utf8")) as {
       hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
     };
-    const command = hooksJson.hooks.UserPromptSubmit[0].hooks[0].command;
+    const command = hooksJson.hooks.SessionStart[0].hooks[0].command;
 
     expect(command).not.toContain(specialDir);
     expect(command).toContain(".codex/hooks/session-start.py");
-    execSync(command, { cwd: specialDir, input: "{}", encoding: "utf8" });
+    execSync(command, {
+      cwd: specialDir,
+      input: JSON.stringify({
+        cwd: specialDir,
+        hook_event_name: "SessionStart",
+        session_id: "1200",
+      }),
+      encoding: "utf8",
+    });
+    execSync(command, {
+      cwd: specialDir,
+      input: JSON.stringify({
+        cwd: specialDir,
+        hook_event_name: "SessionStart",
+        session_id: "1201",
+      }),
+      encoding: "utf8",
+    });
+    expect(
+      await pathExists(path.join(specialDir, ".easy-coding", "sessions", "codex-1200.json")),
+    ).toBe(true);
+    expect(
+      await pathExists(path.join(specialDir, ".easy-coding", "sessions", "codex-1201.json")),
+    ).toBe(true);
+    const firstSession = JSON.parse(
+      await readFile(
+        path.join(specialDir, ".easy-coding", "sessions", "codex-1200.json"),
+        "utf8",
+      ),
+    );
+    expect(firstSession).toMatchObject({
+      agent: "codex",
+      external_session_id: "1200",
+      session_key: "codex-1200",
+      session_source: "hook-session-id",
+    });
+    const promptCommand = hooksJson.hooks.UserPromptSubmit[0].hooks[0].command;
+    const promptOutput = execSync(promptCommand, {
+      cwd: specialDir,
+      input: JSON.stringify({
+        cwd: specialDir,
+        hook_event_name: "UserPromptSubmit",
+        session_id: "1200",
+      }),
+      encoding: "utf8",
+    });
+    expect(promptOutput).toContain("[easy-coding:session-file:.easy-coding/sessions/codex-1200.json]");
 
     await writeInstallManifest(specialDir, {
       harnessVersion: "0.5.1",
@@ -195,7 +277,7 @@ describe("configureCodex", () => {
       (registration: { hook_path: string | null }) => registration.hook_path,
     );
     expect(hookPaths).toContain(".codex/hooks/session-start.py");
-  });
+  }, 15_000);
 });
 
 describe("configureQoder", () => {
@@ -240,7 +322,7 @@ describe("configureQoder", () => {
 
     const settings = await readFile(path.join(tempDir, ".qoder", "settings.json"), "utf8");
     expect(settings).toContain(".qoder/hooks");
-    expect(settings).toContain("session-start.py");
+    expect(settings).not.toContain("session-start.py");
     expect(settings).not.toContain(tempDir);
     expect(settings).not.toContain(`${pythonCmd} .qoder/hooks/`);
     expect(settings).not.toContain("{{");
@@ -254,7 +336,6 @@ describe("configureQoder", () => {
       ...settingsJson.hooks.PreToolUse.flatMap((group) => group.hooks.map((hook) => hook.command)),
     ];
     expect(commands).toEqual([
-      hookCommand(tempDir, ".qoder", "session-start.py"),
       hookCommand(tempDir, ".qoder", "inject-workflow-state.py"),
       hookCommand(tempDir, ".qoder", "inject-subagent-context.py"),
     ]);
@@ -275,7 +356,7 @@ describe("configureQoder", () => {
 
     const settings = await readFile(path.join(tempDir, ".qodercn", "settings.json"), "utf8");
     expect(settings).toContain(".qodercn/hooks");
-    expect(settings).toContain("session-start.py");
+    expect(settings).not.toContain("session-start.py");
     expect(settings).not.toContain(tempDir);
     expect(settings).not.toContain(`${pythonCmd} .qodercn/hooks/`);
     const settingsJson = JSON.parse(settings) as {
@@ -288,7 +369,6 @@ describe("configureQoder", () => {
       ...settingsJson.hooks.PreToolUse.flatMap((group) => group.hooks.map((hook) => hook.command)),
     ];
     expect(commands).toEqual([
-      hookCommand(tempDir, ".qodercn", "session-start.py"),
       hookCommand(tempDir, ".qodercn", "inject-workflow-state.py"),
       hookCommand(tempDir, ".qodercn", "inject-subagent-context.py"),
     ]);

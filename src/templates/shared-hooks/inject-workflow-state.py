@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 import sys
 
-from easy_coding_state import load_session
+from easy_coding_state import ensure_hook_session
 from easy_coding_status import build_status_context
 
 
@@ -70,13 +70,10 @@ def main() -> int:
     if root is None:
         return 0
 
-    session = load_session(root)
-    if session is None:
-        session = {"current_task": None, "created_at": ""}
-
     event_name = payload.get("hook_event_name") or payload.get("hookEventName") or "UserPromptSubmit"
     agent = detect_agent()
-    emit(event_name, build_status_context(root, session, agent))
+    session, session_path = ensure_hook_session(root, payload, agent)
+    emit(event_name, build_status_context(root, session, agent, session_path))
     return 0
 
 

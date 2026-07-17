@@ -44,10 +44,30 @@ Field whitelist: `mode`, `language`, `test.*`, `build.*`, `lint.*`. Do not inven
 top-level keys. Do not copy any CLI-owned field (`harness_version`, `agents`, …) into this
 file.
 
-## Entry guard (idempotency — run first)
+## Project-init preflight (run first — read-only)
 
 1. Read `.easy-coding/tasks/project-init/task.json`.
    - File missing → the CLI never ran. Tell the user to run `easy-coding init` first. Stop.
+   - File present → record its `status` for the entry dispatch below, but do not start the
+     compliance scan or initialization yet.
+2. Do not call the state API or write any project asset until this file-existence check passes.
+
+## Session path resolution (run after preflight — before any project write)
+
+Resolve one stable session path `<P>` and reuse it for the entire skill run:
+
+1. If hook context contains `[easy-coding:session-file:P]`, use that exact path.
+2. Otherwise run
+   `{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py snapshot --agent <agent-id>`
+   and use the returned `session_file` as `<P>`. This is the compatibility path for an explicit
+   ec-init invocation before the platform has surfaced hook context.
+3. If snapshot fails or does not return a safe session path, stop before writing any project
+   asset and tell the user to enable or approve the platform hooks. Never execute a command with
+   the literal placeholder `<P>`.
+
+## Entry dispatch (idempotency — run after session resolution)
+
+1. Use the `status` read during the project-init preflight.
    - `status == "COMPLETE"` → already initialized. Run the **compliance scan** (see below),
      then exit.
    - `status == "PENDING"` → proceed with full initialization.
@@ -89,7 +109,7 @@ On decline: exit with the gap list as a reference for the user to address manual
 
 **Clear upgrade marker:** After the compliance scan completes (whether all checks passed or
 gaps were fixed), run
-`{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py project-init-complete --agent <agent-id>`.
+`{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py project-init-complete --session-file <P> --agent <agent-id>`.
 This removes `pending_init_since` and clears the "Waiting init · Upgrade" status line so the
 user is no longer prompted on every session. Use the returned `status_context` as the current
 status source.
@@ -147,7 +167,7 @@ agent must be able to see what was generated and on what evidence.
    Also ensure `SHORT_MEMORY_TEMPLATE.md` exists in `memory/` as format reference. Never write
    fake entries.
 7. **Mark complete** — write the final `init_log` entry, then run
-   `{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py project-init-complete --agent <agent-id>`.
+   `{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py project-init-complete --session-file <P> --agent <agent-id>`.
    Use the returned `status_context`, then tell the user initialization is done and daily work
    goes through `{{skill_trigger}}ec-workflow`.
 

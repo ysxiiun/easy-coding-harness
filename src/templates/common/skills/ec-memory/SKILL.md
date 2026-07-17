@@ -18,13 +18,17 @@ recorded comment/doc language.
 
 Create one file under `.easy-coding/memory/short/` following the format in
 `.easy-coding/memory/SHORT_MEMORY_TEMPLATE.md`. File naming convention:
-`{NNN}_{YYYYMMDD}_{smart_name}.md`. The entry is immutable after creation.
+`{memory_id}_{YYYYMMDD}_{smart_name}.md`. Generate the id first with
+`{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py memory-new-id --session-file <P> --agent <agent-id>`.
+Use the returned `memory_id` unchanged as both the filename prefix and the frontmatter `id`.
+It uses UUIDv7, so agents never scan the directory or calculate a shared numeric sequence.
+Keep the readable `smart_name` suffix. The entry is immutable after creation.
 Frontmatter (all fields required):
 
 ```yaml
 ---
 memory_schema: 2
-id: SM-{YYYYMMDD}-{NN}
+id: {memory_id returned by memory-new-id, exact}
 source_task: {current task id, exact}
 date: {YYYY-MM-DD}
 task_type: {feature | bugfix | refactor | perf | doc | workflow}
@@ -53,7 +57,8 @@ After the file is successfully written, record the checkpoint immediately:
 Use the returned `status_context` as authoritative. On resume, if `memory_progress` already
 shows `short_memory_written:true`, do not create a duplicate entry; continue from Step 2.
 The state API validates `memory_schema: 2`, requires `source_task` to equal the current task id,
-and fingerprints the file. Do not reuse an older task's memory file as this checkpoint.
+requires a UUIDv7 id that exactly matches the filename prefix, and fingerprints the file. Do not
+reuse an older task's memory file as this checkpoint.
 
 ## Supermodule memory routing
 

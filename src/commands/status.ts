@@ -6,7 +6,7 @@ import { renderBanner } from "../ui/banner.js";
 import { compareVersions } from "../utils/compare-versions.js";
 import { isConfirmMode, readConfigYaml } from "../utils/config-yaml.js";
 import { pathExists } from "../utils/file-writer.js";
-import { readSessionFile } from "../utils/session.js";
+import { listSessionFiles } from "../utils/session.js";
 import {
   getTaskJsonPath,
   isActiveTask,
@@ -28,7 +28,7 @@ export async function status(): Promise<void> {
   const tasks = await listTasks(cwd);
   const taskCounts = summarizeTaskStatuses(tasks);
   const activeTasks = tasks.filter((item) => isActiveTask(item.task));
-  const session = await readSessionFile(cwd);
+  const sessions = await listSessionFiles(cwd);
   const versionRelation = compareVersions(config.harness_version, VERSION);
 
   console.log(chalk.bold("Harness"));
@@ -48,23 +48,35 @@ export async function status(): Promise<void> {
     : "guard";
   console.log(`  confirm_mode: ${projectConfirmMode}`);
   console.log("");
-  console.log(chalk.bold("Session"));
-  const sessionConfirmMode = session?.confirm_mode;
-  console.log(`  confirm_mode: ${sessionConfirmMode ?? "project default"}`);
-  console.log(`  effective_confirm_mode: ${sessionConfirmMode ?? projectConfirmMode}`);
-  console.log(`  harness: ${session?.harness_disabled ? "disabled for this session" : "enabled"}`);
-  if (session?.current_task) {
+  console.log(chalk.bold("Sessions"));
+  console.log(`  project_confirm_mode: ${projectConfirmMode}`);
+  console.log(`  effective_confirm_mode: ${projectConfirmMode} (without a session override)`);
+  if (sessions.length === 0) {
+    console.log("  no session files");
+  }
+  for (const { key, session } of sessions) {
+    const sessionConfirmMode = session.confirm_mode;
+    console.log(`  - ${key}`);
+    console.log(`    agent: ${session.agent ?? "legacy/unknown"}`);
+    console.log(`    source: ${session.session_source ?? "legacy"}`);
+    console.log(`    confirm_mode: ${sessionConfirmMode ?? "project default"}`);
+    console.log(`    effective_confirm_mode: ${sessionConfirmMode ?? projectConfirmMode}`);
+    console.log(
+      `    harness: ${session.harness_disabled ? "disabled for this session" : "enabled"}`,
+    );
+    if (!session.current_task) {
+      console.log("    current_task: none");
+      continue;
+    }
     const taskPath = getTaskJsonPath(cwd, session.current_task);
     if (await pathExists(taskPath)) {
       const task = await readTaskJson(taskPath);
-      console.log(`  current_task: ${session.current_task}`);
-      console.log(`  current_stage: ${task.status}`);
-      console.log(`  last_agent: ${task.last_agent}`);
+      console.log(`    current_task: ${session.current_task}`);
+      console.log(`    current_stage: ${task.status}`);
+      console.log(`    last_agent: ${task.last_agent}`);
     } else {
-      console.log(`  current_task: ${session.current_task} (task.json missing)`);
+      console.log(`    current_task: ${session.current_task} (task.json missing)`);
     }
-  } else {
-    console.log("  no active session");
   }
   console.log("");
   console.log(chalk.bold("Tasks"));

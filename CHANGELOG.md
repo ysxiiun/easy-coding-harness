@@ -6,6 +6,14 @@
 - `y`：常规功能升级
 - `z`：日常 bug 修复
 
+## 0.8.1-beta.1
+
+- 短期记忆不再扫描目录生成 `001/002` 数字前缀，改由状态 API 生成 UUIDv7 通用 ID；文件名前缀与 schema v2 frontmatter `id` 完全一致，同时保留日期和可读摘要，避免多人或多 Agent 并发写入时重名。
+- MEMORY 滑动窗口改按 frontmatter `date` 与 `id` 稳定排序；旧数字前缀和 `SM-YYYYMMDD-NNN` 记忆继续兼容读取，新检查点会拒绝 ID 与文件名前缀不一致的文件。
+- 修复 Codex App 多个逻辑任务共享 Easy Coding session 的问题：session 文件不再以 PPID 为主键，统一使用 `<agent>-<session-id>.json`，避免 Claude Code、Codex、Qoder 的 ID 格式或取值冲突。
+- hook session resolver 优先消费 payload `session_id`，对不安全 ID 使用稳定 hash；缺少逻辑 ID 时保留带 agent 前缀的 PPID 兼容回退，首次使用会接管旧 `<ppid>.json`，并按逻辑活跃时间清理无当前任务的过期 session。
+- Codex `session-start.py` 改由 thread 级 `SessionStart` 触发；Claude Code 与 Qoder 也收敛为每个事件只有一个 session 写入 hook，避免初始化竞态。upgrade 按事件、命令和注册数量迁移旧 hook，并在 manifest 缺失时继续识别、清理 Qoder 旧 `session-start.py`；legacy `state.json` 通过原子迁移锁串行认领且仅在新 session 提交成功后删除。`ec-init` 优先沿用 hook 注入的逻辑 session，缺少 hook 上下文时先通过 snapshot 固定兼容 session，再执行 `project-init-complete`；CLI status 改为展示全部 agent session。
+
 ## 0.8.1-beta.0
 
 - 修复分析阶段结束后的确认门可能退化为单一“回复确认执行”提示的问题：存在 `pending_transition` 时必须实际调用平台原生选择能力，完整提供确认目标阶段、交接给其他智能体和 free-form Other。

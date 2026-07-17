@@ -65,16 +65,14 @@ const EXPECTED_HOOK_REGISTRATION_SCRIPTS: Record<AgentPlatform, ExpectedHookScri
   {
     "claude-code": [
       { event: "SessionStart", scriptName: "session-start.py" },
-      { event: "UserPromptSubmit", scriptName: "session-start.py" },
       { event: "UserPromptSubmit", scriptName: "inject-workflow-state.py" },
       { event: "PreToolUse", scriptName: "inject-subagent-context.py" },
     ],
     codex: [
-      { event: "UserPromptSubmit", scriptName: "session-start.py" },
+      { event: "SessionStart", scriptName: "session-start.py" },
       { event: "UserPromptSubmit", scriptName: "inject-workflow-state.py" },
     ],
     qoder: [
-      { event: "UserPromptSubmit", scriptName: "session-start.py" },
       { event: "UserPromptSubmit", scriptName: "inject-workflow-state.py" },
       { event: "PreToolUse", scriptName: "inject-subagent-context.py" },
     ],
@@ -87,7 +85,13 @@ const MANAGED_HOOK_SCRIPT_NAMES: Record<AgentPlatform, string[]> = {
     ),
   ],
   codex: [...new Set(EXPECTED_HOOK_REGISTRATION_SCRIPTS.codex.map(({ scriptName }) => scriptName))],
-  qoder: [...new Set(EXPECTED_HOOK_REGISTRATION_SCRIPTS.qoder.map(({ scriptName }) => scriptName))],
+  // Keep removed registrations recognizable so same-version repair can clean them without a manifest.
+  qoder: [
+    ...new Set([
+      ...EXPECTED_HOOK_REGISTRATION_SCRIPTS.qoder.map(({ scriptName }) => scriptName),
+      "session-start.py",
+    ]),
+  ],
 };
 
 export async function upgrade(opts: UpgradeOptions): Promise<void> {
@@ -256,7 +260,9 @@ async function needsHookConfigRefresh(
     }
 
     const commandsByEvent = collectHookCommandsByEvent(parsed.hooks);
-    const commands = [...commandsByEvent.values()].flat();
+    const actualRegistrations = [...commandsByEvent.entries()].flatMap(([event, commands]) =>
+      commands.map((command) => ({ event, command })),
+    );
     const expectedRegistrations = expectedHookRegistrations(target.dir, meta, agent, projectId);
     const expectedCommandSet = new Set(
       expectedRegistrations.map((registration) => registration.command),
@@ -270,15 +276,14 @@ async function needsHookConfigRefresh(
         .map((registration) => registration.command) ?? [],
     );
     if (
-      commands.some((command) =>
-        isUnexpectedManagedHookCommand(
-          command,
-          expectedCommandSet,
-          target.dir,
-          meta,
-          agent,
-          manifestManagedCommands,
-        ),
+      hasUnexpectedManagedHookRegistrations(
+        actualRegistrations,
+        expectedRegistrations,
+        expectedCommandSet,
+        target.dir,
+        meta,
+        agent,
+        manifestManagedCommands,
       )
     ) {
       return true;
@@ -327,6 +332,39 @@ function hookRegistrationKey(registration: ExpectedHookRegistration): string {
   return `${registration.event}\0${registration.command}`;
 }
 
+function hasUnexpectedManagedHookRegistrations(
+  actualRegistrations: ExpectedHookRegistration[],
+  expectedRegistrations: ExpectedHookRegistration[],
+  expectedCommands: Set<string>,
+  cwd: string,
+  meta: PlatformMeta,
+  platform: AgentPlatform,
+  manifestManagedCommands: Set<string>,
+): boolean {
+  const remainingExpected = countRegistrations(expectedRegistrations);
+  for (const registration of actualRegistrations) {
+    const key = hookRegistrationKey(registration);
+    const remainingCount = remainingExpected.get(key) ?? 0;
+    if (remainingCount > 0) {
+      remainingExpected.set(key, remainingCount - 1);
+      continue;
+    }
+    if (
+      isManagedHookCommand(
+        registration.command,
+        expectedCommands,
+        cwd,
+        meta,
+        platform,
+        manifestManagedCommands,
+      )
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function collectHookCommandsByEvent(hooks: unknown): Map<string, string[]> {
   if (!hooks || typeof hooks !== "object" || Array.isArray(hooks)) {
     return new Map();
@@ -361,7 +399,7 @@ function collectHookCommandsByEvent(hooks: unknown): Map<string, string[]> {
   return commandsByEvent;
 }
 
-function isUnexpectedManagedHookCommand(
+function isManagedHookCommand(
   command: string,
   expectedCommands: Set<string>,
   cwd: string,
@@ -370,7 +408,7 @@ function isUnexpectedManagedHookCommand(
   manifestManagedCommands: Set<string>,
 ): boolean {
   if (expectedCommands.has(command)) {
-    return false;
+    return true;
   }
   if (manifestManagedCommands.has(command)) {
     return true;

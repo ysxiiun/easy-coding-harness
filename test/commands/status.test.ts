@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { status } from "../../src/commands/status.js";
 import { VERSION } from "../../src/constants/version.js";
+import { createSessionFile, writeSessionFile } from "../../src/utils/session.js";
 
 let tempDir: string;
 let originalCwd: string;
@@ -70,6 +71,43 @@ describe("status command", () => {
     await status();
 
     expect(output()).toContain("confirm_mode: lite");
+    expect(output()).toContain("effective_confirm_mode: lite");
+  });
+
+  it("lists agent-prefixed logical sessions independently", async () => {
+    await writeConfig(VERSION, "guard");
+    await writeSessionFile(
+      tempDir,
+      {
+        ...createSessionFile(),
+        agent: "claude-code",
+        external_session_id: "1200",
+        session_key: "claude-code-1200",
+        session_source: "hook-session-id",
+        confirm_mode: "approve",
+      },
+      "claude-code-1200",
+    );
+    await writeSessionFile(
+      tempDir,
+      {
+        ...createSessionFile(),
+        agent: "codex",
+        external_session_id: "1200",
+        session_key: "codex-1200",
+        session_source: "hook-session-id",
+        confirm_mode: "lite",
+      },
+      "codex-1200",
+    );
+
+    await status();
+
+    expect(output()).toContain("- claude-code-1200");
+    expect(output()).toContain("- codex-1200");
+    expect(output()).toContain("agent: claude-code");
+    expect(output()).toContain("agent: codex");
+    expect(output()).toContain("effective_confirm_mode: approve");
     expect(output()).toContain("effective_confirm_mode: lite");
   });
 });

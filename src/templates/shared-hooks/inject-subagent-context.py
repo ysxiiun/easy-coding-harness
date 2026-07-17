@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 import sys
 
-from easy_coding_state import load_session, snapshot_state
+from easy_coding_state import ensure_hook_session, snapshot_state
 
 
 def configure_stdio() -> None:
@@ -28,6 +28,21 @@ def find_ec_root(start: Path) -> Path | None:
         if current == current.parent:
             return None
         current = current.parent
+
+
+def detect_agent() -> str:
+    if os.environ.get("CLAUDE_PROJECT_DIR"):
+        return "claude-code"
+    if os.environ.get("QODER_PROJECT_DIR"):
+        return "qoder"
+    hook_path = Path(sys.argv[0]).as_posix()
+    if ".claude/" in hook_path:
+        return "claude-code"
+    if ".codex/" in hook_path:
+        return "codex"
+    if ".qoder/" in hook_path or ".qodercn/" in hook_path:
+        return "qoder"
+    return "unknown"
 
 
 def emit(event_name: str, context: str) -> None:
@@ -54,11 +69,12 @@ def main() -> int:
     if root is None:
         return 0
 
-    session = load_session(root)
+    agent = detect_agent()
+    session, session_path = ensure_hook_session(root, payload, agent)
     if session and session.get("harness_disabled") is True:
         return 0
 
-    state = snapshot_state(root, session=session)
+    state = snapshot_state(root, session_path, session)
     task_id = state.get("current_task")
     context = [
         "[easy-coding:subagent-guard]",

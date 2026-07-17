@@ -52,7 +52,8 @@ confirms two critical gates, lite uses the same gates but forces IMPLEMENT -> VE
 and auto advances legal edges automatically. Lite never enters REVIEW. VERIFICATION remains
 the code-task fresh-evidence hard gate, and MEMORY keeps the conditional long-memory threshold
 gate. The active task
-pointer lives in `sessions/{ppid}.json`;
+pointer lives in `sessions/{agent}-{session-id}.json` (with an agent-prefixed PPID fallback only
+when a hook payload has no logical session ID);
 when the task reaches `COMPLETE` or `CLOSED`, the state API clears `current_task` so the
 session returns to Ready. Each task's stage persists in its `task.json`. Hooks inject the
 session and task state as breadcrumbs so every reply can render the status line.

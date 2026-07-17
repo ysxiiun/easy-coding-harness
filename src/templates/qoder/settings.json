@@ -5,17 +5,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "{{platform_hook_session_start_command}}",
-            "timeout": 10
-          }
-        ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
             "command": "{{platform_hook_inject_workflow_state_command}}",
-            "timeout": 5
+            "timeout": 10
           }
         ]
       }

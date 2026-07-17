@@ -1,6 +1,6 @@
 ---
 memory_schema: 2
-id: SM-YYYYMMDD-001
+id: {memory_id}
 source_task: MM-DD-task-slug
 date: YYYY-MM-DD
 task_type: feature | bugfix | refactor | perf | doc | workflow
@@ -20,14 +20,17 @@ target_long: BUSINESS | TECHNICAL | BOTH | NONE
 # Short Memory Template
 
 > This template defines the format for files under `.easy-coding/memory/short/`.
-> File naming convention: `{NNN}_{YYYYMMDD}_{smart_name}.md`
+> File naming convention: `{memory_id}_{YYYYMMDD}_{smart_name}.md`
+> Generate `memory_id` through the state API `memory-new-id` command and use it unchanged as
+> both the filename prefix and this frontmatter `id`. The UUIDv7 id is safe for concurrent agents.
+> Keep `smart_name` as the readable summary suffix.
 > `source_task` must exactly match the current workflow task id from `task.json`.
 > Short memories are immutable after creation — they serve as a sliding window of recent
 > details and a buffer for long-term distillation candidates.
 > When short memories reach the threshold (default 10), the newest 5 are kept as recent
 > context; older entries are distillation candidates for long-term memory.
-> Sorting: by frontmatter `date` ascending; if date is missing or tied, by filename prefix
-> number ascending; then by filename ascending.
+> Sorting: by frontmatter `date` ascending, then by frontmatter `id`, then by filename. Legacy
+> `SM-YYYYMMDD-NNN` ids sort before UUIDv7 ids on the same date for upgrade compatibility.
 
 ## Task Summary
 

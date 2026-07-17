@@ -18,12 +18,13 @@ async function expectPortableHookCommand(
   command: string,
   platformDir: string,
   scriptName: string,
+  platform: "claude-code" | "codex" | "qoder" = "claude-code",
 ): Promise<void> {
   const config = await readConfigYaml(path.join(tempDir, ".easy-coding", "config.yaml"));
   expect(command).toBe(
     renderHookCommand(
       tempDir,
-      PLATFORM_META["claude-code"].templateContext,
+      PLATFORM_META[platform].templateContext,
       scriptName,
       process.platform,
       config.project.id,
@@ -124,6 +125,59 @@ async function moveClaudeSessionStartEventHookToUserPromptSubmit(): Promise<void
   await writeFile(settingsPath, `${JSON.stringify(settings, null, 2)}\n`, "utf8");
 }
 
+async function duplicateClaudeSessionStartUnderUserPromptSubmit(): Promise<void> {
+  const settingsPath = path.join(tempDir, ".claude", "settings.json");
+  const settings = JSON.parse(await readFile(settingsPath, "utf8")) as {
+    hooks: Record<
+      string,
+      Array<{ hooks: Array<{ command: string; timeout?: number; type?: string }> }>
+    >;
+  };
+  const sessionStartHook = settings.hooks.SessionStart[0].hooks[0];
+  settings.hooks.UserPromptSubmit.push({ hooks: [{ ...sessionStartHook }] });
+  await writeFile(settingsPath, `${JSON.stringify(settings, null, 2)}\n`, "utf8");
+}
+
+async function moveCodexSessionStartEventHookToUserPromptSubmit(): Promise<void> {
+  const hooksPath = path.join(tempDir, ".codex", "hooks.json");
+  const hooks = JSON.parse(await readFile(hooksPath, "utf8")) as {
+    hooks: Record<string, Array<{ hooks: Array<{ command: string; timeout?: number; type?: string }> }>>;
+  };
+  const sessionStartHook = hooks.hooks.SessionStart[0].hooks[0];
+  hooks.hooks.UserPromptSubmit.unshift({ hooks: [{ ...sessionStartHook }] });
+  delete hooks.hooks.SessionStart;
+  await writeFile(hooksPath, `${JSON.stringify(hooks, null, 2)}\n`, "utf8");
+}
+
+async function duplicateCodexSessionStartUnderUserPromptSubmit(): Promise<void> {
+  const hooksPath = path.join(tempDir, ".codex", "hooks.json");
+  const hooks = JSON.parse(await readFile(hooksPath, "utf8")) as {
+    hooks: Record<
+      string,
+      Array<{ hooks: Array<{ command: string; timeout?: number; type?: string }> }>
+    >;
+  };
+  const sessionStartHook = hooks.hooks.SessionStart[0].hooks[0];
+  hooks.hooks.UserPromptSubmit.push({ hooks: [{ ...sessionStartHook }] });
+  await writeFile(hooksPath, `${JSON.stringify(hooks, null, 2)}\n`, "utf8");
+}
+
+async function appendLegacyQoderSessionStart(): Promise<void> {
+  const settingsPath = path.join(tempDir, ".qoder", "settings.json");
+  const settings = JSON.parse(await readFile(settingsPath, "utf8")) as {
+    hooks: Record<
+      string,
+      Array<{ hooks: Array<{ command: string; timeout?: number; type?: string }> }>
+    >;
+  };
+  settings.hooks.UserPromptSubmit[0].hooks.push({
+    type: "command",
+    command: `${pythonCmd} .qoder/hooks/session-start.py`,
+    timeout: 15,
+  });
+  await writeFile(settingsPath, `${JSON.stringify(settings, null, 2)}\n`, "utf8");
+}
+
 beforeEach(async () => {
   originalCwd = process.cwd();
   tempDir = await mkdtemp(path.join(os.tmpdir(), "ec-upgrade-"));
@@ -192,7 +246,7 @@ describe("upgrade command", () => {
     expect(JSON.stringify(settings)).not.toContain(`${pythonCmd} .claude/hooks/`);
   });
 
-  it("refreshes when one of Claude's duplicate session-start registrations is missing", async () => {
+  it("refreshes when Claude's SessionStart registration is missing", async () => {
     await init({ agent: "claude-code", yes: true });
     await markProjectInitComplete();
     await removeClaudeSessionStartEvent();
@@ -219,7 +273,7 @@ describe("upgrade command", () => {
       ".claude",
       "session-start.py",
     );
-    expect(sessionStartCount).toBe(2);
+    expect(sessionStartCount).toBe(1);
   });
 
   it("refreshes when Claude session-start registrations are present under the wrong event", async () => {
@@ -242,7 +296,116 @@ describe("upgrade command", () => {
     );
 
     await expectPortableHookCommand(sessionStartCommands[0], ".claude", "session-start.py");
-    expect(userPromptCommands.filter((command) => command.endsWith("/session-start.py"))).toHaveLength(1);
+    expect(userPromptCommands.filter((command) => command.endsWith("/session-start.py"))).toHaveLength(0);
+  });
+
+  it("removes an exact Claude session-start duplicate left under UserPromptSubmit", async () => {
+    await init({ agent: "claude-code", yes: true });
+    await markProjectInitComplete();
+    await duplicateClaudeSessionStartUnderUserPromptSubmit();
+
+    await upgrade({ yes: true });
+
+    const settings = JSON.parse(
+      await readFile(path.join(tempDir, ".claude", "settings.json"), "utf8"),
+    ) as {
+      hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
+    };
+    const sessionStartCommands = settings.hooks.SessionStart.flatMap((group) =>
+      group.hooks.map((hook) => hook.command),
+    );
+    const userPromptCommands = settings.hooks.UserPromptSubmit.flatMap((group) =>
+      group.hooks.map((hook) => hook.command),
+    );
+
+    expect(sessionStartCommands).toHaveLength(1);
+    expect(userPromptCommands.some((command) => command.endsWith("/session-start.py"))).toBe(false);
+  });
+
+  it("moves legacy Codex session-start registration to SessionStart", async () => {
+    await init({ agent: "codex", yes: true });
+    await markProjectInitComplete();
+    await moveCodexSessionStartEventHookToUserPromptSubmit();
+
+    await upgrade({ yes: true });
+
+    const hooks = JSON.parse(
+      await readFile(path.join(tempDir, ".codex", "hooks.json"), "utf8"),
+    ) as {
+      hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
+    };
+    const sessionStartCommands = hooks.hooks.SessionStart.flatMap((group) =>
+      group.hooks.map((hook) => hook.command),
+    );
+    const userPromptCommands = hooks.hooks.UserPromptSubmit.flatMap((group) =>
+      group.hooks.map((hook) => hook.command),
+    );
+
+    expect(sessionStartCommands).toHaveLength(1);
+    await expectPortableHookCommand(
+      sessionStartCommands[0],
+      ".codex",
+      "session-start.py",
+      "codex",
+    );
+    expect(userPromptCommands.some((command) => command.endsWith("/session-start.py"))).toBe(false);
+    expect(userPromptCommands).toHaveLength(1);
+    await expectPortableHookCommand(
+      userPromptCommands[0],
+      ".codex",
+      "inject-workflow-state.py",
+      "codex",
+    );
+  });
+
+  it("removes an exact Codex session-start duplicate left under UserPromptSubmit", async () => {
+    await init({ agent: "codex", yes: true });
+    await markProjectInitComplete();
+    await duplicateCodexSessionStartUnderUserPromptSubmit();
+
+    await upgrade({ yes: true });
+
+    const hooks = JSON.parse(
+      await readFile(path.join(tempDir, ".codex", "hooks.json"), "utf8"),
+    ) as {
+      hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
+    };
+    const sessionStartCommands = hooks.hooks.SessionStart.flatMap((group) =>
+      group.hooks.map((hook) => hook.command),
+    );
+    const userPromptCommands = hooks.hooks.UserPromptSubmit.flatMap((group) =>
+      group.hooks.map((hook) => hook.command),
+    );
+
+    expect(sessionStartCommands).toHaveLength(1);
+    expect(userPromptCommands.some((command) => command.endsWith("/session-start.py"))).toBe(false);
+  });
+
+  it("removes legacy Qoder session-start without relying on the install manifest", async () => {
+    await init({ agent: "qoder", yes: true });
+    await markProjectInitComplete();
+    await appendLegacyQoderSessionStart();
+    await rm(path.join(tempDir, ".easy-coding", "install-manifest.json"));
+
+    await upgrade({ yes: true });
+
+    const settings = JSON.parse(
+      await readFile(path.join(tempDir, ".qoder", "settings.json"), "utf8"),
+    ) as {
+      hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
+    };
+    const userPromptCommands = settings.hooks.UserPromptSubmit.flatMap((group) =>
+      group.hooks.map((hook) => hook.command),
+    );
+
+    expect(userPromptCommands).toHaveLength(1);
+    await expectPortableHookCommand(
+      userPromptCommands[0],
+      ".qoder",
+      "inject-workflow-state.py",
+      "qoder",
+    );
+    expect(JSON.stringify(settings)).not.toContain("session-start.py");
   });
 
   it("refreshes 0.5.0 relative Claude hook commands and keeps ec-init adaptation pending", async () => {

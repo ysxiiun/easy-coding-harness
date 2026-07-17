@@ -66,8 +66,8 @@ export const PLATFORM_META: Record<AgentPlatform, PlatformMeta> = {
     agentFileExt: ".toml",
     mainConstraint: "AGENTS.md",
     skillTrigger: "$",
-    hookEvents: ["UserPromptSubmit"],
-    stateInjectEvent: ["UserPromptSubmit"],
+    hookEvents: ["SessionStart", "UserPromptSubmit"],
+    stateInjectEvent: ["SessionStart", "UserPromptSubmit"],
     hasSubagentContext: false,
     templateContext: {
       sub_agent_dispatch: "Codex sub-agent dispatch",

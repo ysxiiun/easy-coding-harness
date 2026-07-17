@@ -419,7 +419,7 @@ describe("clear command", () => {
 
     const hooksPath = path.join(tempDir, ".codex", "hooks.json");
     const hooks = JSON.parse(await readFile(hooksPath, "utf8"));
-    for (const group of hooks.hooks.UserPromptSubmit) {
+    for (const group of hooks.hooks.SessionStart) {
       for (const hook of group.hooks) {
         if (hook.command.includes(".codex/hooks/session-start.py")) {
           hook.command = `EC_TRACE=1 ${hook.command}`;

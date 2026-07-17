@@ -18,16 +18,6 @@
         "hooks": [
           {
             "type": "command",
-            "command": "{{platform_hook_session_start_command}}",
-            "timeout": 15000
-          }
-        ]
-      },
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
             "command": "{{platform_hook_inject_workflow_state_command}}",
             "timeout": 15000
           }

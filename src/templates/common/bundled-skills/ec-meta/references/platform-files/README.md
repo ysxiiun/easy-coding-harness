@@ -37,23 +37,27 @@ Python runtime files are shared verbatim across platforms (only the JSON wrapper
   transitions, and task state reads.
 - `easy_coding_status.py` — renders the Markdown status line and machine breadcrumbs from
   state API snapshots.
-- `session-start.py` — ensures the per-session file exists; performs legacy `state.json`
-  migration; injects resume / init-required / handoff breadcrumbs. Idempotent.
-- `inject-workflow-state.py` — injects the `workflow-state` and `current-task` breadcrumbs so
-  the status line can render.
+- `session-start.py` — initializes the per-session file on native session-start events and emits
+  resume / init-required / handoff breadcrumbs.
+- `inject-workflow-state.py` — idempotently ensures the session and injects the `workflow-state`
+  and `current-task` breadcrumbs so the status line can render.
 - `inject-subagent-context.py` — injects the sub-agent guard before an Agent tool call.
 
 Wrapper differences:
 
 - **Claude Code**: full event set — `SessionStart`, `UserPromptSubmit`, `PreToolUse(Agent)`.
-  `session-start.py` also runs on `UserPromptSubmit` before `inject-workflow-state.py`, so
-  every prompt receives a fresh status context even if the native session event is not surfaced
-  to the model turn.
-- **Codex**: no `SessionStart` and no Agent tool. `session-start.py` and
-  `inject-workflow-state.py` both hang off `UserPromptSubmit`; `inject-subagent-context.py`
-  is skipped. Codex hooks also require user-level enablement (`[features] hooks = true`).
-- **Qoder**: like Claude Code (has Agent tool + Stop) but uses `UserPromptSubmit` for state
-  injection. The `.qoder/settings.json` wrapper nests an extra `hooks` array.
+  `session-start.py` owns native session initialization, while `inject-workflow-state.py` is the
+  single session writer on each prompt.
+- **Codex**: `session-start.py` runs on `SessionStart`, while
+  `inject-workflow-state.py` runs on `UserPromptSubmit`; `inject-subagent-context.py` is
+  skipped because Codex has no Agent tool hook. Codex hooks also require user-level enablement
+  (`[features] hooks = true`).
+- **Qoder**: has no separate session-start registration, so `inject-workflow-state.py` performs
+  idempotent initialization and state injection as the single `UserPromptSubmit` writer. Qoder
+  also has Agent tool + Stop hooks, and `.qoder/settings.json` nests an extra `hooks` array.
 
-`session-start.py` is designed to be idempotent precisely because Claude/Codex/Qoder can fire it
-on `UserPromptSubmit` rather than only a real session-start event — repeated calls are safe.
+Every session-writing hook resolves the same agent-prefixed logical session key from the hook
+payload, for example `codex-<session-id>.json`. On first use it adopts a legacy `<ppid>.json`
+file when present. A global atomic migration lock ensures only one concurrently starting session
+can claim legacy `state.json`; the winner commits its canonical session before removing the old
+state and releasing the lock.

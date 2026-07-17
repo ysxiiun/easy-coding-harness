@@ -4,6 +4,9 @@ import hashlib
 import json
 import os
 import re
+import secrets
+import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 import sys
@@ -66,6 +69,16 @@ LEGACY_STAGE_MAP = {
 
 DEFAULT_SHORT_TERM_MAX = 10
 DEFAULT_SHORT_TERM_KEEP = 5
+SESSION_STALE_THRESHOLD_HOURS = 30 * 24
+SESSION_COMPONENT_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
+SESSION_AGENT_NAMESPACES = {"claude-code", "codex", "qoder", "unknown"}
+LEGACY_STATE_LOCK_TIMEOUT_SECONDS = 5.0
+LEGACY_STATE_LOCK_STALE_SECONDS = 60.0
+LEGACY_STATE_LOCK_POLL_SECONDS = 0.02
+SHORT_MEMORY_UUID_V7_PATTERN = re.compile(
+    r"^SM-[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+)
+LEGACY_SHORT_MEMORY_ID_PATTERN = re.compile(r"^SM-\d{8}-\d+$")
 DEV_SPEC_PLACEHOLDER_PATTERN = re.compile(r"\[\[EC_TODO:[^\]\n]+\]\]")
 MARKDOWN_HEADING_PATTERN = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 TABLE_HEADER_CELLS = {
@@ -98,6 +111,83 @@ def configure_stdio() -> None:
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def generate_short_memory_id() -> str:
+    timestamp_ms = time.time_ns() // 1_000_000
+    random_bits = secrets.randbits(74)
+    random_a = random_bits >> 62
+    random_b = random_bits & ((1 << 62) - 1)
+    # UUIDv7 用毫秒时间保证可排序，再用 74 位随机数避免多 Agent 并发碰撞。
+    value = (timestamp_ms & ((1 << 48) - 1)) << 80
+    value |= 0x7 << 76
+    value |= random_a << 64
+    value |= 0b10 << 62
+    value |= random_b
+    return f"SM-{uuid.UUID(int=value)}"
+
+
+def short_memory_id_sort_key(memory_id: str) -> tuple[int, str]:
+    # 升级当天可能同时存在旧序号 ID 和新 UUIDv7；旧记录先排，避免新记录被误判为窗口外旧记忆。
+    if LEGACY_SHORT_MEMORY_ID_PATTERN.fullmatch(memory_id):
+        return (0, memory_id)
+    if SHORT_MEMORY_UUID_V7_PATTERN.fullmatch(memory_id):
+        return (1, memory_id)
+    return (2, memory_id)
+
+
+def normalize_session_agent(agent: str | None) -> str:
+    normalized = str(agent or "unknown").strip().lower()
+    return normalized if normalized in SESSION_AGENT_NAMESPACES else "unknown"
+
+
+def detect_runtime_agent() -> str:
+    if os.environ.get("CLAUDE_PROJECT_DIR"):
+        return "claude-code"
+    if os.environ.get("QODER_PROJECT_DIR"):
+        return "qoder"
+    script_path = Path(sys.argv[0]).as_posix()
+    if ".claude/" in script_path:
+        return "claude-code"
+    if ".codex/" in script_path:
+        return "codex"
+    if ".qoder/" in script_path or ".qodercn/" in script_path:
+        return "qoder"
+    return "unknown"
+
+
+def normalize_session_component(value: str) -> str:
+    if (
+        value not in {".", ".."}
+        and len(value) <= 120
+        and SESSION_COMPONENT_PATTERN.fullmatch(value)
+    ):
+        return value
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:32]
+    return f"sha256-{digest}"
+
+
+# 逻辑会话由 Agent 命名空间与 hook session_id 共同标识；PPID 只用于缺少逻辑 ID 的兼容回退。
+def hook_session_identity(
+    payload: dict,
+    agent: str | None,
+    ppid: int | None = None,
+) -> dict:
+    namespace = normalize_session_agent(agent)
+    raw_session_id = payload.get("session_id") or payload.get("sessionId")
+    external_session_id = str(raw_session_id).strip() if raw_session_id is not None else ""
+    if external_session_id:
+        component = normalize_session_component(external_session_id)
+        source = "hook-session-id"
+    else:
+        component = f"ppid-{ppid if ppid is not None else os.getppid()}"
+        source = "legacy-ppid"
+    return {
+        "agent": namespace,
+        "external_session_id": external_session_id or None,
+        "session_key": f"{namespace}-{component}",
+        "session_source": source,
+    }
 
 
 def find_ec_root(start: Path) -> Path | None:
@@ -233,23 +323,26 @@ def short_memory_entries(root: Path) -> list[dict[str, object]]:
             display_entry = resolved_entry.relative_to(root.resolve()).as_posix()
         except ValueError:
             continue
-        prefix_text = entry.name.split("_", 1)[0]
-        try:
-            prefix = int(prefix_text)
-        except ValueError:
-            prefix = sys.maxsize
+        memory_id = frontmatter.get("id", "")
+        id_rank, id_value = short_memory_id_sort_key(memory_id)
         entries.append(
             {
                 "path": resolved_entry,
                 "display_path": display_entry,
                 "date": frontmatter.get("date", ""),
-                "prefix": prefix,
+                "id_rank": id_rank,
+                "memory_id": id_value,
                 "name": entry.name,
             }
         )
     return sorted(
         entries,
-        key=lambda item: (str(item["date"]), int(item["prefix"]), str(item["name"])),
+        key=lambda item: (
+            str(item["date"]),
+            int(item["id_rank"]),
+            str(item["memory_id"]),
+            str(item["name"]),
+        ),
     )
 
 
@@ -297,6 +390,7 @@ def validate_short_memory_file(
     task_id: str,
     memory_file: str,
     expected_sha256: str | None = None,
+    require_current_id: bool = False,
 ) -> tuple[Path, str]:
     resolved_memory_path = resolve_short_memory_path(root, memory_file)
     if not resolved_memory_path.is_file():
@@ -313,6 +407,12 @@ def validate_short_memory_file(
         raise StateError(
             f"Short-memory source_task {source_task or 'missing'} does not match current task {task_id}."
         )
+    if require_current_id:
+        memory_id = frontmatter.get("id", "")
+        if not SHORT_MEMORY_UUID_V7_PATTERN.fullmatch(memory_id):
+            raise StateError("Short-memory id must use the SM-<UUIDv7> format.")
+        if not resolved_memory_path.name.startswith(f"{memory_id}_"):
+            raise StateError("Short-memory filename prefix must exactly match its frontmatter id.")
     digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
     if expected_sha256 and digest != expected_sha256:
         raise StateError("Short-memory file changed after its checkpoint was recorded.")
@@ -453,6 +553,71 @@ def write_json(path: Path, data: dict) -> None:
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
+def acquire_legacy_state_lock(root: Path) -> Path | None:
+    state_path = root / ".easy-coding" / "state.json"
+    lock_path = root / ".easy-coding" / "sessions" / ".legacy-state-migration.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + LEGACY_STATE_LOCK_TIMEOUT_SECONDS
+
+    while state_path.exists() or lock_path.exists():
+        try:
+            lock_path.mkdir()
+            return lock_path
+        except FileExistsError:
+            try:
+                lock_age = time.time() - lock_path.stat().st_mtime
+                if lock_age > LEGACY_STATE_LOCK_STALE_SECONDS:
+                    lock_path.rmdir()
+                    continue
+            except FileNotFoundError:
+                continue
+            except OSError:
+                pass
+            if time.monotonic() >= deadline:
+                raise StateError("Timed out waiting for legacy state migration lock.")
+            time.sleep(LEGACY_STATE_LOCK_POLL_SECONDS)
+        except OSError as error:
+            raise StateError("Cannot acquire legacy state migration lock.") from error
+    return None
+
+
+def release_legacy_state_lock(lock_path: Path | None) -> None:
+    if lock_path is None:
+        return
+    try:
+        lock_path.rmdir()
+    except OSError:
+        pass
+
+
+def migrate_legacy_state(root: Path, agent: str) -> dict | None:
+    """Prepare old state.json data for the canonical session; the caller commits it first."""
+    state_path = root / ".easy-coding" / "state.json"
+    old_state = load_json(state_path)
+    if old_state is None:
+        return None
+
+    task_id = old_state.get("current_task")
+    if task_id:
+        task_path = task_json_path(root, str(task_id))
+        task = load_json(task_path)
+        if task:
+            if "stage_history" not in task or not task["stage_history"]:
+                task["stage_history"] = old_state.get("stage_history", [])
+            if "last_agent" not in task or not task["last_agent"]:
+                task["last_agent"] = old_state.get("last_agent", agent)
+            if old_state.get("confirmed_by_user"):
+                task["confirmed_by_user"] = True
+            if old_state.get("test_strategy_confirmed"):
+                task["test_strategy_confirmed"] = True
+            if old_state.get("repo_paths"):
+                task["repo_paths"] = old_state["repo_paths"]
+            normalize_legacy_task(task)
+            write_json(task_path, task)
+
+    return {"current_task": task_id, "created_at": now_iso()}
+
+
 def resolve_session_path(root: Path, session_file: str | Path | None = None) -> Path:
     sessions_dir = (root / ".easy-coding" / "sessions").resolve()
     if session_file:
@@ -472,7 +637,17 @@ def resolve_session_path(root: Path, session_file: str | Path | None = None) -> 
                 f"{session_file}. Must be a file under .easy-coding/sessions/."
             )
         return resolved
-    return sessions_dir / f"{os.getppid()}.json"
+    return sessions_dir / f"{detect_runtime_agent()}-ppid-{os.getppid()}.json"
+
+
+def resolve_hook_session_path(
+    root: Path,
+    payload: dict,
+    agent: str | None,
+    ppid: int | None = None,
+) -> Path:
+    identity = hook_session_identity(payload, agent, ppid)
+    return resolve_session_path(root, f".easy-coding/sessions/{identity['session_key']}.json")
 
 
 def display_path(root: Path, path: Path) -> str:
@@ -483,7 +658,17 @@ def display_path(root: Path, path: Path) -> str:
 
 
 def default_session() -> dict:
-    return {"current_task": None, "created_at": now_iso()}
+    timestamp = now_iso()
+    return {"current_task": None, "created_at": timestamp, "last_active_at": timestamp}
+
+
+def apply_hook_session_identity(session: dict, identity: dict) -> None:
+    timestamp = now_iso()
+    if not session.get("created_at"):
+        session["created_at"] = timestamp
+    session["last_active_at"] = timestamp
+    for key in ("agent", "external_session_id", "session_key", "session_source"):
+        session[key] = identity.get(key)
 
 
 def clear_session_pointer(session: dict, agent: str | None = None) -> None:
@@ -500,6 +685,115 @@ def load_session(root: Path, session_file: str | Path | None = None) -> dict | N
 
 def write_session(root: Path, session: dict, session_file: str | Path | None = None) -> None:
     write_json(resolve_session_path(root, session_file), session)
+
+
+def migrate_legacy_pid_session(
+    root: Path,
+    session_path: Path,
+    identity: dict,
+    ppid: int,
+) -> dict | None:
+    sessions_dir = root / ".easy-coding" / "sessions"
+    fallback_path = sessions_dir / f"{identity['agent']}-ppid-{ppid}.json"
+    legacy_paths = [fallback_path, sessions_dir / f"{ppid}.json"]
+    session_path.parent.mkdir(parents=True, exist_ok=True)
+
+    for legacy_path in legacy_paths:
+        if legacy_path == session_path or not legacy_path.is_file():
+            continue
+        try:
+            legacy_path.replace(session_path)
+        except FileNotFoundError:
+            continue
+        except OSError:
+            if session_path.is_file():
+                break
+            continue
+        migrated = load_session(root, session_path)
+        if migrated is not None:
+            return migrated
+    return load_session(root, session_path)
+
+
+def merge_legacy_session(session: dict, legacy_session: dict) -> dict:
+    merged = dict(session)
+    if not merged.get("current_task") and legacy_session.get("current_task"):
+        merged["current_task"] = legacy_session["current_task"]
+    if not merged.get("created_at") and legacy_session.get("created_at"):
+        merged["created_at"] = legacy_session["created_at"]
+    return merged
+
+
+def ensure_hook_session(
+    root: Path,
+    payload: dict,
+    agent: str | None,
+    ppid: int | None = None,
+) -> tuple[dict, Path]:
+    identity = hook_session_identity(payload, agent, ppid)
+    session_path = resolve_hook_session_path(root, payload, agent, ppid)
+    resolved_ppid = ppid if ppid is not None else os.getppid()
+    legacy_state_lock = acquire_legacy_state_lock(root)
+    try:
+        session = load_session(root, session_path)
+        legacy_state = (
+            migrate_legacy_state(root, str(identity["agent"]))
+            if legacy_state_lock is not None
+            else None
+        )
+
+        if session is None:
+            clean_stale_sessions(root)
+            session = migrate_legacy_pid_session(root, session_path, identity, resolved_ppid)
+        if session is None:
+            session = load_session(root, session_path)
+        if session is None:
+            session = default_session()
+        if legacy_state is not None:
+            session = merge_legacy_session(session, legacy_state)
+
+        apply_hook_session_identity(session, identity)
+        write_session(root, session, session_path)
+        if legacy_state is not None:
+            try:
+                (root / ".easy-coding" / "state.json").unlink()
+            except OSError:
+                pass
+        return session, session_path
+    finally:
+        release_legacy_state_lock(legacy_state_lock)
+
+
+def clean_stale_sessions(
+    root: Path,
+    threshold_hours: int = SESSION_STALE_THRESHOLD_HOURS,
+) -> int:
+    sessions_dir = root / ".easy-coding" / "sessions"
+    if not sessions_dir.is_dir():
+        return 0
+
+    now = datetime.now(timezone.utc)
+    cleaned = 0
+    # 逻辑会话不对应独立进程，仅清理长期空闲且没有当前任务的 session。
+    for entry in sessions_dir.iterdir():
+        if entry.suffix != ".json":
+            continue
+        try:
+            session = json.loads(entry.read_text(encoding="utf-8"))
+            if session.get("current_task"):
+                continue
+            activity_value = session.get("last_active_at") or session.get("created_at") or ""
+            last_active = datetime.fromisoformat(str(activity_value))
+            if last_active.tzinfo is None:
+                last_active = last_active.replace(tzinfo=timezone.utc)
+            age_hours = (now - last_active).total_seconds() / 3600
+            if age_hours <= threshold_hours:
+                continue
+            entry.unlink()
+            cleaned += 1
+        except (OSError, json.JSONDecodeError, ValueError, TypeError):
+            continue
+    return cleaned
 
 
 def task_json_path(root: Path, task_id: str) -> Path:
@@ -1246,6 +1540,7 @@ def ensure_session(root: Path, session_file: str | Path | None = None) -> dict:
         session = default_session()
     if not session.get("created_at"):
         session["created_at"] = now_iso()
+    session["last_active_at"] = now_iso()
     return session
 
 
@@ -1641,7 +1936,10 @@ def memory_short_complete(
     if not memory_file.strip():
         raise StateError("Short-memory file is required.")
     resolved_memory_path, digest = validate_short_memory_file(
-        root, resolved_task_id, memory_file.strip()
+        root,
+        resolved_task_id,
+        memory_file.strip(),
+        require_current_id=True,
     )
     progress = task.get("memory_progress")
     if not isinstance(progress, dict):
@@ -1862,7 +2160,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Easy Coding runtime state API")
     subcommands = parser.add_subparsers(dest="command")
 
-    subcommands.add_parser("snapshot", parents=[common])
+    snapshot_parser = subcommands.add_parser("snapshot", parents=[common])
+    snapshot_parser.add_argument("--agent")
 
     list_tasks_parser = subcommands.add_parser("list-tasks", parents=[common])
     list_tasks_parser.add_argument("--agent")
@@ -1934,7 +2233,11 @@ def main() -> int:
     memory_short.add_argument("--agent", required=True)
     memory_short.add_argument("--task-id")
 
+    memory_new_id = subcommands.add_parser("memory-new-id", parents=[common])
+    memory_new_id.add_argument("--agent")
+
     memory_instruction_parser = subcommands.add_parser("memory-instruction", parents=[common])
+    memory_instruction_parser.add_argument("--agent")
     memory_instruction_parser.add_argument("--task-id")
 
     memory_complete_parser = subcommands.add_parser("memory-complete", parents=[common])
@@ -1952,6 +2255,7 @@ def main() -> int:
     repo_path = subcommands.add_parser("set-repo-path", parents=[common])
     repo_path.add_argument("--repo", required=True)
     repo_path.add_argument("--path", required=True)
+    repo_path.add_argument("--agent")
     repo_path.add_argument("--task-id")
 
     args = parser.parse_args()
@@ -1959,6 +2263,17 @@ def main() -> int:
         root = resolve_root(getattr(args, "cwd", None))
         session_file = getattr(args, "session_file", None)
         command = args.command or "snapshot"
+        agent = normalize_session_agent(getattr(args, "agent", None) or detect_runtime_agent())
+        if session_file is None and command == "project-init-complete":
+            raise StateError(
+                "project-init-complete requires --session-file from the current hook context."
+            )
+        if session_file is None and command not in {"list-tasks", "memory-new-id"}:
+            if agent == "unknown":
+                raise StateError(
+                    "Cannot resolve the logical session. Pass --session-file or --agent."
+                )
+            _, session_file = ensure_hook_session(root, {}, agent)
         if command == "snapshot":
             emit(snapshot_state(root, session_file))
         elif command == "list-tasks":
@@ -2095,6 +2410,8 @@ def main() -> int:
                     session_file,
                 )
             )
+        elif command == "memory-new-id":
+            emit({"memory_id": generate_short_memory_id()})
         elif command == "memory-short-complete":
             emit(
                 attach_status_context(

@@ -164,6 +164,14 @@ async function writeConfirmModeConfig(mode: "approve" | "guard" | "lite" | "auto
   );
 }
 
+function memoryFixtureId(index: number): string {
+  return `SM-019f69d3-5c86-7a10-87a1-${index.toString(16).padStart(12, "0")}`;
+}
+
+function memoryFixtureName(index: number): string {
+  return `${memoryFixtureId(index)}_20260623_item-${index}.md`;
+}
+
 async function writeMemoryFixture(
   shortCount: number,
   checkpointIndex: number = shortCount,
@@ -212,12 +220,13 @@ async function writeMemoryFixture(
         ".easy-coding",
         "memory",
         "short",
-        `${String(index).padStart(3, "0")}_20260623_item-${index}.md`,
+        memoryFixtureName(index),
       ),
       [
         "---",
         "memory_schema: 2",
-        `id: SM-20260623-${String(index).padStart(3, "0")}`,
+        `id: ${memoryFixtureId(index)}`,
+        "date: 2026-06-23",
         "source_task: 06-23-memory",
         "---",
         "",
@@ -241,7 +250,7 @@ async function writeMemoryFixture(
       "--session-file",
       ".easy-coding/sessions/test.json",
       "--file",
-      `.easy-coding/memory/short/${String(checkpointIndex).padStart(3, "0")}_20260623_item-${checkpointIndex}.md`,
+      `.easy-coding/memory/short/${memoryFixtureName(checkpointIndex)}`,
       "--agent",
       "codex",
     ],
@@ -272,7 +281,347 @@ function readMemoryInstruction(scriptPath: string) {
   };
 }
 
+function readHookSessionIdentity(
+  payload: Record<string, unknown>,
+  agent: string,
+  ppid = 4242,
+): Record<string, unknown> {
+  const script = [
+    "import json,sys",
+    "sys.path.insert(0, sys.argv[1])",
+    "from easy_coding_state import hook_session_identity",
+    "print(json.dumps(hook_session_identity(json.loads(sys.argv[2]), sys.argv[3], int(sys.argv[4]))))",
+  ].join(";");
+  const output = execFileSync(
+    "python3",
+    [
+      "-c",
+      script,
+      path.dirname(stateApiPath()),
+      JSON.stringify(payload),
+      agent,
+      String(ppid),
+    ],
+    { encoding: "utf8" },
+  );
+  return JSON.parse(output) as Record<string, unknown>;
+}
+
+function ensureHookSession(
+  payload: Record<string, unknown>,
+  agent: string,
+  ppid = 4242,
+): { session: Record<string, unknown>; session_path: string } {
+  const script = [
+    "import json,sys",
+    "from pathlib import Path",
+    "sys.path.insert(0, sys.argv[1])",
+    "from easy_coding_state import ensure_hook_session",
+    "session,session_path=ensure_hook_session(Path(sys.argv[2]), json.loads(sys.argv[3]), sys.argv[4], int(sys.argv[5]))",
+    "print(json.dumps({'session': session, 'session_path': str(session_path)}))",
+  ].join(";");
+  const output = execFileSync(
+    "python3",
+    [
+      "-c",
+      script,
+      path.dirname(stateApiPath()),
+      tempDir,
+      JSON.stringify(payload),
+      agent,
+      String(ppid),
+    ],
+    { encoding: "utf8" },
+  );
+  return JSON.parse(output) as {
+    session: Record<string, unknown>;
+    session_path: string;
+  };
+}
+
+function ensureConcurrentHookSessions(
+  payloads: Array<Record<string, unknown>>,
+  agent: string,
+  ppid = 4242,
+): Array<{ session: Record<string, unknown>; session_path: string }> {
+  const script = [
+    "import json,sys,threading,time",
+    "from concurrent.futures import ThreadPoolExecutor",
+    "from pathlib import Path",
+    "sys.path.insert(0, sys.argv[1])",
+    "import easy_coding_state as state",
+    "original_migrate=state.migrate_legacy_state",
+    "def slow_migrate(root, agent):",
+    "    result=original_migrate(root, agent)",
+    "    time.sleep(0.2)",
+    "    return result",
+    "state.migrate_legacy_state=slow_migrate",
+    "payloads=json.loads(sys.argv[3])",
+    "start=threading.Barrier(len(payloads))",
+    "def run(payload):",
+    "    start.wait()",
+    "    session,session_path=state.ensure_hook_session(Path(sys.argv[2]), payload, sys.argv[4], int(sys.argv[5]))",
+    "    return {'session': session, 'session_path': str(session_path)}",
+    "with ThreadPoolExecutor(max_workers=len(payloads)) as pool:",
+    "    print(json.dumps(list(pool.map(run, payloads))))",
+  ].join("\n");
+  const output = execFileSync(
+    "python3",
+    [
+      "-c",
+      script,
+      path.dirname(stateApiPath()),
+      tempDir,
+      JSON.stringify(payloads),
+      agent,
+      String(ppid),
+    ],
+    { encoding: "utf8" },
+  );
+  return JSON.parse(output) as Array<{
+    session: Record<string, unknown>;
+    session_path: string;
+  }>;
+}
+
+describe("easy_coding_state.py hook session identity", () => {
+  it("requires project-init completion to keep using the injected logical session", async () => {
+    await writeTaskFixture("project-init", "INIT", "codex");
+    const sessionsDir = path.join(tempDir, ".easy-coding", "sessions");
+    const logicalSessionPath = path.join(sessionsDir, "codex-1200.json");
+    await mkdir(sessionsDir, { recursive: true });
+    await writeFile(
+      logicalSessionPath,
+      JSON.stringify({
+        current_task: null,
+        created_at: "2026-07-01T00:00:00Z",
+        agent: "codex",
+        external_session_id: "1200",
+        session_key: "codex-1200",
+        session_source: "hook-session-id",
+      }),
+      "utf8",
+    );
+
+    const missingSession = spawnSync(
+      "python3",
+      [stateApiPath(), "project-init-complete", "--agent", "codex"],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+
+    expect(missingSession.status).toBe(1);
+    expect(missingSession.stderr).toContain("requires --session-file");
+    await expect(
+      readFile(path.join(sessionsDir, `codex-ppid-${process.pid}.json`), "utf8"),
+    ).rejects.toThrow();
+
+    const completed = JSON.parse(
+      execFileSync(
+        "python3",
+        [
+          stateApiPath(),
+          "project-init-complete",
+          "--session-file",
+          ".easy-coding/sessions/codex-1200.json",
+          "--agent",
+          "codex",
+        ],
+        { cwd: tempDir, encoding: "utf8" },
+      ),
+    ) as { status_context: string };
+
+    expect(completed.status_context).toContain(
+      "[easy-coding:session-file:.easy-coding/sessions/codex-1200.json]",
+    );
+    const projectInit = JSON.parse(
+      await readFile(
+        path.join(tempDir, ".easy-coding", "tasks", "project-init", "task.json"),
+        "utf8",
+      ),
+    ) as { status: string };
+    expect(projectInit.status).toBe("COMPLETE");
+  });
+
+  it("prefixes the same external session id with the agent namespace", () => {
+    const claude = readHookSessionIdentity({ session_id: "1200" }, "claude-code");
+    const codex = readHookSessionIdentity({ session_id: "1200" }, "codex");
+    const qoder = readHookSessionIdentity({ session_id: "1200" }, "qoder");
+
+    expect(claude.session_key).toBe("claude-code-1200");
+    expect(codex.session_key).toBe("codex-1200");
+    expect(qoder.session_key).toBe("qoder-1200");
+  });
+
+  it("hashes unsafe external ids and preserves the original metadata", () => {
+    const identity = readHookSessionIdentity({ session_id: "../../escape/session" }, "codex");
+
+    expect(identity.session_key).toMatch(/^codex-sha256-[a-f0-9]{32}$/);
+    expect(identity.external_session_id).toBe("../../escape/session");
+    expect(identity.session_key).not.toContain("/");
+  });
+
+  it("uses an agent-prefixed ppid fallback only when no logical id exists", () => {
+    const identity = readHookSessionIdentity({}, "qoder", 2021);
+
+    expect(identity).toMatchObject({
+      agent: "qoder",
+      external_session_id: null,
+      session_key: "qoder-ppid-2021",
+      session_source: "legacy-ppid",
+    });
+  });
+
+  it("adopts a legacy numeric ppid session into the first canonical logical session", async () => {
+    const sessionsDir = path.join(tempDir, ".easy-coding", "sessions");
+    await mkdir(sessionsDir, { recursive: true });
+    await writeFile(
+      path.join(sessionsDir, "4242.json"),
+      JSON.stringify({
+        current_task: "legacy-task",
+        created_at: "2026-07-01T00:00:00Z",
+        confirm_mode: "auto",
+        harness_disabled: true,
+      }),
+      "utf8",
+    );
+
+    const result = ensureHookSession({ session_id: "1200" }, "codex");
+
+    expect(result.session).toMatchObject({
+      current_task: "legacy-task",
+      confirm_mode: "auto",
+      harness_disabled: true,
+      agent: "codex",
+      external_session_id: "1200",
+      session_key: "codex-1200",
+    });
+    await expect(readFile(path.join(sessionsDir, "4242.json"), "utf8")).rejects.toThrow();
+    await expect(readFile(path.join(sessionsDir, "codex-1200.json"), "utf8")).resolves.toContain(
+      '"current_task": "legacy-task"',
+    );
+  });
+
+  it("merges state.json into an existing empty canonical session before deleting it", async () => {
+    const sessionsDir = path.join(tempDir, ".easy-coding", "sessions");
+    await mkdir(sessionsDir, { recursive: true });
+    await writeTaskFixture("legacy-state-task", "ANALYSIS", "claude-code");
+    await writeFile(
+      path.join(sessionsDir, "claude-code-1200.json"),
+      JSON.stringify({ current_task: null, created_at: "2026-07-01T00:00:00Z" }),
+      "utf8",
+    );
+    await writeFile(
+      path.join(tempDir, ".easy-coding", "state.json"),
+      JSON.stringify({
+        current_task: "legacy-state-task",
+        current_stage: "ANALYSIS",
+        last_agent: "claude-code",
+      }),
+      "utf8",
+    );
+
+    const result = ensureHookSession({ session_id: "1200" }, "claude-code");
+
+    expect(result.session.current_task).toBe("legacy-state-task");
+    await expect(
+      readFile(path.join(tempDir, ".easy-coding", "state.json"), "utf8"),
+    ).rejects.toThrow();
+    await expect(
+      readFile(path.join(sessionsDir, "claude-code-1200.json"), "utf8"),
+    ).resolves.toContain('"current_task": "legacy-state-task"');
+  });
+
+  it("atomically assigns legacy state.json to only one concurrently starting logical session", async () => {
+    await mkdir(path.join(tempDir, ".easy-coding", "sessions"), { recursive: true });
+    await writeTaskFixture("legacy-concurrent-task", "ANALYSIS", "codex");
+    await writeFile(
+      path.join(tempDir, ".easy-coding", "state.json"),
+      JSON.stringify({
+        current_task: "legacy-concurrent-task",
+        current_stage: "ANALYSIS",
+        last_agent: "codex",
+      }),
+      "utf8",
+    );
+
+    const results = ensureConcurrentHookSessions(
+      [{ session_id: "1200" }, { session_id: "1201" }],
+      "codex",
+    );
+
+    expect(
+      results.filter(({ session }) => session.current_task === "legacy-concurrent-task"),
+    ).toHaveLength(1);
+    expect(results.filter(({ session }) => session.current_task === null)).toHaveLength(1);
+    await expect(
+      readFile(path.join(tempDir, ".easy-coding", "state.json"), "utf8"),
+    ).rejects.toThrow();
+  });
+
+  it("cleans only stale logical sessions without a current task", async () => {
+    const sessionsDir = path.join(tempDir, ".easy-coding", "sessions");
+    await mkdir(sessionsDir, { recursive: true });
+    const oldDate = "2020-01-01T00:00:00+00:00";
+    await writeFile(
+      path.join(sessionsDir, "codex-old-idle.json"),
+      JSON.stringify({ current_task: null, created_at: oldDate, last_active_at: oldDate }),
+      "utf8",
+    );
+    await writeFile(
+      path.join(sessionsDir, "codex-old-active.json"),
+      JSON.stringify({ current_task: "task-active", created_at: oldDate, last_active_at: oldDate }),
+      "utf8",
+    );
+    const script = [
+      "import sys",
+      "from pathlib import Path",
+      "sys.path.insert(0, sys.argv[1])",
+      "from easy_coding_state import clean_stale_sessions",
+      "print(clean_stale_sessions(Path(sys.argv[2]), threshold_hours=1))",
+    ].join(";");
+
+    const output = execFileSync(
+      "python3",
+      ["-c", script, path.dirname(stateApiPath()), tempDir],
+      { encoding: "utf8" },
+    );
+
+    expect(output.trim()).toBe("1");
+    await expect(readFile(path.join(sessionsDir, "codex-old-idle.json"), "utf8")).rejects.toThrow();
+    await expect(readFile(path.join(sessionsDir, "codex-old-active.json"), "utf8")).resolves.toContain(
+      "task-active",
+    );
+  });
+});
+
 describe("easy_coding_state.py MEMORY instruction", () => {
+  it("generates unique UUIDv7 short-memory ids", async () => {
+    await writeSessionFixture("06-23-memory-id");
+
+    const generated = Array.from({ length: 32 }, () => {
+      const output = execFileSync(
+        "python3",
+        [
+          stateApiPath(),
+          "memory-new-id",
+          "--session-file",
+          ".easy-coding/sessions/test.json",
+          "--agent",
+          "codex",
+        ],
+        { cwd: tempDir, encoding: "utf8" },
+      );
+      return (JSON.parse(output) as { memory_id: string }).memory_id;
+    });
+
+    expect(new Set(generated)).toHaveLength(32);
+    for (const memoryId of generated) {
+      expect(memoryId).toMatch(
+        /^SM-[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+      );
+    }
+  });
+
   it("rejects a memory window where short_term_keep exceeds short_term_max", async () => {
     const scriptPath = await writeMemoryFixture(6);
     await writeMemoryConfig(5, 10);
@@ -306,7 +655,35 @@ describe("easy_coding_state.py MEMORY instruction", () => {
       checkpoint_disposition: "kept",
     });
     expect(snapshot.memory.candidate_files).toEqual([
-      ".easy-coding/memory/short/001_20260623_item-1.md",
+      `.easy-coding/memory/short/${memoryFixtureName(1)}`,
+    ]);
+  });
+
+  it("keeps legacy numeric memories readable and orders them before UUIDv7 ids on the same date", async () => {
+    const scriptPath = await writeMemoryFixture(5);
+    const legacyName = "001_20260623_legacy-item.md";
+    await writeFile(
+      path.join(tempDir, ".easy-coding", "memory", "short", legacyName),
+      [
+        "---",
+        "memory_schema: 2",
+        "id: SM-20260623-001",
+        "source_task: 06-23-memory",
+        "date: 2026-06-23",
+        "---",
+        "",
+        "Legacy short memory",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    await writeMemoryConfig(5, 5);
+
+    const snapshot = readMemoryInstruction(scriptPath);
+
+    expect(snapshot.memory).toMatchObject({ action: "distill", trim_count: 1 });
+    expect(snapshot.memory.candidate_files).toEqual([
+      `.easy-coding/memory/short/${legacyName}`,
     ]);
   });
 
@@ -390,24 +767,78 @@ describe("easy_coding_state.py MEMORY instruction", () => {
     expect(reused.stderr).toContain("does not match current task 06-23-invalid-memory");
   });
 
-  it("revalidates the short-memory fingerprint before completion", async () => {
-    await writeSessionFixture("06-23-fingerprint");
-    await writeTaskFixture("06-23-fingerprint", "MEMORY", "codex", {
+  it("rejects a UUIDv7 id that does not match the filename prefix", async () => {
+    await writeSessionFixture("06-23-mismatched-memory-id");
+    await writeTaskFixture("06-23-mismatched-memory-id", "MEMORY", "codex", {
       memory_progress: {},
     });
+    const memoryId = memoryFixtureId(99);
     const memoryPath = path.join(
       tempDir,
       ".easy-coding",
       "memory",
       "short",
-      "001_fingerprint.md",
+      "wrong-prefix_20260623_summary.md",
     );
     await mkdir(path.dirname(memoryPath), { recursive: true });
     await writeFile(
       memoryPath,
-      ["---", "memory_schema: 2", "source_task: 06-23-fingerprint", "---", "original"].join(
-        "\n",
-      ),
+      [
+        "---",
+        "memory_schema: 2",
+        `id: ${memoryId}`,
+        "source_task: 06-23-mismatched-memory-id",
+        "date: 2026-06-23",
+        "---",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const rejected = spawnSync(
+      "python3",
+      [
+        stateApiPath(),
+        "memory-short-complete",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--file",
+        ".easy-coding/memory/short/wrong-prefix_20260623_summary.md",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+
+    expect(rejected.status).toBe(1);
+    expect(rejected.stderr).toContain("filename prefix must exactly match");
+  });
+
+  it("revalidates the short-memory fingerprint before completion", async () => {
+    await writeSessionFixture("06-23-fingerprint");
+    await writeTaskFixture("06-23-fingerprint", "MEMORY", "codex", {
+      memory_progress: {},
+    });
+    const memoryId = memoryFixtureId(100);
+    const memoryName = `${memoryId}_20260623_fingerprint.md`;
+    const memoryPath = path.join(
+      tempDir,
+      ".easy-coding",
+      "memory",
+      "short",
+      memoryName,
+    );
+    await mkdir(path.dirname(memoryPath), { recursive: true });
+    await writeFile(
+      memoryPath,
+      [
+        "---",
+        "memory_schema: 2",
+        `id: ${memoryId}`,
+        "source_task: 06-23-fingerprint",
+        "---",
+        "original",
+      ].join("\n"),
       "utf8",
     );
     execFileSync(
@@ -418,7 +849,7 @@ describe("easy_coding_state.py MEMORY instruction", () => {
         "--session-file",
         ".easy-coding/sessions/test.json",
         "--file",
-        ".easy-coding/memory/short/001_fingerprint.md",
+        `.easy-coding/memory/short/${memoryName}`,
         "--agent",
         "codex",
       ],
@@ -427,9 +858,14 @@ describe("easy_coding_state.py MEMORY instruction", () => {
     readMemoryInstruction(stateApiPath());
     await writeFile(
       memoryPath,
-      ["---", "memory_schema: 2", "source_task: 06-23-fingerprint", "---", "changed"].join(
-        "\n",
-      ),
+      [
+        "---",
+        "memory_schema: 2",
+        `id: ${memoryId}`,
+        "source_task: 06-23-fingerprint",
+        "---",
+        "changed",
+      ].join("\n"),
       "utf8",
     );
 
@@ -481,7 +917,7 @@ describe("easy_coding_state.py MEMORY instruction", () => {
       action: "no-op",
       trim_count: 0,
       candidate_files: [],
-      kept_files: [".easy-coding/memory/short/001_20260623_item-1.md"],
+      kept_files: [`.easy-coding/memory/short/${memoryFixtureName(1)}`],
       checkpoint_disposition: "kept",
     });
     expect(snapshot.status_line).toContain("> **Easy Coding** · **Guard** · `06-23-memory` · `MEMORY`");
@@ -501,13 +937,11 @@ describe("easy_coding_state.py MEMORY instruction", () => {
       trim_count: 7,
       candidate_files: Array.from(
         { length: 7 },
-        (_, index) =>
-          `.easy-coding/memory/short/${String(index + 1).padStart(3, "0")}_20260623_item-${index + 1}.md`,
+        (_, index) => `.easy-coding/memory/short/${memoryFixtureName(index + 1)}`,
       ),
       kept_files: Array.from(
         { length: 5 },
-        (_, index) =>
-          `.easy-coding/memory/short/${String(index + 8).padStart(3, "0")}_20260623_item-${index + 8}.md`,
+        (_, index) => `.easy-coding/memory/short/${memoryFixtureName(index + 8)}`,
       ),
       checkpoint_disposition: "kept",
     });
@@ -521,7 +955,7 @@ describe("easy_coding_state.py MEMORY instruction", () => {
           ".easy-coding",
           "memory",
           "short",
-          `${String(index).padStart(3, "0")}_20260623_item-${index}.md`,
+          memoryFixtureName(index),
         ),
       );
     }
@@ -557,12 +991,12 @@ describe("easy_coding_state.py MEMORY instruction", () => {
           ".easy-coding",
           "memory",
           "short",
-          `${String(index).padStart(3, "0")}_20260623_item-${index}.md`,
+          memoryFixtureName(index),
         ),
       );
     }
     await rm(
-      path.join(tempDir, ".easy-coding", "memory", "short", "012_20260623_item-12.md"),
+      path.join(tempDir, ".easy-coding", "memory", "short", memoryFixtureName(12)),
     );
 
     const completed = spawnSync(
@@ -615,7 +1049,7 @@ describe("easy_coding_state.py MEMORY instruction", () => {
           ".easy-coding",
           "memory",
           "short",
-          `${String(index).padStart(3, "0")}_20260623_item-${index}.md`,
+          memoryFixtureName(index),
         ),
       );
     }
