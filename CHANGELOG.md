@@ -6,6 +6,12 @@
 - `y`：常规功能升级
 - `z`：日常 bug 修复
 
+## 0.8.2
+
+- 正式发布原生选择超时恢复：平台明确保证永久等待时禁用或省略 timeout / auto-resolution，无法保证时在调用原生选择前预先展示持久化文本编号。
+- 原生选择超时、取消或返回无效结果后保留 `pending_transition` 且不重试；用户稍后可直接回复普通门 `1/2/3` 或特殊 IMPLEMENT 门 `1/2/3/4` 继续流程。
+- 汇总 `0.8.2-beta.0` 的 workflow、analysis、Claude/Codex/Qoder 主约束、文档、安装回归和 npm 包内容验证结果。
+
 ## 0.8.2-beta.0
 
 - 原生选择工具明确保证永久等待时，确认门禁用或省略 timeout / auto-resolution；有限超时不再视为“永久等待”。
