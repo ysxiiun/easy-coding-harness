@@ -275,13 +275,18 @@ tool when one is available. The visible branches are:
 2. Hand off to another agent
 3. Other — use the native free-form Other input for revisions or another instruction.
 
-If no native choice tool exists, render all three branches as a numbered text fallback. An empty,
-dismissed, timed-out, or unparseable result keeps the task in ANALYSIS with its pending edge and
-may retry the native choice at most once per assistant turn. If that retry also fails, stop the
-current turn and re-present the complete gate on the next user interaction. Never replace the gate
-with only "reply confirm", "confirm execution", or a statement that no valid choice was received,
-and never invoke native choice repeatedly in the same turn. Choosing handoff delegates to
-ec-workflow's existing target-less `handoff-task` flow; do not ask the user to name the next agent.
+Before invoking the native tool, determine whether it explicitly guarantees an indefinite wait.
+When it does, disable or omit any timeout or auto-resolution setting; a long finite timeout is not
+equivalent. When that guarantee is absent or uncertain, render all three numbered branches as
+normal assistant text before invoking the native tool once, labelled as the persistent timeout
+fallback. This ensures the text survives even when timeout ends or suspends the turn. If no native
+choice tool exists, render the same numbered fallback directly. An empty, dismissed, timed-out, or
+unparseable result keeps the task in ANALYSIS with its pending edge. If the fallback is not already
+visible, render it immediately when control returns; otherwise do not duplicate it. Tell the user
+they may reply with its number later, do not invoke or retry native choice in that turn, and stop.
+Never replace the gate with only "reply confirm", "confirm execution", or a statement that no
+valid choice was received. Choosing handoff delegates to ec-workflow's existing target-less
+`handoff-task` flow; do not ask the user to name the next agent.
 
 ## End state
 

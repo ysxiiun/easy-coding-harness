@@ -52,11 +52,14 @@ First run `ec-init`; daily work goes through `ec-workflow`.
   the complete gate. An ordinary gate offers "confirm entering/returning to the target stage"
   (recommended) and "hand off to another agent", with free-form Other for revisions. The special
   approve-mode code IMPLEMENT gate must instead preserve enter REVIEW, skip to VERIFICATION, and
-  handoff, with free-form Other. Only when no native choice tool exists may you show the matching
-  complete numbered fallback. Empty, dismissed, timed-out, or unparseable results preserve the
-  pending edge and may retry native choice at most once per assistant turn; after a failed retry,
-  stop the turn and re-present the gate on the next user interaction. Never degrade to only
-  "reply confirm" or repeatedly invoke native choice in the same turn.
+  handoff, with free-form Other. Use a native choice without a text pre-fallback only when the tool
+  explicitly guarantees an indefinite wait; disable or omit automatic timeout/resolution in that
+  case. Otherwise pre-render the matching numbered fallback before invoking native choice once,
+  so timeout cannot remove the user's path forward. Empty, dismissed, timed-out, or unparseable
+  native results preserve the pending edge; show the fallback when control returns only if it is
+  not already visible, and never retry native choice in that turn. On resume, consume a matching
+  numbered reply against the stored edge before re-presenting the gate. Never degrade to only
+  "reply confirm".
 - When `[easy-coding:no-harness]` is injected, do not emit an Easy Coding status line and ignore
   only Easy Coding workflow/stage orchestration for this session. Continue honoring every
   non-Easy-Coding skill, hook, and instruction. Do not clear or mutate the suspended task.

@@ -100,9 +100,15 @@ describe("configureClaude", () => {
     expect(skill).toContain("The code-task IMPLEMENT completion fallback must preserve");
     expect(skill).toContain("Skip REVIEW and enter VERIFICATION");
     expect(skill).toContain("An empty, dismissed, timed-out, or unparseable choice result");
-    expect(skill).toContain("at most once per assistant turn");
-    expect(skill).toContain("stop the current turn with the");
-    expect(skill).toContain('Never report "no valid choice" and then show');
+    expect(skill).toContain("disable or omit any timeout or auto-resolution setting");
+    expect(skill).toContain(
+      "render the matching complete numbered fallback as normal assistant text before",
+    );
+    expect(skill).toContain("Do not invoke or retry the native choice again in that turn");
+    expect(skill).toContain("Before re-presenting any manual gate, consume a");
+    expect(skill).toContain("A bare Other");
+    expect(skill).toContain('Never report "no valid');
+    expect(skill).toContain('choice" and then show only a confirmation instruction');
     expect(skill).toContain("Current task pointer exists");
     expect(skill).toContain("No current task pointer");
     expect(skill).toContain("edge with `effective_confirm_mode`");
@@ -138,8 +144,10 @@ describe("configureClaude", () => {
     expect(analysisSkill).toContain("Confirm entering IMPLEMENT (recommended)");
     expect(analysisSkill).toContain("Hand off to another agent");
     expect(analysisSkill).toContain("Other — use the native free-form Other input");
-    expect(analysisSkill).toContain("at most once per assistant turn");
-    expect(analysisSkill).toContain("stop the\ncurrent turn");
+    expect(analysisSkill).toContain("disable or omit any timeout or auto-resolution setting");
+    expect(analysisSkill).toContain("render all three numbered branches as");
+    expect(analysisSkill).toContain("persistent timeout\nfallback");
+    expect(analysisSkill).toContain("do not invoke or retry native choice in that turn");
     const planExampleMatch = analysisSkill.match(/```json\n([^\n]+)\n```/);
     expect(planExampleMatch).not.toBeNull();
     const planExample = JSON.parse(planExampleMatch?.[1] ?? "{}") as {
@@ -263,7 +271,9 @@ describe("configureClaude", () => {
     expect(main).toContain("lite chooses IMPLEMENT -> VERIFICATION");
     expect(main).toContain("A confirmation-required boundary is not fully presented");
     expect(main).toContain("approve-mode code IMPLEMENT gate must instead preserve");
-    expect(main).toContain("at most once per assistant turn");
+    expect(main).toContain("explicitly guarantees an indefinite wait");
+    expect(main).toContain("pre-render the matching numbered fallback");
+    expect(main).toContain("consume a matching\n  numbered reply against the stored edge");
     expect(main).toContain("read-only task creates no test-strategy.md");
     expect(main).toContain("ask every unresolved decision during analysis");
 

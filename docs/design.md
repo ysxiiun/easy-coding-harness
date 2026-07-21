@@ -200,7 +200,7 @@ INIT ─自动→ ANALYSIS → IMPLEMENT → REVIEW → VERIFICATION → MEMORY 
 
 - **确认模式**：session 覆盖优先于项目 `behavior.confirm_mode`，缺失时为 `guard`。`approve` 除 INIT → ANALYSIS、MEMORY → COMPLETE 外逐边确认；`guard` 与 `lite` 只确认 ANALYSIS → IMPLEMENT、VERIFICATION → MEMORY；lite 禁止 IMPLEMENT → REVIEW；`auto` 自动执行全部合法工作流边。CLOSED 始终要求显式关闭操作。
 - **pending_transition**：仅确认模式要求人工确认时记录；自动边走受限 `auto-transition`。guard/auto 的代码主链从 IMPLEMENT 默认进入 REVIEW，lite 直接进入 VERIFICATION，approve 可选择是否 REVIEW。
-- **确认门展示**：存在人工确认边时，Agent 必须实际调用平台原生选项能力。普通确认门完整展示“确认进入/返回目标阶段”“交接给其他智能体”和 free-form Other；Approve 模式代码 IMPLEMENT 特殊门必须保留“进入 REVIEW”“跳过 REVIEW 进入 VERIFICATION”“交接”和 free-form Other。平台无原生能力时按门类型展示对应的完整文本编号。空选择、取消、超时或无法解析时保留 `pending_transition`，同一 assistant 轮最多重试一次；重试仍失败则停止当前轮，并在下一次用户交互重新展示，禁止无限调用或退化为单一“回复确认执行”提示。
+- **确认门展示**：存在人工确认边时，Agent 必须实际调用平台原生选项能力。普通确认门完整展示“确认进入/返回目标阶段”“交接给其他智能体”和 free-form Other；Approve 模式代码 IMPLEMENT 特殊门必须保留“进入 REVIEW”“跳过 REVIEW 进入 VERIFICATION”“交接”和 free-form Other。只有平台明确保证永久等待时，才可仅调用原生选择，并禁用或省略 timeout / auto-resolution；不能用较长的有限超时冒充永久等待。无法确认永久等待时，必须先在普通 assistant 文本中输出完整编号兜底，再调用一次原生选择，确保原生超时即使终止当前轮，文本门仍留在会话中。原生选择返回空值、被取消、超时或无法解析时保留 `pending_transition`，不重试原生框；若尚未预输出编号且控制权返回，则立即补充编号。用户稍后回复编号时，恢复流程必须先按当前 `pending_transition` 消费编号，再决定是否重新展示门禁；禁止重新唤起选择框或退化为单一“回复确认执行”提示。
 - **VERIFICATION**：lint + typecheck + test 必须全部通过，且必须是本轮新鲜执行的结果——上一轮的结果不算，"should pass" 不是证据。
 - **MEMORY**：进入方式服从确认模式；进入后先写短期记忆，再执行长期记忆阈值门禁，完成后自动进入 COMPLETE。
 

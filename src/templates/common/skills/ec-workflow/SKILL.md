@@ -158,20 +158,27 @@ it, routing matches, and switching happens again.
   input for revisions. Record REVIEW as the recommended pending edge first. If the user chooses
   VERIFICATION, cancel that edge, request IMPLEMENT -> VERIFICATION, and immediately confirm it
   because that selection is explicit confirmation of the alternate target.
-  Plain-text numbered choices are fallback only: use them only when no native user-choice tool
-  exists. An ordinary gate must list all three branches rather than collapsing to "reply confirm":
+  Before invoking a native choice tool, determine whether it explicitly guarantees an indefinite
+  wait. When it does, disable or omit any timeout or auto-resolution setting so the request waits
+  for explicit user input; a long finite timeout is not equivalent. When that guarantee is absent
+  or uncertain, render the matching complete numbered fallback as normal assistant text before
+  invoking the native tool once. Label it as the persistent fallback to use if the native choice
+  closes, so it remains available even when a timeout ends or suspends the current turn.
+  Plain-text numbered choices are fallback only: use them when no native user-choice tool exists,
+  pre-render them when an indefinite native wait is not guaranteed, or render them after an
+  unexpected invalid native result. An ordinary gate must list all three branches rather than
+  collapsing to "reply confirm":
   `1. Confirm entering/returning to <target-stage> (recommended)`,
   `2. Hand off to another agent`, `3. Other (describe revisions or another instruction)`.
   The code-task IMPLEMENT completion fallback must preserve its special branch set:
   `1. Enter REVIEW (recommended)`, `2. Skip REVIEW and enter VERIFICATION`,
   `3. Hand off to another agent`, `4. Other (describe revisions or another instruction)`.
   An empty, dismissed, timed-out, or unparseable choice result is not confirmation. Preserve the
-  pending edge and re-present the complete native choice UI at most once per assistant turn. If
-  that retry is also empty, dismissed, timed out, or unparseable, stop the current turn with the
-  pending edge intact and re-present the gate on the next user interaction; never call the native
-  choice tool repeatedly in the same turn. If native choice is no longer available, render the
-  appropriate complete numbered fallback. Never report "no valid choice" and then show only a
-  confirmation instruction. The runtime hook never mutates workflow state from user-prompt text.
+  pending edge. If no numbered fallback is already visible, render the matching complete fallback
+  immediately when control returns; otherwise do not duplicate it. State that the user may reply
+  with its number at any later time. Do not invoke or retry the native choice again in that turn.
+  Never report "no valid choice" and then show only a confirmation instruction. The runtime hook
+  never mutates workflow state from user-prompt text.
   Native choice results, numbered fallback replies, and every natural-language reply must be
   interpreted by you against the current task and stored target before calling
   `confirm-transition` explicitly.
@@ -262,8 +269,13 @@ Resuming an active task (whether from session restart, claim, handoff, or task s
    `[easy-coding:lite-review-bypass-required:IMPLEMENT->REVIEW]` before the generic pending-edge
    rule: call `cancel-transition`, then `auto-transition --stage VERIFICATION`. Otherwise compare
    the stored edge with `effective_confirm_mode`. If the edge is now automatic, call
-   `auto-transition` for its stored target; otherwise re-present the confirmation/handoff/Other
-   choices. For a read-only task in IMPLEMENT, cancel any stale REVIEW/VERIFICATION edge before
+   `auto-transition` for its stored target. Before re-presenting any manual gate, consume a
+   matching numbered fallback reply from the current user prompt against the stored target:
+   ordinary `1` confirms, `2` hands off, and `3` selects Other; the approve-mode code IMPLEMENT
+   gate maps `1` to REVIEW, `2` to VERIFICATION, `3` to handoff, and `4` to Other. A bare Other
+   number asks for the missing revision text with the pending edge intact; Other plus details
+   cancels the edge before revision. Only an unmatched prompt re-presents the complete gate.
+   For a read-only task in IMPLEMENT, cancel any stale REVIEW/VERIFICATION edge before
    the terminal check below. At an approve-mode IMPLEMENT boundary for a code task, re-present
    the special REVIEW / skip to VERIFICATION / handoff choices.
 5. If a read-only task resumes in IMPLEMENT with a valid successful result, output its complete

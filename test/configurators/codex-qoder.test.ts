@@ -69,7 +69,11 @@ describe("configureCodex", () => {
     expect(skill).toContain("The code-task IMPLEMENT completion fallback must preserve");
     expect(skill).toContain("Skip REVIEW and enter VERIFICATION");
     expect(skill).toContain("An empty, dismissed, timed-out, or unparseable choice result");
-    expect(skill).toContain("at most once per assistant turn");
+    expect(skill).toContain("disable or omit any timeout or auto-resolution setting");
+    expect(skill).toContain("render the matching complete numbered fallback as normal assistant");
+    expect(skill).toContain("Do not invoke or retry the native choice again in that turn");
+    expect(skill).toContain("Before re-presenting any manual gate, consume a");
+    expect(skill).toContain("A bare Other");
     expect(skill).not.toContain("{{");
     const analysisSkill = await readFile(
       path.join(tempDir, ".agents", "skills", "ec-analysis", "SKILL.md"),
@@ -78,8 +82,10 @@ describe("configureCodex", () => {
     expect(analysisSkill).toContain("Confirm entering IMPLEMENT (recommended)");
     expect(analysisSkill).toContain("Hand off to another agent");
     expect(analysisSkill).toContain("Other — use the native free-form Other input");
-    expect(analysisSkill).toContain("at most once per assistant turn");
-    expect(analysisSkill).toContain("stop the\ncurrent turn");
+    expect(analysisSkill).toContain("disable or omit any timeout or auto-resolution setting");
+    expect(analysisSkill).toContain("render all three numbered branches as");
+    expect(analysisSkill).toContain("persistent timeout\nfallback");
+    expect(analysisSkill).toContain("do not invoke or retry native choice in that turn");
     const noHarnessSkill = await readFile(
       path.join(tempDir, ".agents", "skills", "ec-no-harness", "SKILL.md"),
       "utf8",
@@ -151,7 +157,9 @@ describe("configureCodex", () => {
     expect(main).toContain("lite chooses IMPLEMENT -> VERIFICATION");
     expect(main).toContain("A confirmation-required boundary is not fully presented");
     expect(main).toContain("approve-mode code IMPLEMENT gate must instead preserve");
-    expect(main).toContain("at most once per assistant turn");
+    expect(main).toContain("explicitly guarantees an indefinite wait");
+    expect(main).toContain("pre-render the matching numbered fallback");
+    expect(main).toContain("consume a matching\n  numbered reply against the stored edge");
     expect(main).not.toContain("[ Easy Coding ] ready");
     expect(main).not.toContain("tasks``");
     expect(main).not.toContain("}```");
@@ -301,7 +309,11 @@ describe("configureQoder", () => {
     expect(skill).toContain("The code-task IMPLEMENT completion fallback must preserve");
     expect(skill).toContain("Skip REVIEW and enter VERIFICATION");
     expect(skill).toContain("An empty, dismissed, timed-out, or unparseable choice result");
-    expect(skill).toContain("at most once per assistant turn");
+    expect(skill).toContain("disable or omit any timeout or auto-resolution setting");
+    expect(skill).toContain("render the matching complete numbered fallback as normal assistant");
+    expect(skill).toContain("Do not invoke or retry the native choice again in that turn");
+    expect(skill).toContain("Before re-presenting any manual gate, consume a");
+    expect(skill).toContain("A bare Other");
     expect(skill).not.toContain("{{");
     const analysisSkill = await readFile(
       path.join(tempDir, ".qoder", "skills", "ec-analysis", "SKILL.md"),
@@ -310,8 +322,10 @@ describe("configureQoder", () => {
     expect(analysisSkill).toContain("Confirm entering IMPLEMENT (recommended)");
     expect(analysisSkill).toContain("Hand off to another agent");
     expect(analysisSkill).toContain("Other — use the native free-form Other input");
-    expect(analysisSkill).toContain("at most once per assistant turn");
-    expect(analysisSkill).toContain("stop the\ncurrent turn");
+    expect(analysisSkill).toContain("disable or omit any timeout or auto-resolution setting");
+    expect(analysisSkill).toContain("render all three numbered branches as");
+    expect(analysisSkill).toContain("persistent timeout\nfallback");
+    expect(analysisSkill).toContain("do not invoke or retry native choice in that turn");
     const taskManagementSkill = await readFile(
       path.join(tempDir, ".qoder", "skills", "ec-task-management", "SKILL.md"),
       "utf8",
@@ -334,7 +348,9 @@ describe("configureQoder", () => {
     const main = await readFile(path.join(tempDir, "AGENTS.md"), "utf8");
     expect(main).toContain("A confirmation-required boundary is not fully presented");
     expect(main).toContain("approve-mode code IMPLEMENT gate must instead preserve");
-    expect(main).toContain("at most once per assistant turn");
+    expect(main).toContain("explicitly guarantees an indefinite wait");
+    expect(main).toContain("pre-render the matching numbered fallback");
+    expect(main).toContain("consume a matching\n  numbered reply against the stored edge");
 
     const settings = await readFile(path.join(tempDir, ".qoder", "settings.json"), "utf8");
     expect(settings).toContain(".qoder/hooks");
