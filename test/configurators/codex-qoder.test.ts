@@ -13,6 +13,14 @@ import { writeInstallManifest } from "../../src/utils/install-manifest.js";
 let tempDir: string;
 const pythonCmd = process.platform === "win32" ? "python" : "python3";
 
+function cleanAgentEnvironment(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  const environment = { ...process.env };
+  delete environment.CODEX_THREAD_ID;
+  delete environment.QODER_PROJECT_DIR;
+  delete environment.CLAUDE_PROJECT_DIR;
+  return { ...environment, ...overrides };
+}
+
 function hookCommand(root: string, baseDir: string, scriptName: string): string {
   return renderHookCommand(root, platformContext(baseDir), scriptName);
 }
@@ -187,10 +195,14 @@ describe("configureCodex", () => {
     expect(hookPaths).toContain(".codex/hooks/inject-workflow-state.py");
   });
 
-  it("uses the same Codex ppid fallback for agent and agentless state API commands", async () => {
+  it("isolates Codex App threads for agent and agentless state API commands", async () => {
     await configureCodex(tempDir);
     await mkdir(path.join(tempDir, ".easy-coding"), { recursive: true });
     const stateApi = path.join(tempDir, ".codex", "hooks", "easy_coding_state.py");
+    const firstThreadId = "019f893f-5029-7921-9a2c-444fc7e7ac7e";
+    const secondThreadId = "019f893f-5029-7921-9a2c-444fc7e7ac7f";
+    const firstEnvironment = cleanAgentEnvironment({ CODEX_THREAD_ID: firstThreadId });
+    const secondEnvironment = cleanAgentEnvironment({ CODEX_THREAD_ID: secondThreadId });
 
     execFileSync(
       pythonCmd,
@@ -206,17 +218,55 @@ describe("configureCodex", () => {
         "--agent",
         "codex",
       ],
-      { cwd: tempDir, encoding: "utf8" },
+      { cwd: tempDir, encoding: "utf8", env: firstEnvironment },
     );
-    const snapshot = JSON.parse(
+    execFileSync(
+      pythonCmd,
+      [
+        stateApi,
+        "create-task",
+        "--task-id",
+        "second-thread-task",
+        "--type",
+        "feature",
+        "--title",
+        "second thread",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8", env: secondEnvironment },
+    );
+    const firstSnapshot = JSON.parse(
       execFileSync(pythonCmd, [stateApi, "snapshot"], {
         cwd: tempDir,
         encoding: "utf8",
+        env: firstEnvironment,
+      }),
+    );
+    const secondSnapshot = JSON.parse(
+      execFileSync(pythonCmd, [stateApi, "snapshot"], {
+        cwd: tempDir,
+        encoding: "utf8",
+        env: secondEnvironment,
       }),
     );
 
-    expect(snapshot.current_task).toBe("fallback-task");
-    expect(snapshot.session_file).toMatch(/codex-ppid-\d+\.json$/);
+    expect(firstSnapshot.current_task).toBe("fallback-task");
+    expect(firstSnapshot.session_file).toContain(`codex-${firstThreadId}.json`);
+    expect(secondSnapshot.current_task).toBe("second-thread-task");
+    expect(secondSnapshot.session_file).toContain(`codex-${secondThreadId}.json`);
+    await expect(
+      readFile(
+        path.join(tempDir, ".easy-coding", "sessions", `codex-${firstThreadId}.json`),
+        "utf8",
+      ),
+    ).resolves.toContain('"session_source": "codex-thread-id"');
+    await expect(
+      readFile(
+        path.join(tempDir, ".easy-coding", "sessions", `codex-${secondThreadId}.json`),
+        "utf8",
+      ),
+    ).resolves.toContain('"session_source": "codex-thread-id"');
   });
 
   it("runs portable launcher hook commands from paths with special characters", async () => {
@@ -380,6 +430,42 @@ describe("configureQoder", () => {
     expect(await pathExists(path.join(tempDir, ".qoder", "hooks", "inject-subagent-context.py"))).toBe(
       true,
     );
+  });
+
+  it("keeps Qoder in its own namespace when Claude compatibility variables are also present", async () => {
+    await configureQoder(tempDir);
+    await mkdir(path.join(tempDir, ".easy-coding"), { recursive: true });
+    const settings = JSON.parse(
+      await readFile(path.join(tempDir, ".qoder", "settings.json"), "utf8"),
+    ) as { hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>> };
+    const command = settings.hooks.UserPromptSubmit[0].hooks[0].command;
+    const output = execSync(command, {
+      cwd: tempDir,
+      input: JSON.stringify({
+        cwd: tempDir,
+        hook_event_name: "UserPromptSubmit",
+        session_id: "qoder-cli-session",
+      }),
+      encoding: "utf8",
+      env: cleanAgentEnvironment({
+        QODER_PROJECT_DIR: tempDir,
+        CLAUDE_PROJECT_DIR: tempDir,
+      }),
+    });
+
+    expect(output).toContain(
+      "[easy-coding:session-file:.easy-coding/sessions/qoder-qoder-cli-session.json]",
+    );
+    expect(
+      await pathExists(
+        path.join(tempDir, ".easy-coding", "sessions", "qoder-qoder-cli-session.json"),
+      ),
+    ).toBe(true);
+    expect(
+      await pathExists(
+        path.join(tempDir, ".easy-coding", "sessions", "claude-code-qoder-cli-session.json"),
+      ),
+    ).toBe(false);
   });
 
   it("uses .qodercn when the project already has the China variant directory", async () => {

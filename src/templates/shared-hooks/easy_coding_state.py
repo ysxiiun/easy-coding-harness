@@ -142,17 +142,18 @@ def normalize_session_agent(agent: str | None) -> str:
 
 
 def detect_runtime_agent() -> str:
-    if os.environ.get("CLAUDE_PROJECT_DIR"):
-        return "claude-code"
-    if os.environ.get("QODER_PROJECT_DIR"):
-        return "qoder"
     script_path = Path(sys.argv[0]).as_posix()
-    if ".claude/" in script_path:
-        return "claude-code"
-    if ".codex/" in script_path:
-        return "codex"
     if ".qoder/" in script_path or ".qodercn/" in script_path:
         return "qoder"
+    if ".codex/" in script_path:
+        return "codex"
+    if ".claude/" in script_path:
+        return "claude-code"
+    # Qoder CLI 会暴露 Claude 兼容环境变量，专属信号必须优先于兼容信号。
+    if os.environ.get("QODER_PROJECT_DIR"):
+        return "qoder"
+    if os.environ.get("CLAUDE_PROJECT_DIR"):
+        return "claude-code"
     return "unknown"
 
 
@@ -167,7 +168,7 @@ def normalize_session_component(value: str) -> str:
     return f"sha256-{digest}"
 
 
-# 逻辑会话由 Agent 命名空间与 hook session_id 共同标识；PPID 只用于缺少逻辑 ID 的兼容回退。
+# 逻辑会话由 Agent 命名空间与平台会话 ID 共同标识；PPID 只用于缺少逻辑 ID 的兼容回退。
 def hook_session_identity(
     payload: dict,
     agent: str | None,
@@ -176,9 +177,18 @@ def hook_session_identity(
     namespace = normalize_session_agent(agent)
     raw_session_id = payload.get("session_id") or payload.get("sessionId")
     external_session_id = str(raw_session_id).strip() if raw_session_id is not None else ""
+    source = "hook-session-id"
+    if not external_session_id and namespace == "codex":
+        # Codex App 当前会把 thread ID 暴露在进程环境中；标准 hook session_id 仍保持最高优先级。
+        raw_thread_id = (
+            payload.get("thread_id")
+            or payload.get("threadId")
+            or os.environ.get("CODEX_THREAD_ID")
+        )
+        external_session_id = str(raw_thread_id).strip() if raw_thread_id is not None else ""
+        source = "codex-thread-id"
     if external_session_id:
         component = normalize_session_component(external_session_id)
-        source = "hook-session-id"
     else:
         component = f"ppid-{ppid if ppid is not None else os.getppid()}"
         source = "legacy-ppid"
@@ -637,7 +647,8 @@ def resolve_session_path(root: Path, session_file: str | Path | None = None) -> 
                 f"{session_file}. Must be a file under .easy-coding/sessions/."
             )
         return resolved
-    return sessions_dir / f"{detect_runtime_agent()}-ppid-{os.getppid()}.json"
+    identity = hook_session_identity({}, detect_runtime_agent())
+    return sessions_dir / f"{identity['session_key']}.json"
 
 
 def resolve_hook_session_path(

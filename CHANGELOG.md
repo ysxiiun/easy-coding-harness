@@ -6,6 +6,12 @@
 - `y`：常规功能升级
 - `z`：日常 bug 修复
 
+## 0.8.3-beta.0
+
+- 修复 Codex App 未在 hook payload 中提供 `session_id` 时仍回退到 PPID、导致同一 App 进程内多个逻辑会话共享 Easy Coding session 的问题；Codex 现在会在标准 hook session ID 缺失时使用 `CODEX_THREAD_ID`，仅在两者都不可用时保留 PPID 兼容回退。
+- 修复 Qoder CLI 同时暴露 Claude 兼容环境变量时被识别为 Claude Code 的问题；共享 hook 统一按脚本平台目录优先、Qoder 专属环境次之、Claude 环境最后的顺序解析 Agent，避免各入口判断逻辑漂移。
+- 新增 Codex App thread fallback、标准 payload 优先级、legacy PPID 和 Qoder/Claude 双环境变量回归测试，并同步设计文档与安装后 hook 验证。
+
 ## 0.8.2
 
 - 正式发布原生选择超时恢复：平台明确保证永久等待时禁用或省略 timeout / auto-resolution，无法保证时在调用原生选择前预先展示持久化文本编号。

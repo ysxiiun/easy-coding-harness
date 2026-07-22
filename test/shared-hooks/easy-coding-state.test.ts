@@ -285,6 +285,7 @@ function readHookSessionIdentity(
   payload: Record<string, unknown>,
   agent: string,
   ppid = 4242,
+  environment: NodeJS.ProcessEnv = {},
 ): Record<string, unknown> {
   const script = [
     "import json,sys",
@@ -302,7 +303,7 @@ function readHookSessionIdentity(
       agent,
       String(ppid),
     ],
-    { encoding: "utf8" },
+    { encoding: "utf8", env: cleanAgentEnvironment(environment) },
   );
   return JSON.parse(output) as Record<string, unknown>;
 }
@@ -311,6 +312,7 @@ function ensureHookSession(
   payload: Record<string, unknown>,
   agent: string,
   ppid = 4242,
+  environment: NodeJS.ProcessEnv = {},
 ): { session: Record<string, unknown>; session_path: string } {
   const script = [
     "import json,sys",
@@ -331,12 +333,33 @@ function ensureHookSession(
       agent,
       String(ppid),
     ],
-    { encoding: "utf8" },
+    { encoding: "utf8", env: cleanAgentEnvironment(environment) },
   );
   return JSON.parse(output) as {
     session: Record<string, unknown>;
     session_path: string;
   };
+}
+
+function cleanAgentEnvironment(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  const environment = { ...process.env };
+  delete environment.CODEX_THREAD_ID;
+  delete environment.QODER_PROJECT_DIR;
+  delete environment.CLAUDE_PROJECT_DIR;
+  return { ...environment, ...overrides };
+}
+
+function readDetectedRuntimeAgent(environment: NodeJS.ProcessEnv): string {
+  const script = [
+    "import sys",
+    "sys.path.insert(0, sys.argv[1])",
+    "from easy_coding_state import detect_runtime_agent",
+    "print(detect_runtime_agent())",
+  ].join(";");
+  return execFileSync("python3", ["-c", script, path.dirname(stateApiPath())], {
+    encoding: "utf8",
+    env: cleanAgentEnvironment(environment),
+  }).trim();
 }
 
 function ensureConcurrentHookSessions(
@@ -385,6 +408,15 @@ function ensureConcurrentHookSessions(
 }
 
 describe("easy_coding_state.py hook session identity", () => {
+  it("prefers the Qoder environment over its Claude compatibility environment", () => {
+    expect(
+      readDetectedRuntimeAgent({
+        QODER_PROJECT_DIR: tempDir,
+        CLAUDE_PROJECT_DIR: tempDir,
+      }),
+    ).toBe("qoder");
+  });
+
   it("requires project-init completion to keep using the injected logical session", async () => {
     await writeTaskFixture("project-init", "INIT", "codex");
     const sessionsDir = path.join(tempDir, ".easy-coding", "sessions");
@@ -452,6 +484,43 @@ describe("easy_coding_state.py hook session identity", () => {
     expect(qoder.session_key).toBe("qoder-1200");
   });
 
+  it("prefers the standard hook session id over the Codex App thread id", () => {
+    const identity = readHookSessionIdentity({ session_id: "hook-session" }, "codex", 4242, {
+      CODEX_THREAD_ID: "app-thread",
+    });
+
+    expect(identity).toMatchObject({
+      external_session_id: "hook-session",
+      session_key: "codex-hook-session",
+      session_source: "hook-session-id",
+    });
+  });
+
+  it("uses the Codex App thread id when the hook payload omits session_id", () => {
+    const identity = readHookSessionIdentity({}, "codex", 4242, {
+      CODEX_THREAD_ID: "019f893f-5029-7921-9a2c-444fc7e7ac7e",
+    });
+
+    expect(identity).toMatchObject({
+      agent: "codex",
+      external_session_id: "019f893f-5029-7921-9a2c-444fc7e7ac7e",
+      session_key: "codex-019f893f-5029-7921-9a2c-444fc7e7ac7e",
+      session_source: "codex-thread-id",
+    });
+  });
+
+  it("accepts a Codex thread id from the hook payload before consulting the environment", () => {
+    const identity = readHookSessionIdentity({ thread_id: "payload-thread" }, "codex", 4242, {
+      CODEX_THREAD_ID: "environment-thread",
+    });
+
+    expect(identity).toMatchObject({
+      external_session_id: "payload-thread",
+      session_key: "codex-payload-thread",
+      session_source: "codex-thread-id",
+    });
+  });
+
   it("hashes unsafe external ids and preserves the original metadata", () => {
     const identity = readHookSessionIdentity({ session_id: "../../escape/session" }, "codex");
 
@@ -461,7 +530,9 @@ describe("easy_coding_state.py hook session identity", () => {
   });
 
   it("uses an agent-prefixed ppid fallback only when no logical id exists", () => {
-    const identity = readHookSessionIdentity({}, "qoder", 2021);
+    const identity = readHookSessionIdentity({}, "qoder", 2021, {
+      CODEX_THREAD_ID: "must-not-leak-across-agent-namespaces",
+    });
 
     expect(identity).toMatchObject({
       agent: "qoder",
