@@ -6,6 +6,12 @@
 - `y`：常规功能升级
 - `z`：日常 bug 修复
 
+## 0.8.3
+
+- 正式发布 Codex App thread 级 session 隔离：标准 hook `session_id` 缺失时使用 `CODEX_THREAD_ID`，避免同一 App 进程内多个逻辑会话共享 PPID session。
+- 正式发布 Qoder CLI Agent 识别修复：共享 hook 优先按脚本平台目录判断，无法判断时优先使用 Qoder 专属环境变量，避免 Claude 兼容变量造成误识别。
+- 汇总 `0.8.3-beta.0` 的 Codex thread fallback、Qoder/Claude 双环境变量、legacy PPID 回退、设计文档与安装后 hook 回归验证结果。
+
 ## 0.8.3-beta.0
 
 - 修复 Codex App 未在 hook payload 中提供 `session_id` 时仍回退到 PPID、导致同一 App 进程内多个逻辑会话共享 Easy Coding session 的问题；Codex 现在会在标准 hook session ID 缺失时使用 `CODEX_THREAD_ID`，仅在两者都不可用时保留 PPID 兼容回退。
