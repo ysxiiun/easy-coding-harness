@@ -6,10 +6,11 @@ import { VERSION } from "../constants/version.js";
 import { renderBanner } from "../ui/banner.js";
 import { compareVersions } from "../utils/compare-versions.js";
 import {
-  type ConfirmMode,
+  type ApprovalMode,
+  type ConfiguredWorkflowMode,
   readConfigYaml,
-  resolveLegacyConfirmMode,
-  setConfirmMode,
+  resolveLegacyBehavior,
+  setBehaviorModes,
 } from "../utils/config-yaml.js";
 import { pathExists } from "../utils/file-writer.js";
 
@@ -39,10 +40,10 @@ export async function config(): Promise<void> {
     );
   }
 
-  const current = resolveLegacyConfirmMode(projectConfig);
-  const selected = await select<ConfirmMode>({
-    message: `Select project confirm mode (current: ${current})`,
-    initialValue: current,
+  const current = resolveLegacyBehavior(projectConfig);
+  const approvalMode = await select<ApprovalMode>({
+    message: `Select project approval mode (current: ${current.approvalMode})`,
+    initialValue: current.approvalMode,
     options: [
       {
         value: "approve",
@@ -55,9 +56,9 @@ export async function config(): Promise<void> {
         hint: "ANALYSIS -> IMPLEMENT and VERIFICATION -> MEMORY",
       },
       {
-        value: "lite",
-        label: "lite — guard gates without code review",
-        hint: "IMPLEMENT -> VERIFICATION",
+        value: "confirm",
+        label: "confirm — confirm the plan once",
+        hint: "only ANALYSIS -> IMPLEMENT; later stages advance after quality gates",
       },
       {
         value: "auto",
@@ -66,13 +67,44 @@ export async function config(): Promise<void> {
       },
     ],
   });
-  if (typeof selected === "symbol") {
+  if (typeof approvalMode === "symbol") {
+    cancel("Configuration cancelled.");
+    return;
+  }
+
+  const workflowMode = await select<ConfiguredWorkflowMode>({
+    message: `Select project workflow mode (current: ${current.workflowMode})`,
+    initialValue: current.workflowMode,
+    options: [
+      {
+        value: "adaptive",
+        label: "adaptive — choose by task risk (default)",
+        hint: "freezes to fast, standard, or strict after ANALYSIS",
+      },
+      {
+        value: "fast",
+        label: "fast — compact execution for low-risk tasks",
+        hint: "all workflow stages still run",
+      },
+      {
+        value: "standard",
+        label: "standard — balanced execution",
+        hint: "independent review and impacted verification",
+      },
+      {
+        value: "strict",
+        label: "strict — maximum assurance",
+        hint: "multi-dimensional review and full verification",
+      },
+    ],
+  });
+  if (typeof workflowMode === "symbol") {
     cancel("Configuration cancelled.");
     return;
   }
 
   const shouldSave = await confirm({
-    message: `Set behavior.confirm_mode to ${selected}?`,
+    message: `Set behavior.approval_mode to ${approvalMode} and behavior.workflow_mode to ${workflowMode}?`,
     initialValue: true,
   });
   if (typeof shouldSave === "symbol" || !shouldSave) {
@@ -80,6 +112,6 @@ export async function config(): Promise<void> {
     return;
   }
 
-  await setConfirmMode(configPath, selected);
-  outro(chalk.green(`Project confirm mode updated to ${selected}.`));
+  await setBehaviorModes(configPath, approvalMode, workflowMode);
+  outro(chalk.green(`Project modes updated: approval=${approvalMode}, workflow=${workflowMode}.`));
 }

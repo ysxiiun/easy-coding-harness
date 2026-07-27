@@ -6,6 +6,26 @@
 - `y`：常规功能升级
 - `z`：日常 bug 修复
 
+## 0.9.0-beta.0
+
+- 将单一 `behavior.confirm_mode` 拆分为 `behavior.approval_mode` 与
+  `behavior.workflow_mode`：审批等待和执行深度不再耦合；工作流默认使用 `adaptive`，
+  并在 ANALYSIS 结束时解析、展示并冻结为 `fast`、`standard` 或 `strict`。
+- `approval_mode` 新增 `confirm`：仅在 ANALYSIS → IMPLEMENT 等待一次方案确认，确认后
+  REVIEW、VERIFICATION、MEMORY、COMPLETE 在各自机械质量门禁通过后自动推进。
+- 保留完整代码任务状态链，Fast 也必须进入 REVIEW；按模式调整每个状态内部的上下文
+  加载、主 Agent/子 Agent 分工、审查独立性、验证范围和记忆深度，减少无效 Token、
+  固定子 Agent 调度和重复全量检查。
+- 新增工作流模式提案、机械风险下限、原子冻结和只升不降机制；REVIEW 证据绑定最终
+  实现指纹，VERIFICATION 证据绑定实现与配置指纹，相关内容未变化时可复用、变化后
+  自动失效。
+- REVIEW 返工改为按语义单元合并，明确 error/warning/info 阻断语义；同类问题连续两轮
+  未解决时停止盲目返工并回到重新分析。
+- 配置 Schema 升至 3；旧 `lite` 自动迁移为 `approval_mode: guard` 与
+  `workflow_mode: fast`，旧 approve/guard/auto 保留审批语义并默认使用 adaptive；
+  在途任务通过 legacy 标记兼容已有提案与 REVIEW 证据，仅旧 lite 或已持久化直通边
+  保留一次 IMPLEMENT → VERIFICATION；已处于 VERIFICATION 的旧任务仍需新鲜验证证据。
+
 ## 0.8.3
 
 - 正式发布 Codex App thread 级 session 隔离：标准 hook `session_id` 缺失时使用 `CODEX_THREAD_ID`，避免同一 App 进程内多个逻辑会话共享 PPID session。

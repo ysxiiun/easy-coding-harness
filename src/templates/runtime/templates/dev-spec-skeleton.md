@@ -49,16 +49,16 @@
 
 ### 实施拆解
 
-| 单元 | 说明 | 类型 | 涉及文件 | 依赖 |
-|------|------|------|---------|------|
-| U1 | [[EC_TODO:单元标题]] | [[EC_TODO:backend/frontend/test/...]] | [[EC_TODO:涉及文件]] | — |
-| U2 | [[EC_TODO:单元标题]] | [[EC_TODO:单元类型]] | [[EC_TODO:涉及文件]] | — |
-| U3 | [[EC_TODO:单元标题]] | [[EC_TODO:单元类型]] | [[EC_TODO:涉及文件]] | U1, U2 |
+| 单元 | 说明 | 类型 | 涉及文件 | 依赖 | 验收条件 | 测试点 | 跨单元契约 |
+|------|------|------|---------|------|---------|-------|-----------|
+| U1 | [[EC_TODO:单元标题]] | [[EC_TODO:backend/frontend/test/...]] | [[EC_TODO:涉及文件]] | — | [[EC_TODO:可验证结果]] | [[EC_TODO:定向验证]] | [[EC_TODO:输入输出或“无”]] |
+| U2 | [[EC_TODO:单元标题]] | [[EC_TODO:单元类型]] | [[EC_TODO:涉及文件]] | — | [[EC_TODO:可验证结果]] | [[EC_TODO:定向验证]] | [[EC_TODO:输入输出或“无”]] |
+| U3 | [[EC_TODO:单元标题]] | [[EC_TODO:单元类型]] | [[EC_TODO:涉及文件]] | U1, U2 | [[EC_TODO:可验证结果]] | [[EC_TODO:定向验证]] | [[EC_TODO:与 U1/U2 的契约]] |
 
 **执行策略**：[[EC_TODO:parallel / sequential / single]]
 - 第一批（并行）：U1 [[EC_TODO:单元标题]] ｜ U2 [[EC_TODO:单元标题]]
 - 第二批（等待第一批）：U3 [[EC_TODO:单元标题]]
-（若 single：单一实施单元，派发 1 个子代理执行）
+（若 single：按 Workflow Mode 决定由主 Agent 直接执行或派发子 Agent）
 
 ### 测试策略
 
@@ -69,6 +69,14 @@
 
 - **人工验收**：[[EC_TODO:用户需要检查的关键行为]]
 - **无法验证项**：[[EC_TODO:无 / 说明缺失环境、数据或权限]]
+
+### Workflow Mode
+- **项目配置**：[[EC_TODO:adaptive / fast / standard / strict]]
+- **Session 覆盖**：[[EC_TODO:无 / adaptive / fast / standard / strict]]
+- **机械最低模式**：[[EC_TODO:fast / standard / strict]]
+- **推荐并选择**：[[EC_TODO:fast / standard / strict]]
+- **选择原因**：[[EC_TODO:风险、范围和兼容性依据]]
+- **状态内执行差异**：[[EC_TODO:IMPLEMENT / REVIEW / VERIFICATION / MEMORY 将采用的深度]]
 
 ### 风险与注意事项
 - [[EC_TODO:风险 1]]

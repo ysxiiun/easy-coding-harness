@@ -61,7 +61,8 @@ describe("session", () => {
         ...createSessionFile("task-codex"),
         agent: "codex",
         external_session_id: "1200",
-        confirm_mode: "auto",
+        approval_mode: "auto",
+        workflow_mode: "strict",
         harness_disabled: true,
       },
       "codex-1200",
@@ -72,7 +73,8 @@ describe("session", () => {
         ...createSessionFile("task-qoder"),
         agent: "qoder",
         external_session_id: "1200",
-        confirm_mode: "guard",
+        approval_mode: "confirm",
+        workflow_mode: "fast",
         harness_disabled: false,
       },
       "qoder-1200",
@@ -85,7 +87,8 @@ describe("session", () => {
       "task-codex",
       "task-qoder",
     ]);
-    expect(sessions.map(({ session }) => session.confirm_mode)).toEqual(["auto", "guard"]);
+    expect(sessions.map(({ session }) => session.approval_mode)).toEqual(["auto", "confirm"]);
+    expect(sessions.map(({ session }) => session.workflow_mode)).toEqual(["strict", "fast"]);
     expect(sessions.map(({ session }) => session.harness_disabled)).toEqual([true, false]);
   });
 

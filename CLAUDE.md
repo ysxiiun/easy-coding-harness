@@ -40,18 +40,19 @@ The 6-stage workflow plus terminal states runs inside the agent, not in the CLI:
 
 ```
 INIT ─auto→ ANALYSIS → IMPLEMENT → REVIEW → VERIFICATION → MEMORY ─auto→ COMPLETE
-                                  └──────────────→ VERIFICATION
-                                  └─read-only auto────────────────────→ COMPLETE
+                            └─read-only auto──────────────────────────→ COMPLETE
           ↑            ↑          │
           └── replan ───┘          └── repair
-user-decision edges require explicit confirmation; code tasks may skip REVIEW, while validated
-read-only tasks auto-complete after IMPLEMENT without VERIFICATION or MEMORY
+user-decision edges require explicit confirmation; every new code task enters REVIEW, while
+validated read-only tasks auto-complete after IMPLEMENT without REVIEW, VERIFICATION, or MEMORY.
+Only migrated pre-0.9 tasks marked `workflow_mode_legacy_direct_edge: true` from old lite
+semantics or a persisted pending edge may retain one direct IMPLEMENT → VERIFICATION edge.
 ```
 
 User-decision edges are confirmation gates; INIT → ANALYSIS and completed MEMORY → COMPLETE
-advance automatically. Code tasks always require fresh VERIFICATION evidence, even when REVIEW
-is skipped; validated read-only deliverables end directly after IMPLEMENT. The CLI deploys the
-runtime and migrates legacy workflow metadata during upgrade.
+advance automatically. New code tasks always require REVIEW and fresh VERIFICATION evidence;
+validated read-only deliverables end directly after IMPLEMENT. The CLI deploys the runtime and
+migrates legacy workflow metadata during upgrade.
 
 ## Development Conventions
 

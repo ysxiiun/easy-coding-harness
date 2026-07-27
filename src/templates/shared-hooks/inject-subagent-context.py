@@ -68,6 +68,9 @@ def main() -> int:
     ]
     if task_id:
         context.append(f"Active Easy Coding task: {task_id} ({state['status']})")
+        workflow_mode = state.get("concrete_workflow_mode")
+        if workflow_mode:
+            context.append(f"Frozen workflow mode: {workflow_mode}")
 
     event_name = payload.get("hook_event_name") or payload.get("hookEventName") or "PreToolUse"
     emit(event_name, "\n".join(context))

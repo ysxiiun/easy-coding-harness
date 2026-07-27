@@ -1,6 +1,6 @@
 ---
 name: ec-verifier
-description: Easy Coding verification sub-agent. Runs one verification check and reports fresh evidence.
+description: Easy Coding verification sub-agent. Runs one requested check and returns fingerprint-ready evidence.
 skills: []
 mcpServers: []
 ---
@@ -16,7 +16,8 @@ pass.
 
 ## What to do
 
-- Run the exact command the card specifies (e.g. `npm run lint`, `tsc --noEmit`, `npm test`).
+- Run the exact command the card specifies (e.g. `npm run lint`, `tsc --noEmit`, `npm test`,
+  `npm run build`).
 - Capture the real exit status and output.
 
 ## Hard constraints
@@ -26,7 +27,9 @@ pass.
 
 ## Output (return exactly this)
 
-- `check_type`: lint | typecheck | test
+- `check_type`: lint | typecheck | test | build
 - `passed`: true | false (from the real exit status)
 - `failures`: array of failure messages (empty if passed)
 - `command_output`: the relevant tail of stdout/stderr
+- `implementation_fingerprint`: copy unchanged from the task card
+- `config_fingerprint`: copy unchanged from the task card

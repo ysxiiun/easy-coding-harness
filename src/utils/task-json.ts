@@ -9,6 +9,11 @@ import {
 import { VERSION } from "../constants/version.js";
 import type { AgentPlatform } from "../types/platform.js";
 import type { Stage, TaskJson, TaskStatus } from "../types/task.js";
+import {
+  type ConfiguredWorkflowMode,
+  readConfigYaml,
+  resolveLegacyBehavior,
+} from "./config-yaml.js";
 import { pathExists, readTextFile, writeTextFile } from "./file-writer.js";
 
 export type ProjectInitSource = "fresh" | "legacy-easy-coding";
@@ -206,7 +211,148 @@ function migrateTaskWorkflowState(task: Record<string, unknown>): boolean {
     changed = true;
   }
 
+  const status = String(task.status ?? "");
+  const taskType = String(task.type ?? "").toLowerCase();
+  const isActive = !["", "PENDING", "COMPLETE", "CLOSED"].includes(status);
+  if (
+    isActive &&
+    taskType !== "project-init" &&
+    !["fast", "standard", "strict"].includes(String(task.workflow_mode ?? ""))
+  ) {
+    task.workflow_mode = ["analysis", "doc", "report"].includes(taskType) ? "fast" : "strict";
+    task.workflow_mode_confirmed_at = new Date().toISOString();
+    task.workflow_mode_confirmed_by = "upgrade-migration";
+    task.workflow_mode_legacy = true;
+    changed = true;
+  }
+
   return changed;
+}
+
+function migrateSessionBehavior(session: Record<string, unknown>): boolean {
+  let changed = false;
+  const legacyMode = session.confirm_mode;
+  const legacyLite = legacyMode === "lite";
+  if (!["approve", "guard", "confirm", "auto"].includes(String(session.approval_mode ?? ""))) {
+    if (legacyLite) {
+      session.approval_mode = "guard";
+      changed = true;
+    } else if (["approve", "guard", "confirm", "auto"].includes(String(legacyMode ?? ""))) {
+      session.approval_mode = legacyMode;
+      changed = true;
+    }
+  }
+  if (!["adaptive", "fast", "standard", "strict"].includes(String(session.workflow_mode ?? ""))) {
+    if (legacyLite) {
+      session.workflow_mode = "fast";
+      session.workflow_mode_legacy_confirm_override = true;
+      session.workflow_mode_legacy_alias_override = undefined;
+      changed = true;
+    } else if (["approve", "guard", "confirm", "auto"].includes(String(legacyMode ?? ""))) {
+      session.workflow_mode = "adaptive";
+      session.workflow_mode_legacy_alias_override = true;
+      session.workflow_mode_legacy_confirm_override = undefined;
+      changed = true;
+    }
+  }
+  if (legacyLite && session.workflow_mode_legacy_alias_override === true) {
+    session.workflow_mode_legacy_alias_override = undefined;
+    changed = true;
+  } else if (
+    ["approve", "guard", "confirm", "auto"].includes(String(legacyMode ?? "")) &&
+    session.workflow_mode_legacy_confirm_override === true
+  ) {
+    session.workflow_mode_legacy_confirm_override = undefined;
+    changed = true;
+  }
+  if ("confirm_mode" in session) {
+    session.confirm_mode = undefined;
+    changed = true;
+  }
+  return changed;
+}
+
+interface SessionMigrationCandidate {
+  currentTask: string;
+  agent?: string;
+  lastAgent?: string;
+  workflowMode?: ConfiguredWorkflowMode;
+  legacyLite: boolean;
+}
+
+const WORKFLOW_MODE_RANK: Record<Exclude<ConfiguredWorkflowMode, "adaptive">, number> = {
+  fast: 0,
+  standard: 1,
+  strict: 2,
+};
+
+function sessionMigrationCandidate(
+  session: Record<string, unknown>,
+): SessionMigrationCandidate | null {
+  if (typeof session.current_task !== "string") return null;
+  const workflowMode = ["adaptive", "fast", "standard", "strict"].includes(
+    String(session.workflow_mode ?? ""),
+  )
+    ? (session.workflow_mode as ConfiguredWorkflowMode)
+    : undefined;
+  return {
+    currentTask: session.current_task,
+    agent: typeof session.agent === "string" ? session.agent : undefined,
+    lastAgent: typeof session.last_agent === "string" ? session.last_agent : undefined,
+    workflowMode,
+    legacyLite: session.workflow_mode_legacy_confirm_override === true,
+  };
+}
+
+function relevantSessionMigrationCandidates(
+  task: Record<string, unknown>,
+  candidates: SessionMigrationCandidate[],
+): SessionMigrationCandidate[] {
+  const taskAgent = String(task.last_agent ?? "");
+  const ownerCandidates = candidates.filter(
+    (candidate) => candidate.agent === taskAgent || candidate.lastAgent === taskAgent,
+  );
+  return ownerCandidates.length > 0 ? ownerCandidates : candidates;
+}
+
+function migrationWorkflowMode(
+  task: Record<string, unknown>,
+  candidates: SessionMigrationCandidate[],
+  projectWorkflowMode: ConfiguredWorkflowMode,
+): Exclude<ConfiguredWorkflowMode, "adaptive"> {
+  const taskType = String(task.type ?? "").toLowerCase();
+  if (["analysis", "doc", "report"].includes(taskType)) return "fast";
+
+  const relevantCandidates = relevantSessionMigrationCandidates(task, candidates);
+  const fallbackMode = projectWorkflowMode === "adaptive" ? "strict" : projectWorkflowMode;
+  const concreteModes = relevantCandidates.map((candidate) =>
+    candidate.workflowMode === "adaptive" ? "strict" : (candidate.workflowMode ?? fallbackMode),
+  );
+  if (concreteModes.length === 0) return fallbackMode;
+  return concreteModes.reduce((highest, mode) =>
+    WORKFLOW_MODE_RANK[mode] > WORKFLOW_MODE_RANK[highest] ? mode : highest,
+  );
+}
+
+function preserveLegacyDirectEdge(
+  task: Record<string, unknown>,
+  candidates: SessionMigrationCandidate[],
+  projectLegacyLite: boolean,
+): boolean {
+  if (task.status !== "IMPLEMENT") return false;
+  const pending =
+    task.pending_transition &&
+    typeof task.pending_transition === "object" &&
+    !Array.isArray(task.pending_transition)
+      ? (task.pending_transition as Record<string, unknown>)
+      : null;
+  if (pending?.from === "IMPLEMENT" && pending.to === "VERIFICATION") return true;
+
+  const relevantCandidates = relevantSessionMigrationCandidates(task, candidates);
+  if (relevantCandidates.length > 0) {
+    return relevantCandidates.every((candidate) => candidate.legacyLite);
+  }
+  return projectLegacyLite;
 }
 
 async function taskFiles(cwd: string): Promise<string[]> {
@@ -245,6 +391,9 @@ export async function hasLegacyWorkflowState(cwd: string): Promise<boolean> {
     if (!task) continue;
     if (
       isLegacyStage(task.status) ||
+      (!["PENDING", "COMPLETE", "CLOSED"].includes(String(task.status ?? "")) &&
+        String(task.type ?? "") !== "project-init" &&
+        !["fast", "standard", "strict"].includes(String(task.workflow_mode ?? ""))) ||
       (Array.isArray(task.stage_history) &&
         task.stage_history.some(
           (entry) =>
@@ -261,7 +410,7 @@ export async function hasLegacyWorkflowState(cwd: string): Promise<boolean> {
   for (const filePath of await sessionFiles(cwd)) {
     const session = await readJsonRecord(filePath);
     if (!session) continue;
-    if (isLegacyStage(session.last_seen_stage)) return true;
+    if (isLegacyStage(session.last_seen_stage) || "confirm_mode" in session) return true;
   }
   return false;
 }
@@ -271,6 +420,20 @@ export async function migrateLegacyWorkflowState(
 ): Promise<WorkflowStateMigrationResult> {
   let tasksUpdated = 0;
   let sessionsUpdated = 0;
+  const updatedTaskPaths = new Set<string>();
+  let projectWorkflowMode: ConfiguredWorkflowMode = "adaptive";
+  let projectLegacyLite = false;
+  const configPath = path.join(cwd, EASY_CODING_DIR, "config.yaml");
+  if (await pathExists(configPath)) {
+    try {
+      const config = await readConfigYaml(configPath);
+      projectWorkflowMode = resolveLegacyBehavior(config).workflowMode;
+      const behavior = (config.behavior ?? {}) as unknown as Record<string, unknown>;
+      projectLegacyLite = behavior.confirm_mode === "lite";
+    } catch {
+      // Keep the conservative adaptive fallback; config migration reports malformed YAML.
+    }
+  }
 
   for (const filePath of await taskFiles(cwd)) {
     if (!(await pathExists(filePath))) continue;
@@ -279,16 +442,71 @@ export async function migrateLegacyWorkflowState(
     if (!migrateTaskWorkflowState(task)) continue;
     await writeTextFile(filePath, JSON.stringify(task, null, 2));
     tasksUpdated += 1;
+    updatedTaskPaths.add(filePath);
   }
 
+  const sessionCandidates: SessionMigrationCandidate[] = [];
   for (const filePath of await sessionFiles(cwd)) {
     const session = await readJsonRecord(filePath);
     if (!session) continue;
     const mappedStage = migrateStage(session.last_seen_stage);
-    if (mappedStage === session.last_seen_stage) continue;
-    session.last_seen_stage = mappedStage;
-    await writeTextFile(filePath, JSON.stringify(session, null, 2));
-    sessionsUpdated += 1;
+    let changed = false;
+    if (mappedStage !== session.last_seen_stage) {
+      session.last_seen_stage = mappedStage;
+      changed = true;
+    }
+    changed = migrateSessionBehavior(session) || changed;
+    const candidate = sessionMigrationCandidate(session);
+    if (candidate) sessionCandidates.push(candidate);
+    if (changed) {
+      await writeTextFile(filePath, JSON.stringify(session, null, 2));
+      sessionsUpdated += 1;
+    }
+  }
+
+  const candidatesByTask = new Map<string, SessionMigrationCandidate[]>();
+  for (const candidate of sessionCandidates) {
+    const candidates = candidatesByTask.get(candidate.currentTask) ?? [];
+    candidates.push(candidate);
+    candidatesByTask.set(candidate.currentTask, candidates);
+  }
+  for (const filePath of await taskFiles(cwd)) {
+    const task = await readJsonRecord(filePath);
+    if (!task) continue;
+    const migrationOwned =
+      task.workflow_mode_legacy === true && task.workflow_mode_confirmed_by === "upgrade-migration";
+    if (!migrationOwned) continue;
+    const taskId = path.basename(path.dirname(filePath));
+    const mode = migrationWorkflowMode(
+      task,
+      candidatesByTask.get(taskId) ?? [],
+      projectWorkflowMode,
+    );
+    let changed = false;
+    if (task.workflow_mode !== mode) {
+      task.workflow_mode = mode;
+      task.workflow_mode_confirmed_at = new Date().toISOString();
+      changed = true;
+    }
+    const keepDirectEdge = preserveLegacyDirectEdge(
+      task,
+      candidatesByTask.get(taskId) ?? [],
+      projectLegacyLite,
+    );
+    if (keepDirectEdge && task.workflow_mode_legacy_direct_edge !== true) {
+      task.workflow_mode_legacy_direct_edge = true;
+      changed = true;
+    } else if (!keepDirectEdge && "workflow_mode_legacy_direct_edge" in task) {
+      task.workflow_mode_legacy_direct_edge = undefined;
+      changed = true;
+    }
+    if (changed) {
+      await writeTextFile(filePath, JSON.stringify(task, null, 2));
+      if (!updatedTaskPaths.has(filePath)) {
+        tasksUpdated += 1;
+        updatedTaskPaths.add(filePath);
+      }
+    }
   }
 
   return { tasksUpdated, sessionsUpdated };

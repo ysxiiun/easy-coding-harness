@@ -14,14 +14,14 @@ Easy Coding Harness 是一个 AI 编码工作流脚手架。它通过 CLI 将一
 - 没有测试策略，完成后说 "should pass" 就交差
 - 跨会话时丢失所有上下文，每次都要重新解释
 
-easy-coding-harness 解决这些问题：**6 个工作阶段 + 2 个终态、四种确认模式**的状态机控制 AI 行为，**任务持久化**让进度跨会话保存，**记忆系统**让过往决策和教训在新任务中被参考，**跨 Agent 交接**让你在不同 AI 平台间无缝切换。
+easy-coding-harness 解决这些问题：**6 个工作阶段 + 2 个终态、审批与执行深度双模式**的状态机控制 AI 行为，**任务持久化**让进度跨会话保存，**记忆系统**让过往决策和教训在新任务中被参考，**跨 Agent 交接**让你在不同 AI 平台间无缝切换。
 
 ## 技术亮点
 
 - **三平台原生支持**：Claude Code、Codex、Qoder——安装后 Agent 原生识别 Skills，无需额外配置
-- **分层确认模式**：approve 逐边审批、guard 只把关两个关键边、lite 使用相同确认门但跳过 REVIEW、auto 自动执行全部合法工作流边；四者都保留 VERIFICATION 新鲜证据硬门，关闭任务始终要求显式操作
-- **子代理并行调度**：大任务自动拆解为并行单元，通过任务卡（Task Card）标准化子代理的输入输出
-- **记忆驱动的分析**：短期/长期记忆在分析阶段被强制读取和引用，不只是写入
+- **双模式控制**：approval_mode 控制等待，workflow_mode 控制状态内执行深度；Adaptive 默认按任务风险解析为 Fast、Standard 或 Strict
+- **按需 Agent 调度**：低风险单元允许主 Agent 执行，大任务和高风险任务仍通过任务卡分派独立 Agent
+- **按需记忆分析**：先检索元数据，只读取与当前模块、文件和历史决策相关的记忆
 - **Dead Drop 跨 Agent 协调**：`.easy-coding/` 目录是平台无关的协调层，Agent 间通过文件系统交换状态
 - **文件编码保护**：改动范围表强制声明文件编码，防止 AI 擅自转换编码
 
@@ -166,7 +166,7 @@ ec-workflow 会自动处理所有场景：
 
 ```
 用户：/ec-workflow
-Agent：> **Easy Coding** · **Guard** · Ready · ...
+Agent：> **Easy Coding** · **Approval: Guard** · **Workflow: Adaptive** · Ready · ...
        没有活跃任务。请描述你的需求。
 
 用户：给用户列表页添加搜索功能，支持按用户名和邮箱搜索
@@ -174,18 +174,17 @@ Agent：> **Easy Coding** · **Guard** · Ready · ...
 
 Agent 会创建任务并进入 INIT；INIT 工作完成后自动进入 ANALYSIS。
 
-状态边由生效确认模式控制：session 覆盖优先于项目 `behavior.confirm_mode`。`approve`
-除两条机械边外逐边确认，`guard`（默认）与 `lite` 只确认 `ANALYSIS → IMPLEMENT` 与
-`VERIFICATION → MEMORY`；lite 从 IMPLEMENT 直接进入 VERIFICATION，`auto` 自动执行其他
-合法工作流边。确认模式不会跳过方案、
-验证或记忆检查点，也不会自动关闭任务。
+状态边是否等待由 `approval_mode` 控制：session 覆盖优先于项目配置。状态内执行深度由
+`workflow_mode` 控制，默认 Adaptive 在 ANALYSIS 结束时解析并冻结具体模式。所有新代码
+任务都进入 REVIEW；任何模式都不会跳过方案、审查、验证或记忆检查点。Confirm 只在
+ANALYSIS → IMPLEMENT 等待一次，之后的自动推进仍必须先通过对应检查点。
 
 #### 2. 需求分析（ANALYSIS）
 
 Agent 进入 ANALYSIS 后严格按以下顺序工作：
 
 1. 前两个工具调用先读取并原样落盘技术方案骨架。
-2. 只读分析项目代码、RULES、ABSTRACT 和过往记忆；发现技术路线、接口、范围等待确认问题时立即询问，不提前填充方案。
+2. 只读分析项目代码、相关 RULES/ABSTRACT 章节，并先检索记忆元数据再按需读取正文。
 3. 所有决策解决后，才填充并输出完整技术方案，同时写入有效的 `execution.jsonl` plan。代码任务还要生成非空 `test-strategy.md`；显式无代码任务使用受限空文件范围并禁止生成该文件。
 4. 只有对应交付模式要求的产物完整且不含骨架占位符时，状态 API 才允许申请或确认进入 IMPLEMENT。
 
@@ -197,9 +196,10 @@ Agent 进入 ANALYSIS 后严格按以下顺序工作：
 - 修改方案
 - 实施拆解表（并行/串行策略）
 - 测试策略表
+- Workflow Mode（配置值、风险下限、推荐值、原因和各状态执行差异）
 - 风险与注意事项
 
-#### 3. 确认模式与状态边
+#### 3. 审批模式、工作流模式与状态边
 
 当生效模式要求确认时，阶段完成后状态仍停留在当前阶段，同时写入
 `pending_transition`。你通常有三个选择：
@@ -210,43 +210,42 @@ Agent 进入 ANALYSIS 后严格按以下顺序工作：
 3. Other（修改、补充或其他指令）
 ```
 
-`approve` 除 INIT → ANALYSIS、MEMORY → COMPLETE 外都需要上述确认；`guard` 与 `lite` 只在
-ANALYSIS → IMPLEMENT、VERIFICATION → MEMORY 确认；lite 跳过 REVIEW，`auto` 不展示状态边确认。自动边仍需
-通过状态 API 的合法边与产物校验。
+`approve` 除机械边外逐边确认；`guard` 只确认 ANALYSIS → IMPLEMENT 与
+VERIFICATION → MEMORY；`confirm` 只确认 ANALYSIS → IMPLEMENT，之后自动推进；
+`auto` 不展示状态边确认。自动边仍需通过状态 API 的方案、工作流模式、REVIEW 指纹和
+VERIFICATION 指纹门禁。IMPLEMENT 完成后的代码主链固定进入 REVIEW。
 
-approve 模式下 IMPLEMENT 完成后使用特殊选择：
-
-```text
-1. 确认进入 REVIEW（推荐）
-2. 跳过 REVIEW，直接进入 VERIFICATION
-3. 交接给其他智能体
-4. Other（由原生 free-form 输入承接）
-```
-
-Agent 必须实际调用当前平台原生的选项功能展示对应业务分支，并使用原生 free-form Other 承接修改意见。只有平台明确保证永久等待时，Agent 才可仅调用原生选择，并禁用或省略 timeout / auto-resolution；较长的有限超时不算永久等待。无法确认永久等待时，Agent 会先在普通消息中输出完整文本编号兜底，再调用一次原生选择；即使超时直接结束当前轮，编号仍留在会话中。原生选择返回空值、被取消、超时或无法解析时，任务继续停留在当前阶段并保留 `pending_transition`，Agent 不再重试；若此前未预输出编号且控制权返回，则立即补充编号。普通门稍后回复 `1` 确认、`2` 交接，回复 `3` 或 `3: 修改内容` 进入 Other；特殊 IMPLEMENT 门依次使用 `1` / `2` / `3` / `4`。恢复流程会先消费这个编号，再决定是否重新展示门禁，因此无需重新唤起原生选择框。
+Agent 必须实际调用当前平台原生的选项功能展示对应业务分支，并使用原生 free-form Other 承接修改意见。只有平台明确保证永久等待时，Agent 才可仅调用原生选择，并禁用或省略 timeout / auto-resolution；较长的有限超时不算永久等待。无法确认永久等待时，Agent 会先在普通消息中输出完整文本编号兜底，再调用一次原生选择；即使超时直接结束当前轮，编号仍留在会话中。原生选择返回空值、被取消、超时或无法解析时，任务继续停留在当前阶段并保留 `pending_transition`，Agent 不再重试；若此前未预输出编号且控制权返回，则立即补充编号。稍后回复 `1` 确认、`2` 交接，回复 `3` 或 `3: 修改内容` 进入 Other。恢复流程会先消费这个编号，再决定是否重新展示门禁，因此无需重新唤起原生选择框。
 
 你可以：
 - 修改方案中的任何部分（Agent 会输出完整修订版）
 - 调整测试策略（推翻不测判定、增减测试点）
 - 修改文件编码声明
+- 在机械风险下限之上调整本任务的 Fast / Standard / Strict 模式
 
 #### 4. 编码实现（IMPLEMENT）
 
 Agent 按确认的方案执行编码，严格限制在改动范围表列出的文件内。
 
-- 大任务会自动拆解为并行子代理执行
-- 每完成一个文件/模块会报告进度
-- 按测试策略编写测试
+- Fast 的单一低风险单元可由主 Agent 直接实现
+- Standard 按复杂度选择主 Agent 或独立 Agent；Strict 对多单元和高风险改动保持独立执行
+- 每个单元都携带验收条件、测试点、跨单元契约和风险，并在单元完成后运行定向测试
 
-显式 `doc` / `analysis` / `report` 只读任务是例外：不生成 `test-strategy.md`；IMPLEMENT 必须留下匹配的 dispatch/result，由只读子代理返回完整 deliverable，主 Agent 原样展示后按生效模式进入 COMPLETE。此类任务不进入 REVIEW、VERIFICATION 或 MEMORY，也不写任务记忆。
+显式 `doc` / `analysis` / `report` 只读任务是例外：不生成 `test-strategy.md`；IMPLEMENT 必须留下匹配的 dispatch/result，由只读执行者返回完整 deliverable，主 Agent 原样展示后按生效模式进入 COMPLETE。此类任务不进入 REVIEW、VERIFICATION 或 MEMORY，也不写任务记忆。
 
-#### 5. 代码审查（REVIEW，可跳过，仅代码任务）
+#### 5. 代码审查（REVIEW，仅代码任务）
 
-代码任务可选择进入 REVIEW，由 Agent 对代码改动进行多维度审查并自动修复可修问题；也可在 IMPLEMENT 完成后明确跳过 REVIEW，但不能跳过 VERIFICATION。只读任务不会到达本阶段。
+所有新代码任务都进入 REVIEW。Fast 使用最终 diff 自审，Standard 使用一次聚焦独立审查，
+Strict 使用多维独立审查。审查证据绑定实现指纹；代码变化后旧证据自动失效。返工按语义
+单元合并，同类问题连续两轮仍存在时停止盲目循环并重新分析。
 
 #### 6. 验证（VERIFICATION）
 
-lint + typecheck + test 三项并行执行。全部通过后展示结果；approve/guard/lite 等待手动验收，auto 按绿色结果自动进入 MEMORY。
+Fast 运行最小充分的定向命令，Standard 运行受影响范围检查，Strict 运行项目适用的完整
+lint、typecheck、test、build。验证证据绑定实现与配置指纹；未变化时可以复用，变化后
+自动失效。全部通过后展示结果；approve/guard 等待手动验收，confirm/auto 按绿色结果
+自动进入 MEMORY。Confirm 与 Auto 的区别是前者仍在 ANALYSIS → IMPLEMENT 等待一次
+方案确认。
 
 验收期间：
 - 小修复：Agent 修复后重新验证
@@ -288,8 +287,9 @@ $ec-task-management     （Codex）
 ```
 
 展示所有任务列表（活跃/已完成/已关闭），或创建新任务。每次唤起都会同时展示项目
-确认模式、session 覆盖和最终生效模式，即使任务列表为空也不会省略；可通过对话设置
-`approve/guard/lite/auto` session 覆盖，或恢复项目默认值。
+项目/会话的审批模式、配置工作流模式和任务冻结模式，即使任务列表为空也不会省略；可
+通过对话分别设置 `approve/guard/confirm/auto` 与
+`adaptive/fast/standard/strict` 覆盖，或恢复项目默认值。
 
 ### 当前会话不使用 Harness
 
@@ -342,7 +342,9 @@ easy-coding add-agent --agent=codex
 4. 打开 Qoder（或其他 Agent）
 5. 执行 `/ec-workflow`，自动发现交接任务并恢复
 
-handoff 会保留当前阶段和 `pending_transition`。因此代码 IMPLEMENT 完成后可交给另一个 Agent 决定进入 REVIEW 或跳过 REVIEW，REVIEW 完成后也可交给另一个做 VERIFICATION；接手方不会重复执行已完成阶段。自动边不提供交接，只读任务展示报告后直接结束。
+handoff 会保留当前阶段、冻结工作流模式和 `pending_transition`。代码 IMPLEMENT 完成后可
+交给另一个 Agent 继续 REVIEW，REVIEW 完成后也可交给另一个做 VERIFICATION；接手方不会
+重复执行已完成阶段。自动边不提供交接，只读任务展示报告后直接结束。
 
 ### 跨会话恢复
 
@@ -351,13 +353,13 @@ handoff 会保留当前阶段和 `pending_transition`。因此代码 IMPLEMENT �
 状态行会提示当前状态：
 
 ```
-> **Easy Coding** · **Guard** · `add-search` · `IMPLEMENT`
+> **Easy Coding** · **Approval: Guard** · **Workflow: Standard** · `add-search` · `IMPLEMENT`
 ```
 
 如果是交接来的任务：
 
 ```
-> **Easy Coding** · **Guard** · `add-search` · `IMPLEMENT` · Handoff -> `claude-code`
+> **Easy Coding** · **Approval: Guard** · **Workflow: Standard** · `add-search` · `IMPLEMENT` · Handoff -> `claude-code`
 ```
 
 ---
@@ -399,12 +401,14 @@ easy-coding upgrade
 
 升级策略：
 - **覆盖**：Skills、Hooks、子代理定义、平台配置、主约束文件生成区域
-- **原位迁移**：config.yaml 更新 `harness_version`，并在 0.7.0 将旧确认布尔值迁移为 `behavior.confirm_mode` 后删除旧字段；旧 task/session 状态元数据继续幂等迁移
+- **原位迁移**：config.yaml 更新 `harness_version`；旧确认设置迁移为
+  `behavior.approval_mode` 与 `behavior.workflow_mode`，其中 lite 映射为 guard + fast；
+  旧 task/session 状态元数据继续幂等迁移
 - **内容保留**：任务 dev-spec / execution / test-strategy、memory 内容、SOUL.md、RULES.md、ABSTRACT.md 等用户资产不被覆盖
 
 ### easy-coding config
 
-交互修改当前项目的确认模式：
+交互修改当前项目的审批模式与工作流模式：
 
 ```bash
 easy-coding config

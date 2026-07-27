@@ -1,95 +1,76 @@
 ---
 name: ec-reviewing
-description: REVIEW-stage skill. Use when ec-workflow enters REVIEW. Reviews changed files across correctness, RULES compliance, completeness, tests, and security; returns a graded verdict (accept/fix/replan/blocked) with file-and-line evidence; dispatches multi-dimension sub-agents for every review regardless of change-set size.
+description: REVIEW-stage skill. Performs workflow-mode-aware review against the final implementation fingerprint, blocks only actionable acceptance risks, and records reusable evidence.
 ---
 
-# ec-reviewing — graded, evidence-backed review
+# ec-reviewing — proportional but mandatory review
 
-ec-workflow dispatches you when code IMPLEMENT finishes. Read-only `doc` / `analysis` / `report`
-tasks auto-complete from IMPLEMENT and never enter REVIEW. You judge the code change set and
-return a verdict that drives the next transition. Inputs: the changed files (from
-execution.jsonl `result` records), `dev-spec.md`, `.easy-coding/RULES.md`, `test-strategy.md`.
-Lite-mode code tasks never enter REVIEW; they proceed from IMPLEMENT to VERIFICATION.
+Every new code task enters REVIEW. Read-only tasks do not. Obtain the current fingerprints:
 
-Communicate with the user in the user's language.
+```bash
+{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py evidence-fingerprints --agent <agent-id> --session-file <P>
+```
 
-## Dimensions (check every one)
+Review the final diff against `dev-spec.md`, RULES, unit acceptance criteria, tests, contracts,
+and obvious security risks. Every finding cites `file:line`.
 
-1. **Correctness** — does the change satisfy the dev-spec's requirement parse and change
-   plan? Edge cases, null/empty handling, off-by-one, async races.
-2. **Compliance** — RULES.md: naming, format, comment language, error handling.
-3. **Completeness** — is every file in the change-scope table actually handled? No half-done
-   units.
-4. **Tests** — do [must-test]/[should-test] items have real test cases? Bug fix has a
-   regression test?
-5. **Security** — obvious risks only: hardcoded secrets, SQL string concatenation, unvalidated
-   external input, path traversal.
+## Depth by workflow mode
 
-## Evidence gate
-
-Every finding cites a concrete `file:line`. "Looks good" / "seems fine" is not a review
-result. No finding without a location.
-
-## Verdict (exactly one)
-
-- `accept` — all dimensions pass. Request REVIEW -> VERIFICATION.
-- `fix` — problems found, fixable within the current plan. Auto-fix via sub-agents (see below).
-- `replan` — the plan itself is flawed (wrong approach, missing design). Request REVIEW -> ANALYSIS.
-- `blocked` — external blocker (missing dependency, environment). Pause and report.
-
-## Auto-fix flow (on `fix` verdict)
-
-<HARD-GATE>
-Bug-level issues (correctness errors, compliance violations, missing edge-case handling)
-are fixed DIRECTLY by dispatching fix sub-agents. Do NOT ask the user for permission to
-fix bugs. The user confirmed the plan — bugs in that plan's execution are implementation
-defects, not design decisions.
-
-ONLY escalate to the user when:
-- The fix requires a DESIGN CHOICE (two equally valid approaches, ambiguous requirement)
-- The fix would change the public API contract beyond what the dev-spec specifies
-- The finding contradicts something the user explicitly confirmed at a stage boundary
-</HARD-GATE>
-
-Fix dispatch flow:
-1. Collect all `fix`-worthy findings from review sub-agents.
-2. Group findings by file. For each group, build a fix task card:
-   - Files to fix (from the findings)
-   - The specific issues with file:line citations
-   - The suggested fix direction from the reviewer
-   - Relevant RULES sections
-3. Dispatch fix sub-agents (ec-fixer, one per file group) via {{sub_agent_dispatch}}.
-   Platform spawn rule: {{platform_spawn_instruction}}
-4. On return: merge results, append `result` records to execution.jsonl.
-5. Re-enter REVIEW (counts toward the fix-loop ceiling of 3).
-
-## Fix-loop ceiling
-
-Maximum 3 fix rounds. A 4th would mean the approach is wrong → auto-escalate to `replan`.
-
-## Sub-agent dispatch (ALWAYS)
-
-<HARD-GATE>
-REVIEW ALWAYS USES SUB-AGENTS regardless of the number of changed files. This prevents
-context pollution in the main agent's window. You MUST NOT review code inline — dispatch
-sub-agents for every review.
-</HARD-GATE>
-
-Dispatch two parallel review sub-agents:
-- R1: correctness — does the implementation match the dev-spec requirement?
-- R2: compliance — does the code obey RULES?
-
-Each sub-agent returns `{dimension, findings[], severity, suggestion}`. The MAIN agent
-merges and dedups findings and decides the verdict — sub-agents cannot trigger stage
-transitions.
+- `fast`: main Agent performs one final-diff self-review across correctness, scope, tests, and
+  obvious security risks.
+- `standard`: dispatch one independent focused reviewer covering correctness, contract
+  completeness, tests, and compliance.
+- `strict`: dispatch at least two independent dimensions (correctness/contracts and
+  compliance/tests/security) in parallel via {{sub_agent_dispatch}}.
 
 Platform spawn rule: {{platform_spawn_instruction}}
 
-## Output
+Reducing reviewer count must not reduce checked dimensions; it only combines them into fewer
+passes when the change is low risk.
 
-Append `review` records to execution.jsonl, one per dimension:
-`{"type":"review","dimension":"correctness","findings":[{"file":"...","line":42,"issue":"...","severity":"warn"}]}`.
-Then state the verdict and hand back to ec-workflow.
-For `accept` or `replan`, ec-workflow follows the effective confirm mode for the corresponding
-transition. A `fix` round stays inside REVIEW and therefore
-does not create a status transition unless the outcome changes.
+## Severity and verdict
+
+- `error`: demonstrably breaks an acceptance criterion, contract, security boundary, or build.
+  Blocks transition.
+- `warning`: credible risk. Blocks only when it can affect a confirmed acceptance criterion.
+- `info`: maintainability suggestion or optional improvement. Never blocks the current task.
+
+Verdict:
+
+- `accept`: no blocking finding.
+- `fix`: in-scope implementation defect.
+- `replan`: design/scope/contract is wrong.
+- `blocked`: missing external input or environment.
+
+## Fix loop
+
+1. Merge findings by semantic unit, not by file or reviewer.
+2. Prefer returning the bundle to the original implementation context.
+3. Run targeted checks for the affected unit, then re-review only the affected dimensions.
+4. Expand to full review only if the fix changes scope, public contracts, or shared behavior.
+5. If the same issue class survives two consecutive rounds, stop blind repair and return
+   `replan` or `blocked` with evidence.
+
+In-scope defects are fixed automatically. Ask the user only for a new design choice, changed
+public contract, or contradiction with a confirmed decision.
+
+## Evidence record
+
+Append one final record per executed dimension for the current implementation fingerprint.
+Fast and Standard normally use `combined`; Strict uses at least two distinct dimension names:
+
+```json
+{
+  "type": "review",
+  "dimension": "correctness-contracts",
+  "passed": true,
+  "reviewer": "main-or-independent-agent",
+  "implementation_fingerprint": "<state-api value>",
+  "timestamp": "<ISO-8601>",
+  "findings": []
+}
+```
+
+The state API rejects REVIEW -> VERIFICATION when any latest dimension evidence is missing,
+stale, failed, or contains an `error`. Strict also requires at least two passed dimensions. A
+code change after review produces a new fingerprint and invalidates all prior dimensions.

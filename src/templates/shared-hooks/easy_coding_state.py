@@ -5,6 +5,7 @@ import json
 import os
 import re
 import secrets
+import subprocess
 import time
 import uuid
 from datetime import datetime, timezone
@@ -32,6 +33,7 @@ MANDATORY_DEV_SPEC_HEADERS: list[str] = [
     "### 修改方案",
     "### 实施拆解",
     "### 测试策略",
+    "### Workflow Mode",
     "### 风险与注意事项",
 ]
 
@@ -39,6 +41,7 @@ VALID_TRANSITIONS: dict[str, set[str]] = {
     "idle": {"INIT"},
     "INIT": {"ANALYSIS", "CLOSED"},
     "ANALYSIS": {"IMPLEMENT", "CLOSED"},
+    # IMPLEMENT -> VERIFICATION remains parseable only for pre-0.9 in-flight tasks.
     "IMPLEMENT": {"REVIEW", "VERIFICATION", "ANALYSIS", "COMPLETE", "CLOSED"},
     "REVIEW": {"VERIFICATION", "IMPLEMENT", "ANALYSIS", "CLOSED"},
     "VERIFICATION": {"MEMORY", "IMPLEMENT", "CLOSED"},
@@ -53,13 +56,25 @@ ALWAYS_AUTO_TRANSITIONS = {
 }
 READ_ONLY_COMPLETION_TRANSITION = ("IMPLEMENT", "COMPLETE")
 NO_CODE_TASK_TYPES = {"analysis", "doc", "report"}
-CONFIRM_MODES = {"approve", "guard", "lite", "auto"}
-DEFAULT_CONFIRM_MODE = "guard"
+APPROVAL_MODES = {"approve", "guard", "confirm", "auto"}
+CONFIGURED_WORKFLOW_MODES = {"adaptive", "fast", "standard", "strict"}
+WORKFLOW_MODES = {"fast", "standard", "strict"}
+WORKFLOW_MODE_RANK = {"fast": 0, "standard": 1, "strict": 2}
+STRICT_VERIFICATION_CHECK_TYPES = {"lint", "typecheck", "test", "build"}
+REVIEW_FINDING_SEVERITIES = {"error", "warning", "info"}
+STRICT_WORKFLOW_RISK_PATTERN = re.compile(
+    r"(migration|migrate|schema|state[-_ ]?machine|security|payment|data[-_ ]?loss|"
+    r"concurren|cross[-_ ]?repo|public[-_ ]?(api|contract)|迁移|状态机|安全|支付|"
+    r"数据丢失|并发|跨仓|公共接口|公共契约)",
+    re.IGNORECASE,
+)
+DEFAULT_APPROVAL_MODE = "guard"
+DEFAULT_WORKFLOW_MODE = "adaptive"
 CRITICAL_CONFIRM_TRANSITIONS = {
     ("ANALYSIS", "IMPLEMENT"),
     ("VERIFICATION", "MEMORY"),
 }
-LITE_SKIPPED_TRANSITION = ("IMPLEMENT", "REVIEW")
+ANALYSIS_CONFIRM_TRANSITION = ("ANALYSIS", "IMPLEMENT")
 
 LEGACY_STAGE_MAP = {
     "WAITING_CONFIRM": "ANALYSIS",
@@ -96,6 +111,8 @@ TABLE_HEADER_CELLS = {
     "归属单元",
     "方式",
     "验证命令",
+    "验收条件",
+    "跨单元契约",
 }
 
 
@@ -269,15 +286,16 @@ def read_memory_config(root: Path) -> dict[str, int]:
     return config
 
 
-def read_project_confirm_mode(root: Path) -> str:
+def read_project_behavior(root: Path) -> tuple[str, str]:
     path = root / ".easy-coding" / "config.yaml"
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except OSError:
-        return DEFAULT_CONFIRM_MODE
+        return DEFAULT_APPROVAL_MODE, DEFAULT_WORKFLOW_MODE
 
     in_behavior = False
     behavior_indent = 0
+    behavior: dict[str, str] = {}
     for raw_line in lines:
         without_comment = raw_line.split("#", 1)[0].rstrip()
         stripped = without_comment.strip()
@@ -293,25 +311,88 @@ def read_project_confirm_mode(root: Path) -> str:
         if not in_behavior or ":" not in stripped:
             continue
         key, value = stripped.split(":", 1)
-        if key != "confirm_mode":
-            continue
-        mode = value.strip().strip("'\"")
-        if mode not in CONFIRM_MODES:
-            raise StateError(
-                "Invalid behavior.confirm_mode in .easy-coding/config.yaml: "
-                "expected approve, guard, lite, or auto."
-            )
-        return mode
-    return DEFAULT_CONFIRM_MODE
+        behavior[key] = value.strip().strip("'\"")
+
+    legacy = behavior.get("confirm_mode")
+    approval_mode = behavior.get("approval_mode")
+    workflow_mode = behavior.get("workflow_mode")
+    if approval_mode is None:
+        if legacy == "lite":
+            approval_mode = "guard"
+        elif legacy in APPROVAL_MODES:
+            approval_mode = legacy
+        else:
+            approval_mode = DEFAULT_APPROVAL_MODE
+    if workflow_mode is None:
+        workflow_mode = "fast" if legacy == "lite" else DEFAULT_WORKFLOW_MODE
+    if approval_mode not in APPROVAL_MODES:
+        raise StateError(
+            "Invalid behavior.approval_mode in .easy-coding/config.yaml: "
+            "expected approve, guard, confirm, or auto."
+        )
+    if workflow_mode not in CONFIGURED_WORKFLOW_MODES:
+        raise StateError(
+            "Invalid behavior.workflow_mode in .easy-coding/config.yaml: "
+            "expected adaptive, fast, standard, or strict."
+        )
+    return approval_mode, workflow_mode
 
 
-def resolve_confirm_mode(root: Path, session: dict) -> tuple[str, str | None, str]:
-    project_mode = read_project_confirm_mode(root)
-    session_mode = session.get("confirm_mode")
-    if session_mode is not None and session_mode not in CONFIRM_MODES:
-        raise StateError("Invalid session confirm_mode: expected approve, guard, lite, or auto.")
-    effective_mode = str(session_mode or project_mode)
-    return project_mode, str(session_mode) if session_mode else None, effective_mode
+def resolve_behavior(
+    root: Path, session: dict
+) -> tuple[str, str | None, str, str, str | None, str]:
+    project_approval, project_workflow = read_project_behavior(root)
+    legacy = session.get("confirm_mode")
+    session_approval = session.get("approval_mode")
+    session_workflow = session.get("workflow_mode")
+    if session_approval is None:
+        if legacy == "lite":
+            session_approval = "guard"
+        elif legacy in APPROVAL_MODES:
+            session_approval = legacy
+    if session_workflow is None:
+        if legacy == "lite":
+            session_workflow = "fast"
+        elif legacy in APPROVAL_MODES:
+            session_workflow = "adaptive"
+    if session_approval is not None and session_approval not in APPROVAL_MODES:
+        raise StateError(
+            "Invalid session approval_mode: expected approve, guard, confirm, or auto."
+        )
+    if session_workflow is not None and session_workflow not in CONFIGURED_WORKFLOW_MODES:
+        raise StateError(
+            "Invalid session workflow_mode: expected adaptive, fast, standard, or strict."
+        )
+    return (
+        project_approval,
+        str(session_approval) if session_approval else None,
+        str(session_approval or project_approval),
+        project_workflow,
+        str(session_workflow) if session_workflow else None,
+        str(session_workflow or project_workflow),
+    )
+
+
+def resolve_approval_mode(root: Path, session: dict) -> tuple[str, str | None, str]:
+    behavior = resolve_behavior(root, session)
+    return behavior[0], behavior[1], behavior[2]
+
+
+def materialize_legacy_session_behavior(session: dict) -> None:
+    legacy = session.get("confirm_mode")
+    if legacy == "lite":
+        session.setdefault("approval_mode", "guard")
+        if "workflow_mode" not in session:
+            session["workflow_mode"] = "fast"
+            session["workflow_mode_legacy_confirm_override"] = True
+        session.pop("workflow_mode_legacy_alias_override", None)
+    elif legacy in APPROVAL_MODES:
+        session.setdefault("approval_mode", legacy)
+        if "workflow_mode" not in session:
+            session["workflow_mode"] = "adaptive"
+            session["workflow_mode_legacy_alias_override"] = True
+        session.pop("workflow_mode_legacy_confirm_override", None)
+    session.pop("confirm_mode", None)
 
 
 def short_memory_entries(root: Path) -> list[dict[str, object]]:
@@ -846,6 +927,20 @@ def is_string_list(value: object, allow_empty: bool = True) -> bool:
     )
 
 
+def is_valid_review_finding(value: object) -> bool:
+    if not isinstance(value, dict):
+        return False
+    line = value.get("line")
+    return (
+        is_non_empty_string(value.get("file"))
+        and isinstance(line, int)
+        and not isinstance(line, bool)
+        and line >= 1
+        and is_non_empty_string(value.get("issue"))
+        and value.get("severity") in REVIEW_FINDING_SEVERITIES
+    )
+
+
 def has_acyclic_dependencies(dependencies_by_unit: dict[str, set[str]]) -> bool:
     remaining = {unit_id: set(dependencies) for unit_id, dependencies in dependencies_by_unit.items()}
     resolved: set[str] = set()
@@ -861,7 +956,11 @@ def has_acyclic_dependencies(dependencies_by_unit: dict[str, set[str]]) -> bool:
     return True
 
 
-def is_valid_execution_plan(plan: object, allow_empty_files: bool = False) -> bool:
+def is_valid_execution_plan(
+    plan: object,
+    allow_empty_files: bool = False,
+    require_unit_contracts: bool = False,
+) -> bool:
     if not isinstance(plan, dict):
         return False
     strategy = plan.get("strategy")
@@ -889,6 +988,15 @@ def is_valid_execution_plan(plan: object, allow_empty_files: bool = False) -> bo
         for optional_list in ("rules_sections", "abstract_modules"):
             if optional_list in unit and not is_string_list(unit.get(optional_list)):
                 return False
+        if require_unit_contracts:
+            for contract_field in (
+                "acceptance_criteria",
+                "test_points",
+                "contracts",
+                "risks",
+            ):
+                if not is_string_list(unit.get(contract_field), allow_empty=False):
+                    return False
         unit_ids.append(str(unit["id"]))
 
     if has_empty_file_scope and (not allow_empty_files or strategy != "single" or len(units) != 1):
@@ -947,6 +1055,19 @@ def is_read_only_execution_plan(plan: object) -> bool:
     )
 
 
+def read_project_schema_version(root: Path) -> int:
+    path = root / ".easy-coding" / "config.yaml"
+    try:
+        for raw_line in path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.split("#", 1)[0].strip()
+            if not line.startswith("version:"):
+                continue
+            return int(line.split(":", 1)[1].strip())
+    except (OSError, ValueError):
+        return 0
+    return 0
+
+
 def has_valid_execution_plan(root: Path, task_id: str) -> bool:
     path = execution_log_path(root, task_id)
     if not path.exists():
@@ -968,7 +1089,547 @@ def has_valid_execution_plan(root: Path, task_id: str) -> bool:
     task_type = str(task.get("type") or "").strip().lower() if task else ""
     if task_type in NO_CODE_TASK_TYPES:
         return is_read_only_execution_plan(latest_plan)
-    return is_valid_execution_plan(latest_plan)
+    return is_valid_execution_plan(
+        latest_plan,
+        require_unit_contracts=read_project_schema_version(root) >= 3,
+    )
+
+
+def execution_records(root: Path, task_id: str) -> list[dict]:
+    path = execution_log_path(root, task_id)
+    if not path.exists():
+        return []
+    records: list[dict] = []
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            record = json.loads(line)
+            if isinstance(record, dict):
+                records.append(record)
+    except (OSError, json.JSONDecodeError):
+        return []
+    return records
+
+
+def latest_execution_plan(root: Path, task_id: str) -> dict | None:
+    latest: dict | None = None
+    for record in execution_records(root, task_id):
+        if record.get("type") == "plan" and is_valid_execution_plan(
+            record, allow_empty_files=True
+        ):
+            latest = record
+    return latest
+
+
+def existing_parent(path: Path) -> Path:
+    candidate = path
+    while not candidate.exists() and candidate != candidate.parent:
+        candidate = candidate.parent
+    return candidate.parent if candidate.is_file() else candidate
+
+
+def run_git(repository: Path, *args: str) -> subprocess.CompletedProcess[bytes] | None:
+    try:
+        return subprocess.run(
+            ["git", "-C", str(repository), *args],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+    except OSError:
+        return None
+
+
+def git_repository_root(path: Path) -> Path | None:
+    candidate = existing_parent(path).resolve()
+    for directory in (candidate, *candidate.parents):
+        if (directory / ".git").exists():
+            return directory
+    return None
+
+
+def is_path_within(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+        return True
+    except ValueError:
+        return False
+
+
+def minimize_repository_scopes(repository: Path, scopes: set[Path]) -> list[Path]:
+    minimized: list[Path] = []
+    for scope in sorted(scopes, key=lambda path: (len(path.parts), path.as_posix())):
+        normalized = scope.resolve()
+        if not is_path_within(normalized, repository):
+            continue
+        if any(is_path_within(normalized, existing) for existing in minimized):
+            continue
+        minimized.append(normalized)
+    return minimized
+
+
+def task_repository_scopes(
+    root: Path, task: dict | None, plan: dict
+) -> list[tuple[Path, list[Path]]]:
+    scope_candidates = [root]
+    if task:
+        repo_paths = task.get("repo_paths")
+        if isinstance(repo_paths, dict):
+            for repo_path in repo_paths.values():
+                if is_non_empty_string(repo_path):
+                    candidate = Path(str(repo_path))
+                    scope_candidates.append(
+                        candidate if candidate.is_absolute() else root / candidate
+                    )
+
+    repositories: dict[Path, set[Path]] = {}
+    for candidate in scope_candidates:
+        normalized = candidate.resolve()
+        if candidate.exists() and candidate.is_file():
+            normalized = normalized.parent
+        repository = git_repository_root(normalized)
+        if repository is not None:
+            repositories.setdefault(repository, set()).add(normalized)
+
+    for unit in plan.get("units", []):
+        if not isinstance(unit, dict):
+            continue
+        for file_name in unit.get("files", []):
+            if not is_non_empty_string(file_name):
+                continue
+            candidate = Path(str(file_name))
+            normalized = (
+                candidate if candidate.is_absolute() else root / candidate
+            ).resolve()
+            repository = git_repository_root(normalized)
+            if repository is None:
+                continue
+            scopes = repositories.setdefault(repository, set())
+            if not any(is_path_within(normalized, scope) for scope in scopes):
+                # Without project metadata for an external file, conservatively cover
+                # the full repository so unplanned sibling changes remain visible.
+                scopes.add(repository)
+
+    return [
+        (repository, minimize_repository_scopes(repository, scopes))
+        for repository, scopes in sorted(
+            repositories.items(), key=lambda item: item[0].as_posix()
+        )
+    ]
+
+
+def task_repository_roots(root: Path, task: dict | None, plan: dict) -> list[Path]:
+    return [
+        repository
+        for repository, _scopes in task_repository_scopes(root, task, plan)
+    ]
+
+
+def repository_scope_pathspecs(repository: Path, scopes: list[Path]) -> list[str]:
+    return [
+        f":(literal){scope.relative_to(repository).as_posix()}"
+        for scope in scopes
+    ]
+
+
+def is_easy_coding_state_path(
+    repository: Path, relative_name: str, scopes: list[Path]
+) -> bool:
+    candidate = repository / relative_name
+    for scope in scopes:
+        if not is_path_within(candidate, scope):
+            continue
+        scoped_name = candidate.relative_to(scope).as_posix()
+        if scoped_name == ".easy-coding" or scoped_name.startswith(".easy-coding/"):
+            return True
+    return False
+
+
+def git_index_entries(
+    repository: Path, pathspecs: list[str]
+) -> dict[bytes, tuple[bytes, bytes]]:
+    result = run_git(
+        repository,
+        "ls-files",
+        "--stage",
+        "-z",
+        "--",
+        *pathspecs,
+    )
+    if result is None or result.returncode != 0:
+        return {}
+    entries: dict[bytes, tuple[bytes, bytes]] = {}
+    for raw_entry in filter(None, result.stdout.split(b"\0")):
+        try:
+            metadata, raw_path = raw_entry.split(b"\t", 1)
+            mode, object_id, stage = metadata.split()
+        except ValueError:
+            continue
+        if stage == b"0":
+            entries[raw_path] = (mode, object_id)
+    return entries
+
+
+def git_worktree_blob_oid(repository: Path, relative_name: str) -> bytes | None:
+    result = run_git(
+        repository,
+        "hash-object",
+        f"--path={relative_name}",
+        "--",
+        relative_name,
+    )
+    if result is None or result.returncode != 0:
+        return None
+    object_id = result.stdout.strip()
+    return object_id or None
+
+
+def worktree_git_mode(path: Path) -> bytes:
+    if path.is_symlink():
+        return b"120000"
+    try:
+        return b"100755" if path.stat().st_mode & 0o111 else b"100644"
+    except OSError:
+        return b"<missing-mode>"
+
+
+def update_git_repository_content_fingerprint(
+    digest,
+    root: Path,
+    repository: Path,
+    scopes: list[Path],
+    visited: set[tuple[Path, tuple[Path, ...]]],
+) -> None:
+    normalized_repository = repository.resolve()
+    normalized_scopes = tuple(scope.resolve() for scope in scopes)
+    visit_key = (normalized_repository, normalized_scopes)
+    if visit_key in visited:
+        digest.update(b"<git-scope-cycle>\0")
+        return
+    visited.add(visit_key)
+    try:
+        digest.update(b"git-repository\0")
+        digest.update(os.fsencode(display_path(root, normalized_repository)))
+        digest.update(b"\0")
+        pathspecs = repository_scope_pathspecs(
+            normalized_repository, list(normalized_scopes)
+        )
+        for scope in normalized_scopes:
+            relative_scope = scope.relative_to(normalized_repository).as_posix()
+            digest.update(b"git-scope\0")
+            digest.update(os.fsencode(relative_scope))
+            digest.update(b"\0")
+
+        index_entries = git_index_entries(normalized_repository, pathspecs)
+        listed = run_git(
+            normalized_repository,
+            "ls-files",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "-z",
+            "--",
+            *pathspecs,
+        )
+        modified = run_git(
+            normalized_repository,
+            "diff-files",
+            "--name-only",
+            "-z",
+            "--ignore-submodules=none",
+            "--",
+            *pathspecs,
+        )
+        if listed is None or listed.returncode != 0:
+            digest.update(b"<git-files-error>\0")
+            return
+        if modified is None or modified.returncode != 0:
+            digest.update(b"<git-diff-files-error>\0")
+            return
+        modified_paths = set(filter(None, modified.stdout.split(b"\0")))
+
+        for raw_path in sorted(set(filter(None, listed.stdout.split(b"\0")))):
+            relative_name = os.fsdecode(raw_path)
+            if is_easy_coding_state_path(
+                normalized_repository, relative_name, list(normalized_scopes)
+            ):
+                continue
+            candidate = normalized_repository / relative_name
+            index_entry = index_entries.get(raw_path)
+            if index_entry is not None and index_entry[0] == b"160000":
+                digest.update(b"git-entry\0")
+                digest.update(raw_path)
+                digest.update(b"\0gitlink\0")
+                submodule_root = git_repository_root(candidate)
+                if (
+                    submodule_root is not None
+                    and submodule_root.resolve() == candidate.resolve()
+                ):
+                    update_git_repository_content_fingerprint(
+                        digest,
+                        root,
+                        submodule_root,
+                        [submodule_root],
+                        visited,
+                    )
+                else:
+                    digest.update(index_entry[1])
+                    digest.update(b"\0")
+                continue
+
+            exists = candidate.exists() or candidate.is_symlink()
+            if not exists:
+                if raw_path in modified_paths or index_entry is None:
+                    # A worktree deletion is canonically absent before and after staging.
+                    continue
+                # Sparse or otherwise intentionally absent tracked files retain index content.
+                mode, object_id = index_entry
+            elif index_entry is not None and raw_path not in modified_paths:
+                mode, object_id = index_entry
+            else:
+                mode = worktree_git_mode(candidate)
+                object_id = git_worktree_blob_oid(
+                    normalized_repository, relative_name
+                )
+                if object_id is None:
+                    try:
+                        content = (
+                            os.fsencode(os.readlink(candidate))
+                            if candidate.is_symlink()
+                            else candidate.read_bytes()
+                        )
+                    except OSError:
+                        content = b"<missing>"
+                    object_id = hashlib.sha256(content).hexdigest().encode("ascii")
+
+            digest.update(b"git-entry\0")
+            digest.update(raw_path)
+            digest.update(b"\0")
+            digest.update(mode)
+            digest.update(b"\0")
+            digest.update(object_id)
+            digest.update(b"\0")
+    finally:
+        visited.remove(visit_key)
+
+
+def update_git_worktree_fingerprint(
+    digest,
+    root: Path,
+    task: dict | None,
+    plan: dict,
+) -> None:
+    visited: set[tuple[Path, tuple[Path, ...]]] = set()
+    for repository, scopes in task_repository_scopes(root, task, plan):
+        if not scopes:
+            continue
+        update_git_repository_content_fingerprint(
+            digest, root, repository, scopes, visited
+        )
+
+
+def implementation_fingerprint(root: Path, task_id: str) -> str:
+    plan = latest_execution_plan(root, task_id)
+    if not plan:
+        raise StateError("Cannot calculate implementation fingerprint without a valid plan.")
+    task = load_task(root, task_id)
+    workflow_mode = str(task.get("workflow_mode") or "") if task else ""
+    digest = hashlib.sha256()
+    digest.update(b"workflow-mode\0")
+    digest.update(workflow_mode.encode("utf-8"))
+    digest.update(b"\0")
+    digest.update(b"execution-plan\0")
+    digest.update(
+        json.dumps(
+            plan,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    )
+    digest.update(b"\0")
+    update_git_worktree_fingerprint(digest, root, task, plan)
+    file_names = sorted(
+        {
+            str(file_name)
+            for unit in plan.get("units", [])
+            if isinstance(unit, dict)
+            for file_name in unit.get("files", [])
+            if is_non_empty_string(file_name)
+        }
+    )
+    for file_name in file_names:
+        candidate = Path(file_name)
+        was_absolute = candidate.is_absolute()
+        if not was_absolute:
+            candidate = root / candidate
+        resolved = candidate.resolve()
+        if not was_absolute:
+            try:
+                resolved.relative_to(root.resolve())
+            except ValueError as error:
+                raise StateError(f"Execution plan file escapes project root: {file_name}") from error
+        digest.update(file_name.encode("utf-8"))
+        digest.update(b"\0")
+        try:
+            digest.update(resolved.read_bytes())
+        except OSError:
+            digest.update(b"<missing>")
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def behavior_config_fingerprint(root: Path) -> str:
+    path = root / ".easy-coding" / "config.yaml"
+    digest = hashlib.sha256()
+    try:
+        digest.update(path.read_bytes())
+    except OSError:
+        digest.update(b"<missing-config>")
+    return digest.hexdigest()
+
+
+def evidence_fingerprints(root: Path, task_id: str) -> dict[str, str]:
+    return {
+        "implementation_fingerprint": implementation_fingerprint(root, task_id),
+        "config_fingerprint": behavior_config_fingerprint(root),
+    }
+
+
+def validate_review_readiness(root: Path, task_id: str, task: dict) -> None:
+    if task.get("workflow_mode_legacy") is True:
+        return
+    expected = implementation_fingerprint(root, task_id)
+    latest_by_dimension: dict[str, dict] = {}
+    for record in execution_records(root, task_id):
+        if (
+            record.get("type") == "review"
+            and record.get("implementation_fingerprint") == expected
+            and is_non_empty_string(record.get("dimension"))
+        ):
+            latest_by_dimension[str(record["dimension"])] = record
+    if not latest_by_dimension:
+        raise StateError(
+            "REVIEW cannot advance to VERIFICATION without a review record for the current implementation fingerprint."
+        )
+    for record in latest_by_dimension.values():
+        if (
+            not is_non_empty_string(record.get("reviewer"))
+            or not is_non_empty_string(record.get("timestamp"))
+            or not isinstance(record.get("findings"), list)
+        ):
+            raise StateError(
+                "Review evidence for new tasks must include reviewer, timestamp, and a findings array."
+            )
+        if not all(is_valid_review_finding(finding) for finding in record["findings"]):
+            raise StateError(
+                "Each review finding must include a non-empty file and issue, a positive integer "
+                "line, and severity error, warning, or info."
+            )
+    has_failed_dimension = False
+    for record in latest_by_dimension.values():
+        findings = record.get("findings")
+        has_blocker = isinstance(findings, list) and any(
+            isinstance(finding, dict)
+            and str(finding.get("severity") or "").lower() == "error"
+            for finding in findings
+        )
+        if record.get("passed") is not True or has_blocker:
+            has_failed_dimension = True
+            break
+    if has_failed_dimension:
+        raise StateError(
+            "REVIEW cannot advance to VERIFICATION while a current review dimension is not passed or has error findings."
+        )
+    if task.get("workflow_mode") == "strict" and len(latest_by_dimension) < 2:
+        raise StateError(
+            "Strict workflow requires at least two passed review dimensions for the current implementation fingerprint."
+        )
+
+
+def validate_verification_readiness(root: Path, task_id: str, task: dict) -> None:
+    fingerprints = evidence_fingerprints(root, task_id)
+    if (
+        task.get("workflow_mode_legacy") is not True
+        and task.get("workflow_mode_legacy_review_bypass_fingerprint")
+        != fingerprints["implementation_fingerprint"]
+    ):
+        validate_review_readiness(root, task_id, task)
+    latest_by_check: dict[str, dict] = {}
+    for record in execution_records(root, task_id):
+        if (
+            record.get("type") == "verify"
+            and record.get("implementation_fingerprint")
+            == fingerprints["implementation_fingerprint"]
+            and record.get("config_fingerprint") == fingerprints["config_fingerprint"]
+            and is_non_empty_string(record.get("check"))
+        ):
+            check = str(record["check"])
+            previous = latest_by_check.get(check)
+            if (
+                record.get("applicable") is False
+                and previous is not None
+                and previous.get("applicable") is not False
+            ):
+                continue
+            latest_by_check[check] = record
+    if not latest_by_check:
+        raise StateError(
+            "VERIFICATION cannot advance to MEMORY without verification evidence for the current implementation and config fingerprints."
+        )
+    if task.get("workflow_mode_legacy") is not True:
+        for record in latest_by_check.values():
+            check_type = str(record.get("check_type") or "")
+            if (
+                check_type not in STRICT_VERIFICATION_CHECK_TYPES
+                or not is_non_empty_string(record.get("timestamp"))
+                or (
+                    record.get("applicable") is not False
+                    and not is_non_empty_string(record.get("command"))
+                )
+            ):
+                raise StateError(
+                    "Verification evidence for new tasks must include check_type, timestamp, and command for applicable checks."
+                )
+            if record.get("applicable") is False and not is_non_empty_string(
+                record.get("not_applicable_reason")
+            ):
+                raise StateError(
+                    "Verification evidence marked not applicable must include a non-empty not_applicable_reason."
+                )
+    applicable_records = [
+        record for record in latest_by_check.values() if record.get("applicable") is not False
+    ]
+    if not applicable_records:
+        raise StateError(
+            "VERIFICATION cannot advance to MEMORY without at least one applicable executed check."
+        )
+    if any(record.get("passed") is not True for record in applicable_records):
+        raise StateError(
+            "VERIFICATION cannot advance to MEMORY while current verification evidence contains failures."
+        )
+    if task.get("workflow_mode") == "strict":
+        latest_by_type: dict[str, dict] = {}
+        for record in latest_by_check.values():
+            check_type = str(record.get("check_type") or "")
+            if check_type in STRICT_VERIFICATION_CHECK_TYPES:
+                latest_by_type[check_type] = record
+        missing_types = sorted(STRICT_VERIFICATION_CHECK_TYPES - latest_by_type.keys())
+        if missing_types:
+            raise StateError(
+                "Strict workflow requires current verification evidence for every check type: "
+                + ", ".join(missing_types)
+                + "."
+            )
+        for check_type, record in latest_by_type.items():
+            if record.get("applicable") is False and not is_non_empty_string(
+                record.get("not_applicable_reason")
+            ):
+                raise StateError(
+                    "Strict workflow requires a non-empty not_applicable_reason when "
+                    f"{check_type} is marked not applicable."
+                )
 
 
 def validate_read_only_completion(root: Path, task_id: str) -> None:
@@ -1248,41 +1909,38 @@ def transition_requires_confirmation(
     previous: str,
     current: str,
     task_type: str,
-    confirm_mode: str,
+    approval_mode: str,
 ) -> bool:
     if (previous, current) in ALWAYS_AUTO_TRANSITIONS:
         return False
     if current == "CLOSED":
         return True
-    if confirm_mode == "auto":
+    if approval_mode == "auto":
         return False
-    if confirm_mode in {"guard", "lite"}:
+    if approval_mode == "guard":
         return (previous, current) in CRITICAL_CONFIRM_TRANSITIONS
-    if confirm_mode == "approve":
+    if approval_mode == "confirm":
+        return (previous, current) == ANALYSIS_CONFIRM_TRANSITION
+    if approval_mode == "approve":
         return True
-    raise StateError(f"Unknown confirm mode: {confirm_mode}")
-
-
-def validate_confirm_mode_transition(
-    previous: str,
-    current: str,
-    confirm_mode: str,
-) -> str | None:
-    if confirm_mode == "lite" and (previous, current) == LITE_SKIPPED_TRANSITION:
-        return "LITE MODE TRANSITION: IMPLEMENT -> REVIEW is disabled; use IMPLEMENT -> VERIFICATION."
-    return None
+    raise StateError(f"Unknown approval mode: {approval_mode}")
 
 
 def is_automatic_transition(
     previous: str,
     current: str,
     task_type: str,
-    confirm_mode: str,
+    approval_mode: str,
 ) -> bool:
-    return not transition_requires_confirmation(previous, current, task_type, confirm_mode)
+    return not transition_requires_confirmation(previous, current, task_type, approval_mode)
 
 
-def validate_transition(previous: str, current: str, task_type: str = "") -> str | None:
+def validate_transition(
+    previous: str,
+    current: str,
+    task_type: str = "",
+    task: dict | None = None,
+) -> str | None:
     if previous == current:
         return None
     normalized_task_type = task_type.strip().lower()
@@ -1291,6 +1949,11 @@ def validate_transition(previous: str, current: str, task_type: str = "") -> str
         allowed = {"ANALYSIS", "COMPLETE", "CLOSED"}
     elif previous == "IMPLEMENT":
         allowed.discard("COMPLETE")
+        if not (
+            isinstance(task, dict)
+            and task.get("workflow_mode_legacy_direct_edge") is True
+        ):
+            allowed.discard("VERIFICATION")
     if current in allowed:
         return None
     return (
@@ -1326,9 +1989,20 @@ def snapshot_state(
         missing = False
         status = "idle"
 
-    project_confirm_mode, session_confirm_mode, effective_confirm_mode = resolve_confirm_mode(
-        root, resolved_session
-    )
+    (
+        project_approval_mode,
+        session_approval_mode,
+        effective_approval_mode,
+        project_workflow_mode,
+        session_workflow_mode,
+        configured_workflow_mode,
+    ) = resolve_behavior(root, resolved_session)
+    concrete_workflow_mode = None
+    if task:
+        concrete_workflow_mode = task.get("workflow_mode")
+        proposal = task.get("workflow_mode_proposal")
+        if concrete_workflow_mode is None and isinstance(proposal, dict):
+            concrete_workflow_mode = proposal.get("selected_mode")
 
     return {
         "session_file": display_path(root, session_path),
@@ -1342,9 +2016,17 @@ def snapshot_state(
         "last_agent": task.get("last_agent") if task else None,
         "project_init_required": is_project_init_required(root),
         "pending_init_version": get_pending_init_version(root),
-        "project_confirm_mode": project_confirm_mode,
-        "session_confirm_mode": session_confirm_mode,
-        "effective_confirm_mode": effective_confirm_mode,
+        "project_approval_mode": project_approval_mode,
+        "session_approval_mode": session_approval_mode,
+        "effective_approval_mode": effective_approval_mode,
+        "project_workflow_mode": project_workflow_mode,
+        "session_workflow_mode": session_workflow_mode,
+        "configured_workflow_mode": configured_workflow_mode,
+        "concrete_workflow_mode": concrete_workflow_mode,
+        # Compatibility output aliases for pre-0.9 clients.
+        "project_confirm_mode": project_approval_mode,
+        "session_confirm_mode": session_approval_mode,
+        "effective_confirm_mode": effective_approval_mode,
         "harness_disabled": resolved_session.get("harness_disabled") is True,
     }
 
@@ -1356,7 +2038,9 @@ def build_status_line(
     session_file: str | Path | None = None,
 ) -> str:
     state = snapshot_state(root, session_file, session)
-    status_brand = f"> **Easy Coding** · **{str(state['effective_confirm_mode']).capitalize()}**"
+    approval = str(state["effective_approval_mode"]).capitalize()
+    workflow = str(state["concrete_workflow_mode"] or state["configured_workflow_mode"]).capitalize()
+    status_brand = f"> **Easy Coding** · **Approval: {approval}** · **Workflow: {workflow}**"
     task_id = state["current_task"]
     if task_id:
         status = str(state["status"])
@@ -1395,8 +2079,11 @@ def build_machine_breadcrumbs(
     lines = [
         f"[workflow-state:{stage}]",
         f"[easy-coding:session-file:{resolved_session_file}]",
-        f"[easy-coding:confirm-mode:{state['effective_confirm_mode']}]",
+        f"[easy-coding:approval-mode:{state['effective_approval_mode']}]",
+        f"[easy-coding:configured-workflow-mode:{state['configured_workflow_mode']}]",
     ]
+    if state.get("concrete_workflow_mode"):
+        lines.append(f"[easy-coding:workflow-mode:{state['concrete_workflow_mode']}]")
 
     if task_id:
         lines.append(f"[current-task:{task_id}]")
@@ -1412,19 +2099,21 @@ def build_machine_breadcrumbs(
             if target:
                 lines.append(f"[easy-coding:pending-transition:{source}->{target}]")
                 task_type = str(task.get("type") or "") if task else ""
-                # A mode switch can leave a REVIEW edge that lite must bypass instead of consume.
-                mode_violation = validate_confirm_mode_transition(
-                    source,
-                    target,
-                    str(state["effective_confirm_mode"]),
+                legacy_review_bypass = (
+                    source == "IMPLEMENT"
+                    and target == "REVIEW"
+                    and isinstance(task, dict)
+                    and task.get("workflow_mode_legacy_direct_edge") is True
                 )
-                if mode_violation:
-                    lines.append(f"[easy-coding:lite-review-bypass-required:{source}->{target}]")
+                if legacy_review_bypass:
+                    lines.append(
+                        "[easy-coding:lite-review-bypass-required:IMPLEMENT->REVIEW]"
+                    )
                 elif is_automatic_transition(
                     source,
                     target,
                     task_type,
-                    str(state["effective_confirm_mode"]),
+                    str(state["effective_approval_mode"]),
                 ):
                     lines.append(f"[easy-coding:auto-transition-ready:{source}->{target}]")
                 else:
@@ -1575,16 +2264,52 @@ def clear_current_task(root: Path, agent: str, session_file: str | Path | None =
     return snapshot_state(root, session_file, session)
 
 
-def set_session_confirm_mode(
+def set_session_approval_mode(
     root: Path,
     mode: str,
     agent: str,
     session_file: str | Path | None = None,
 ) -> dict:
-    if mode not in CONFIRM_MODES:
-        raise StateError("Invalid confirm mode: expected approve, guard, lite, or auto.")
+    if mode not in APPROVAL_MODES:
+        raise StateError("Invalid approval mode: expected approve, guard, confirm, or auto.")
     session = ensure_session(root, session_file)
-    session["confirm_mode"] = mode
+    materialize_legacy_session_behavior(session)
+    session["approval_mode"] = mode
+    session["last_agent"] = agent
+    write_session(root, session, session_file)
+    snapshot = snapshot_state(root, session_file, session)
+    snapshot["action"] = "set-approval-mode"
+    return snapshot
+
+
+def set_session_legacy_confirm_mode(
+    root: Path,
+    mode: str,
+    agent: str,
+    session_file: str | Path | None = None,
+) -> dict:
+    session = ensure_session(root, session_file)
+    materialize_legacy_session_behavior(session)
+    if mode == "lite":
+        session["approval_mode"] = "guard"
+        session["workflow_mode"] = "fast"
+        session["workflow_mode_legacy_confirm_override"] = True
+        session.pop("workflow_mode_legacy_alias_override", None)
+    else:
+        session["approval_mode"] = mode
+        legacy_lite_owned = (
+            session.pop("workflow_mode_legacy_confirm_override", None) is True
+        )
+        legacy_alias_owned = (
+            session.get("workflow_mode_legacy_alias_override") is True
+        )
+        if (
+            "workflow_mode" not in session
+            or legacy_lite_owned
+            or legacy_alias_owned
+        ):
+            session["workflow_mode"] = "adaptive"
+            session["workflow_mode_legacy_alias_override"] = True
     session["last_agent"] = agent
     write_session(root, session, session_file)
     snapshot = snapshot_state(root, session_file, session)
@@ -1592,17 +2317,76 @@ def set_session_confirm_mode(
     return snapshot
 
 
-def clear_session_confirm_mode(
+def clear_session_approval_mode(
     root: Path,
     agent: str,
     session_file: str | Path | None = None,
 ) -> dict:
     session = ensure_session(root, session_file)
-    session.pop("confirm_mode", None)
+    materialize_legacy_session_behavior(session)
+    session.pop("approval_mode", None)
+    session["last_agent"] = agent
+    write_session(root, session, session_file)
+    snapshot = snapshot_state(root, session_file, session)
+    snapshot["action"] = "clear-approval-mode"
+    return snapshot
+
+
+def clear_session_legacy_confirm_mode(
+    root: Path,
+    agent: str,
+    session_file: str | Path | None = None,
+) -> dict:
+    session = ensure_session(root, session_file)
+    materialize_legacy_session_behavior(session)
+    session.pop("approval_mode", None)
+    legacy_lite_owned = session.pop("workflow_mode_legacy_confirm_override", False)
+    legacy_alias_owned = session.pop("workflow_mode_legacy_alias_override", False)
+    if legacy_lite_owned or legacy_alias_owned:
+        session.pop("workflow_mode", None)
     session["last_agent"] = agent
     write_session(root, session, session_file)
     snapshot = snapshot_state(root, session_file, session)
     snapshot["action"] = "clear-confirm-mode"
+    return snapshot
+
+
+def set_session_workflow_mode(
+    root: Path,
+    mode: str,
+    agent: str,
+    session_file: str | Path | None = None,
+) -> dict:
+    if mode not in CONFIGURED_WORKFLOW_MODES:
+        raise StateError(
+            "Invalid workflow mode: expected adaptive, fast, standard, or strict."
+        )
+    session = ensure_session(root, session_file)
+    materialize_legacy_session_behavior(session)
+    session["workflow_mode"] = mode
+    session.pop("workflow_mode_legacy_confirm_override", None)
+    session.pop("workflow_mode_legacy_alias_override", None)
+    session["last_agent"] = agent
+    write_session(root, session, session_file)
+    snapshot = snapshot_state(root, session_file, session)
+    snapshot["action"] = "set-workflow-mode"
+    return snapshot
+
+
+def clear_session_workflow_mode(
+    root: Path,
+    agent: str,
+    session_file: str | Path | None = None,
+) -> dict:
+    session = ensure_session(root, session_file)
+    materialize_legacy_session_behavior(session)
+    session.pop("workflow_mode", None)
+    session.pop("workflow_mode_legacy_confirm_override", None)
+    session.pop("workflow_mode_legacy_alias_override", None)
+    session["last_agent"] = agent
+    write_session(root, session, session_file)
+    snapshot = snapshot_state(root, session_file, session)
+    snapshot["action"] = "clear-workflow-mode"
     return snapshot
 
 
@@ -1751,6 +2535,200 @@ def resolve_current_task(
     return session, str(resolved_task_id), task
 
 
+def validate_workflow_mode_proposal(
+    root: Path,
+    session: dict,
+    proposal: object,
+    task_id: str | None = None,
+) -> dict:
+    if not isinstance(proposal, dict):
+        raise StateError("workflow_mode_proposal is missing.")
+    configured = str(proposal.get("configured_mode") or "")
+    selected = str(proposal.get("selected_mode") or "")
+    minimum = str(proposal.get("minimum_mode") or "")
+    source = str(proposal.get("source") or "")
+    reasons = proposal.get("reasons")
+    effective_configured = resolve_behavior(root, session)[5]
+    if configured != effective_configured:
+        raise StateError(
+            "Workflow proposal configured_mode no longer matches the effective project/session setting."
+        )
+    if configured not in CONFIGURED_WORKFLOW_MODES:
+        raise StateError("Invalid configured workflow mode.")
+    if selected not in WORKFLOW_MODES or minimum not in WORKFLOW_MODES:
+        raise StateError("selected_mode and minimum_mode must be fast, standard, or strict.")
+    if source not in {"project", "session", "adaptive", "user", "migration"}:
+        raise StateError("Invalid workflow proposal source.")
+    if not is_string_list(reasons, allow_empty=False):
+        raise StateError("Workflow proposal reasons must contain at least one non-empty reason.")
+    required_rank = WORKFLOW_MODE_RANK[minimum]
+    if configured in WORKFLOW_MODES and WORKFLOW_MODE_RANK[minimum] < WORKFLOW_MODE_RANK[configured]:
+        raise StateError(
+            f"Workflow minimum {minimum} is below configured floor {configured}."
+        )
+    if task_id:
+        calculated_minimum, calculated_reasons = calculate_workflow_floor(root, task_id)
+        calculated_rank = WORKFLOW_MODE_RANK[calculated_minimum]
+        if WORKFLOW_MODE_RANK[minimum] < calculated_rank:
+            raise StateError(
+                f"Workflow minimum {minimum} is below calculated floor {calculated_minimum}: "
+                + ", ".join(calculated_reasons)
+            )
+        required_rank = max(required_rank, calculated_rank)
+    if configured in WORKFLOW_MODES:
+        required_rank = max(required_rank, WORKFLOW_MODE_RANK[configured])
+    if WORKFLOW_MODE_RANK[selected] < required_rank:
+        raise StateError(
+            f"Workflow mode {selected} is below the allowed minimum for this task."
+        )
+    return proposal
+
+
+def calculate_workflow_floor(root: Path, task_id: str) -> tuple[str, list[str]]:
+    task = load_task(root, task_id)
+    if task is None:
+        raise StateError(f"Task not found: {task_id}")
+    task_type = str(task.get("type") or "").strip().lower()
+    if task_type in NO_CODE_TASK_TYPES:
+        return "fast", ["read-only-task"]
+
+    plan = latest_execution_plan(root, task_id)
+    if not plan:
+        raise StateError("Cannot calculate workflow floor without a valid execution plan.")
+    units = [unit for unit in plan.get("units", []) if isinstance(unit, dict)]
+    files = {
+        str(file_name)
+        for unit in units
+        for file_name in unit.get("files", [])
+        if is_non_empty_string(file_name)
+    }
+    repositories = task_repository_roots(root, task, plan)
+    repos = task.get("repos")
+    repo_paths = task.get("repo_paths")
+    metadata_repo_count = max(
+        len(repos) if isinstance(repos, list) else 0,
+        len(repo_paths) if isinstance(repo_paths, dict) else 0,
+    )
+    repo_count = max(len(repositories), metadata_repo_count)
+    risk_text = " ".join(
+        [
+            str(task.get("title") or ""),
+            task_type,
+            *files,
+            *[
+                str(item)
+                for unit in units
+                for field in ("risks", "contracts")
+                for item in unit.get(field, [])
+                if is_non_empty_string(item)
+                and str(item).strip().lower() not in {"none", "no", "n/a", "无", "无风险"}
+            ],
+        ]
+    )
+    strict_reasons: list[str] = []
+    if repo_count > 1:
+        strict_reasons.append("cross-repository-scope")
+    if len(units) >= 4 or len(files) >= 8:
+        strict_reasons.append("broad-change-scope")
+    if STRICT_WORKFLOW_RISK_PATTERN.search(risk_text):
+        strict_reasons.append("high-risk-contract-or-domain")
+    if strict_reasons:
+        return "strict", strict_reasons
+
+    standard_reasons: list[str] = []
+    if len(units) > 1:
+        standard_reasons.append("multiple-units")
+    if len(files) >= 3:
+        standard_reasons.append("multi-file-impact")
+    if plan.get("strategy") == "parallel":
+        standard_reasons.append("parallel-execution")
+    if standard_reasons:
+        return "standard", standard_reasons
+    return "fast", ["single-bounded-unit"]
+
+
+def propose_workflow_mode(
+    root: Path,
+    configured_mode: str,
+    selected_mode: str,
+    minimum_mode: str,
+    source: str,
+    reasons: list[str],
+    agent: str,
+    task_id: str | None = None,
+    session_file: str | Path | None = None,
+) -> dict:
+    session, resolved_task_id, task = resolve_current_task(root, task_id, session_file)
+    if str(task.get("status") or "") != "ANALYSIS":
+        raise StateError("Workflow mode can only be proposed during ANALYSIS.")
+    proposal = {
+        "configured_mode": configured_mode,
+        "selected_mode": selected_mode,
+        "minimum_mode": minimum_mode,
+        "source": source,
+        "reasons": [reason.strip() for reason in reasons if reason.strip()],
+        "proposed_at": now_iso(),
+        "proposed_by": agent,
+    }
+    validate_workflow_mode_proposal(root, session, proposal, resolved_task_id)
+    task["workflow_mode_proposal"] = proposal
+    task["last_agent"] = agent
+    write_task(root, resolved_task_id, task)
+    snapshot = snapshot_state(root, session_file, session)
+    snapshot["action"] = "propose-workflow-mode"
+    return snapshot
+
+
+def freeze_workflow_mode(
+    root: Path, session: dict, task_id: str, task: dict, agent: str
+) -> None:
+    proposal = validate_workflow_mode_proposal(
+        root, session, task.get("workflow_mode_proposal"), task_id
+    )
+    task["workflow_mode"] = proposal["selected_mode"]
+    task["workflow_mode_confirmed_at"] = now_iso()
+    task["workflow_mode_confirmed_by"] = agent
+
+
+def raise_workflow_mode(
+    root: Path,
+    mode: str,
+    reason: str,
+    agent: str,
+    task_id: str | None = None,
+    session_file: str | Path | None = None,
+) -> dict:
+    session, resolved_task_id, task = resolve_current_task(root, task_id, session_file)
+    stage = str(task.get("status") or "")
+    if stage == "VERIFICATION":
+        raise StateError(
+            "Return to IMPLEMENT before raising workflow mode from VERIFICATION so the "
+            "task can re-enter REVIEW with fresh evidence."
+        )
+    if stage not in {"IMPLEMENT", "REVIEW"}:
+        raise StateError("A frozen workflow mode can only be raised during active execution.")
+    current = str(task.get("workflow_mode") or "")
+    if current not in WORKFLOW_MODES or mode not in WORKFLOW_MODES:
+        raise StateError("Workflow mode must be frozen before it can be raised.")
+    if WORKFLOW_MODE_RANK[mode] <= WORKFLOW_MODE_RANK[current]:
+        raise StateError(f"Workflow mode can only be raised above {current}.")
+    task["workflow_mode"] = mode
+    task.setdefault("workflow_mode_escalations", []).append(
+        {
+            "from": current,
+            "to": mode,
+            "reason": reason.strip(),
+            "raised_at": now_iso(),
+            "raised_by": agent,
+        }
+    )
+    task["last_agent"] = agent
+    write_task(root, resolved_task_id, task)
+    snapshot = snapshot_state(root, session_file, session)
+    snapshot["action"] = "raise-workflow-mode"
+    return snapshot
+
+
 def request_transition(
     root: Path,
     stage: str,
@@ -1764,23 +2742,31 @@ def request_transition(
     session, resolved_task_id, task = resolve_current_task(root, task_id, session_file)
     previous = str(task.get("status") or "idle")
     task_type = str(task.get("type") or "")
-    confirm_mode = resolve_confirm_mode(root, session)[2]
+    approval_mode = resolve_approval_mode(root, session)[2]
     if previous == stage:
         raise StateError(f"Transition target must differ from current stage: {stage}")
 
-    violation = validate_transition(previous, stage, task_type)
+    violation = validate_transition(previous, stage, task_type, task)
     if violation:
         raise StateError(violation)
-    mode_violation = validate_confirm_mode_transition(previous, stage, confirm_mode)
-    if mode_violation:
-        raise StateError(mode_violation)
-    if is_automatic_transition(previous, stage, task_type, confirm_mode):
+    if is_automatic_transition(previous, stage, task_type, approval_mode):
         raise StateError(
-            f"Transition {previous} -> {stage} is automatic in {confirm_mode} mode; "
+            f"Transition {previous} -> {stage} is automatic in {approval_mode} mode; "
             "use auto-transition instead."
         )
     if previous == "ANALYSIS" and stage == "IMPLEMENT":
         validate_analysis_readiness(root, resolved_task_id)
+        if task.get("workflow_mode_legacy") is not True:
+            validate_workflow_mode_proposal(
+                root,
+                session,
+                task.get("workflow_mode_proposal"),
+                resolved_task_id,
+            )
+    if previous == "REVIEW" and stage == "VERIFICATION":
+        validate_review_readiness(root, resolved_task_id, task)
+    if previous == "VERIFICATION" and stage == "MEMORY":
+        validate_verification_readiness(root, resolved_task_id, task)
     existing = task.get("pending_transition")
     if isinstance(existing, dict):
         if existing.get("from") != previous or existing.get("to") != stage:
@@ -1816,15 +2802,19 @@ def apply_transition(
 
     previous = str(task.get("status") or "idle")
     task_type = str(task.get("type") or "")
-    confirm_mode = resolve_confirm_mode(root, session)[2]
-    violation = validate_transition(previous, stage, task_type)
+    approval_mode = resolve_approval_mode(root, session)[2]
+    legacy_edge = task.get("workflow_mode_legacy") is True
+    violation = validate_transition(previous, stage, task_type, task)
     if violation:
         raise StateError(violation)
-    mode_violation = validate_confirm_mode_transition(previous, stage, confirm_mode)
-    if mode_violation:
-        raise StateError(mode_violation)
     if previous == "ANALYSIS" and stage == "IMPLEMENT":
         validate_analysis_readiness(root, resolved_task_id)
+        if task.get("workflow_mode_legacy") is not True:
+            freeze_workflow_mode(root, session, resolved_task_id, task, agent)
+    if previous == "REVIEW" and stage == "VERIFICATION":
+        validate_review_readiness(root, resolved_task_id, task)
+    if previous == "VERIFICATION" and stage == "MEMORY":
+        validate_verification_readiness(root, resolved_task_id, task)
     if previous == "MEMORY" and stage == "COMPLETE":
         progress = task.get("memory_progress")
         if not isinstance(progress, dict) or progress.get("completed") is not True:
@@ -1834,6 +2824,15 @@ def apply_transition(
     if previous != stage:
         task["status"] = stage
         append_stage_history(task, stage, agent)
+        if legacy_edge:
+            task.pop("workflow_mode_legacy", None)
+            if previous in {"IMPLEMENT", "REVIEW"} and stage == "VERIFICATION":
+                task["workflow_mode_legacy_review_bypass_fingerprint"] = (
+                    implementation_fingerprint(root, resolved_task_id)
+                )
+        task.pop("workflow_mode_legacy_direct_edge", None)
+        if stage in {"ANALYSIS", "IMPLEMENT", "MEMORY", "COMPLETE", "CLOSED"}:
+            task.pop("workflow_mode_legacy_review_bypass_fingerprint", None)
     task.pop("pending_transition", None)
     if stage == "MEMORY" and previous != stage:
         task["memory_progress"] = {}
@@ -1861,10 +2860,10 @@ def auto_transition(
     session, _, task = resolve_current_task(root, task_id, session_file)
     previous = str(task.get("status") or "idle")
     task_type = str(task.get("type") or "")
-    confirm_mode = resolve_confirm_mode(root, session)[2]
-    if not is_automatic_transition(previous, stage, task_type, confirm_mode):
+    approval_mode = resolve_approval_mode(root, session)[2]
+    if not is_automatic_transition(previous, stage, task_type, approval_mode):
         raise StateError(
-            f"Automatic transition is not allowed in {confirm_mode} mode: {previous} -> {stage}."
+            f"Automatic transition is not allowed in {approval_mode} mode: {previous} -> {stage}."
         )
 
     pending = task.get("pending_transition")
@@ -1894,7 +2893,7 @@ def confirm_transition(
         raise StateError("No transition is pending user confirmation.")
     previous = str(task.get("status") or "idle")
     task_type = str(task.get("type") or "")
-    confirm_mode = resolve_confirm_mode(root, session)[2]
+    approval_mode = resolve_approval_mode(root, session)[2]
     source = str(pending.get("from") or "")
     target = str(pending.get("to") or "")
     if source != previous:
@@ -1903,12 +2902,9 @@ def confirm_transition(
         )
     if stage and stage != target:
         raise StateError(f"Pending transition targets {target}, not {stage}.")
-    mode_violation = validate_confirm_mode_transition(source, target, confirm_mode)
-    if mode_violation:
-        raise StateError(mode_violation)
-    if is_automatic_transition(source, target, task_type, confirm_mode):
+    if is_automatic_transition(source, target, task_type, approval_mode):
         raise StateError(
-            f"Transition {source} -> {target} is automatic in {confirm_mode} mode; "
+            f"Transition {source} -> {target} is automatic in {approval_mode} mode; "
             "use auto-transition instead."
         )
 
@@ -2138,7 +3134,7 @@ def record_seen_stage(
     if last_seen_task == task_id and last_seen_stage:
         task = load_task(root, task_id)
         task_type = str(task.get("type") or "") if task else ""
-        violation = validate_transition(str(last_seen_stage), stage, task_type)
+        violation = validate_transition(str(last_seen_stage), stage, task_type, task)
 
     if last_seen_task != task_id or last_seen_stage != stage:
         session["last_seen_task"] = task_id
@@ -2191,12 +3187,66 @@ def main() -> int:
     clear_current = subcommands.add_parser("clear-current", parents=[common])
     clear_current.add_argument("--agent", required=True)
 
+    set_approval_mode_parser = subcommands.add_parser("set-approval-mode", parents=[common])
+    set_approval_mode_parser.add_argument("--mode", required=True, choices=sorted(APPROVAL_MODES))
+    set_approval_mode_parser.add_argument("--agent", required=True)
+
+    clear_approval_mode_parser = subcommands.add_parser("clear-approval-mode", parents=[common])
+    clear_approval_mode_parser.add_argument("--agent", required=True)
+
+    set_workflow_mode_parser = subcommands.add_parser("set-workflow-mode", parents=[common])
+    set_workflow_mode_parser.add_argument(
+        "--mode", required=True, choices=sorted(CONFIGURED_WORKFLOW_MODES)
+    )
+    set_workflow_mode_parser.add_argument("--agent", required=True)
+
+    clear_workflow_mode_parser = subcommands.add_parser("clear-workflow-mode", parents=[common])
+    clear_workflow_mode_parser.add_argument("--agent", required=True)
+
+    # Compatibility aliases for pre-0.9 callers.
     set_confirm_mode_parser = subcommands.add_parser("set-confirm-mode", parents=[common])
-    set_confirm_mode_parser.add_argument("--mode", required=True, choices=sorted(CONFIRM_MODES))
+    set_confirm_mode_parser.add_argument(
+        "--mode", required=True, choices=sorted(APPROVAL_MODES | {"lite"})
+    )
     set_confirm_mode_parser.add_argument("--agent", required=True)
 
     clear_confirm_mode_parser = subcommands.add_parser("clear-confirm-mode", parents=[common])
     clear_confirm_mode_parser.add_argument("--agent", required=True)
+
+    propose_workflow_parser = subcommands.add_parser(
+        "propose-workflow-mode", parents=[common]
+    )
+    propose_workflow_parser.add_argument(
+        "--configured", required=True, choices=sorted(CONFIGURED_WORKFLOW_MODES)
+    )
+    propose_workflow_parser.add_argument(
+        "--selected", required=True, choices=sorted(WORKFLOW_MODES)
+    )
+    propose_workflow_parser.add_argument(
+        "--minimum", required=True, choices=sorted(WORKFLOW_MODES)
+    )
+    propose_workflow_parser.add_argument(
+        "--source",
+        required=True,
+        choices=["project", "session", "adaptive", "user", "migration"],
+    )
+    propose_workflow_parser.add_argument("--reason", required=True, action="append")
+    propose_workflow_parser.add_argument("--agent", required=True)
+    propose_workflow_parser.add_argument("--task-id")
+
+    workflow_floor_parser = subcommands.add_parser("workflow-floor", parents=[common])
+    workflow_floor_parser.add_argument("--agent", required=True)
+    workflow_floor_parser.add_argument("--task-id")
+
+    raise_workflow_parser = subcommands.add_parser("raise-workflow-mode", parents=[common])
+    raise_workflow_parser.add_argument("--mode", required=True, choices=sorted(WORKFLOW_MODES))
+    raise_workflow_parser.add_argument("--reason", required=True)
+    raise_workflow_parser.add_argument("--agent", required=True)
+    raise_workflow_parser.add_argument("--task-id")
+
+    fingerprints_parser = subcommands.add_parser("evidence-fingerprints", parents=[common])
+    fingerprints_parser.add_argument("--agent", required=True)
+    fingerprints_parser.add_argument("--task-id")
 
     disable_harness_parser = subcommands.add_parser("disable-harness", parents=[common])
     disable_harness_parser.add_argument("--agent", required=True)
@@ -2324,11 +3374,29 @@ def main() -> int:
                     session_file,
                 )
             )
+        elif command == "set-approval-mode":
+            emit(
+                attach_status_context(
+                    root,
+                    set_session_approval_mode(root, args.mode, args.agent, session_file),
+                    args.agent,
+                    session_file,
+                )
+            )
         elif command == "set-confirm-mode":
             emit(
                 attach_status_context(
                     root,
-                    set_session_confirm_mode(root, args.mode, args.agent, session_file),
+                    set_session_legacy_confirm_mode(root, args.mode, args.agent, session_file),
+                    args.agent,
+                    session_file,
+                )
+            )
+        elif command == "clear-approval-mode":
+            emit(
+                attach_status_context(
+                    root,
+                    clear_session_approval_mode(root, args.agent, session_file),
                     args.agent,
                     session_file,
                 )
@@ -2337,7 +3405,90 @@ def main() -> int:
             emit(
                 attach_status_context(
                     root,
-                    clear_session_confirm_mode(root, args.agent, session_file),
+                    clear_session_legacy_confirm_mode(root, args.agent, session_file),
+                    args.agent,
+                    session_file,
+                )
+            )
+        elif command == "set-workflow-mode":
+            emit(
+                attach_status_context(
+                    root,
+                    set_session_workflow_mode(root, args.mode, args.agent, session_file),
+                    args.agent,
+                    session_file,
+                )
+            )
+        elif command == "clear-workflow-mode":
+            emit(
+                attach_status_context(
+                    root,
+                    clear_session_workflow_mode(root, args.agent, session_file),
+                    args.agent,
+                    session_file,
+                )
+            )
+        elif command == "propose-workflow-mode":
+            emit(
+                attach_status_context(
+                    root,
+                    propose_workflow_mode(
+                        root,
+                        args.configured,
+                        args.selected,
+                        args.minimum,
+                        args.source,
+                        args.reason,
+                        args.agent,
+                        args.task_id,
+                        session_file,
+                    ),
+                    args.agent,
+                    session_file,
+                )
+            )
+        elif command == "workflow-floor":
+            _, resolved_task_id, _ = resolve_current_task(root, args.task_id, session_file)
+            minimum_mode, reasons = calculate_workflow_floor(root, resolved_task_id)
+            emit(
+                attach_status_context(
+                    root,
+                    {
+                        "task_id": resolved_task_id,
+                        "minimum_mode": minimum_mode,
+                        "reasons": reasons,
+                    },
+                    args.agent,
+                    session_file,
+                )
+            )
+        elif command == "raise-workflow-mode":
+            emit(
+                attach_status_context(
+                    root,
+                    raise_workflow_mode(
+                        root,
+                        args.mode,
+                        args.reason,
+                        args.agent,
+                        args.task_id,
+                        session_file,
+                    ),
+                    args.agent,
+                    session_file,
+                )
+            )
+        elif command == "evidence-fingerprints":
+            session, resolved_task_id, _ = resolve_current_task(
+                root, args.task_id, session_file
+            )
+            emit(
+                attach_status_context(
+                    root,
+                    {
+                        "task_id": resolved_task_id,
+                        **evidence_fingerprints(root, resolved_task_id),
+                    },
                     args.agent,
                     session_file,
                 )

@@ -37,12 +37,13 @@ src/
 
 ```
 INIT ─auto→ ANALYSIS → IMPLEMENT → REVIEW → VERIFICATION → MEMORY ─auto→ COMPLETE
-                                  └──────────────→ VERIFICATION
-                                  └─read-only auto────────────────────→ COMPLETE
+                            └─read-only auto──────────────────────────→ COMPLETE
           ↑            ↑          │
           └── replan ───┘          └── repair
-user-decision edges require explicit confirmation; code tasks may skip REVIEW, while validated
-read-only tasks auto-complete after IMPLEMENT without VERIFICATION or MEMORY
+user-decision edges require explicit confirmation; every new code task enters REVIEW, while
+validated read-only tasks auto-complete after IMPLEMENT without REVIEW, VERIFICATION, or MEMORY.
+Only migrated pre-0.9 tasks marked `workflow_mode_legacy_direct_edge: true` from old lite
+semantics or a persisted pending edge may retain one direct IMPLEMENT → VERIFICATION edge.
 ```
 
 ## Development Conventions

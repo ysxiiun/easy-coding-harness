@@ -47,11 +47,13 @@ analysis, workflow operation). The CLI never analyzes the project.
 (user abort, no memory flow). INIT → ANALYSIS and completed MEMORY → COMPLETE are restricted
 automatic edges. A validated read-only `doc` / `analysis` / `report` task also auto-completes
 from IMPLEMENT after its full deliverable is shown, without REVIEW, VERIFICATION, MEMORY, or
-task memory. Confirm mode controls non-mechanical edges: approve confirms each edge, guard
-confirms two critical gates, lite uses the same gates but forces IMPLEMENT -> VERIFICATION,
-and auto advances legal edges automatically. Lite never enters REVIEW. VERIFICATION remains
-the code-task fresh-evidence hard gate, and MEMORY keeps the conditional long-memory threshold
-gate. The active task
+task memory. Approval mode controls non-mechanical edge waiting: approve confirms each edge,
+guard confirms two critical gates, confirm waits only at ANALYSIS -> IMPLEMENT, and auto
+advances every legal edge after mechanical gates.
+Workflow mode is independently configured as adaptive/fast/standard/strict; ANALYSIS freezes
+adaptive to a concrete mode, and every new code task still enters REVIEW. REVIEW evidence is
+bound to the final implementation fingerprint, VERIFICATION evidence is bound to implementation
+and config fingerprints, and MEMORY keeps the conditional long-memory threshold gate. The active task
 pointer lives in `sessions/{agent}-{session-id}.json` (with an agent-prefixed PPID fallback only
 when a hook payload has no logical session ID);
 when the task reaches `COMPLETE` or `CLOSED`, the state API clears `current_task` so the
@@ -65,8 +67,8 @@ stage in `task.json`; no data is lost. Each task folder is self-contained.
 
 ## Task persistence
 
-Each task is a folder. `task.json` is metadata, including the current stage and any
-`pending_transition`; `dev-spec.md` is the human-readable plan;
+Each task is a folder. `task.json` is metadata, including the current stage, workflow proposal,
+frozen concrete mode, and any `pending_transition`; `dev-spec.md` is the human-readable plan;
 `execution.jsonl` is an append-only plan-and-log (one `plan` record, then `dispatch`/`result`
 /`review`/`verify`/`handoff` records). Because plan and log live on disk, not in an agent's
 context window, a task survives session end and agent switches with zero information loss.

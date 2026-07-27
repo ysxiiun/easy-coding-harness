@@ -10,11 +10,15 @@ let tempDir: string;
 let originalCwd: string;
 let logSpy: ReturnType<typeof vi.spyOn>;
 
-async function writeConfig(harnessVersion: string, confirmMode = "guard"): Promise<void> {
+async function writeConfig(
+  harnessVersion: string,
+  approvalMode = "guard",
+  workflowMode = "adaptive",
+): Promise<void> {
   await writeFile(
     path.join(tempDir, ".easy-coding", "config.yaml"),
     [
-      "version: 2",
+      "version: 3",
       `harness_version: ${harnessVersion}`,
       "agents:",
       "  - codex",
@@ -22,7 +26,8 @@ async function writeConfig(harnessVersion: string, confirmMode = "guard"): Promi
       "  id: ec-status-test",
       "  name: status-test",
       "behavior:",
-      `  confirm_mode: ${confirmMode}`,
+      `  approval_mode: ${approvalMode}`,
+      `  workflow_mode: ${workflowMode}`,
       "",
     ].join("\n"),
     "utf8",
@@ -65,13 +70,34 @@ describe("status command", () => {
     expect(output()).toContain("upgrade: up to date");
   });
 
-  it("reports lite as the project and effective confirm mode", async () => {
-    await writeConfig(VERSION, "lite");
+  it("reports project and effective workflow modes", async () => {
+    await writeConfig(VERSION, "guard", "fast");
 
     await status();
 
-    expect(output()).toContain("confirm_mode: lite");
-    expect(output()).toContain("effective_confirm_mode: lite");
+    expect(output()).toContain("approval_mode: guard");
+    expect(output()).toContain("workflow_mode: fast");
+    expect(output()).toContain("configured_workflow_mode: fast");
+  });
+
+  it("reports a legacy non-lite session as an adaptive override", async () => {
+    await writeConfig(VERSION, "guard", "fast");
+    await writeSessionFile(
+      tempDir,
+      {
+        ...createSessionFile(),
+        agent: "codex",
+        confirm_mode: "guard",
+      },
+      "legacy-guard",
+    );
+
+    await status();
+
+    expect(output()).toContain("- legacy-guard");
+    expect(output()).toContain("approval_mode: guard");
+    expect(output()).toContain("workflow_mode: adaptive");
+    expect(output()).toContain("configured_workflow_mode: adaptive");
   });
 
   it("lists agent-prefixed logical sessions independently", async () => {
@@ -84,7 +110,8 @@ describe("status command", () => {
         external_session_id: "1200",
         session_key: "claude-code-1200",
         session_source: "hook-session-id",
-        confirm_mode: "approve",
+        approval_mode: "approve",
+        workflow_mode: "strict",
       },
       "claude-code-1200",
     );
@@ -96,7 +123,8 @@ describe("status command", () => {
         external_session_id: "1200",
         session_key: "codex-1200",
         session_source: "hook-session-id",
-        confirm_mode: "lite",
+        approval_mode: "confirm",
+        workflow_mode: "fast",
       },
       "codex-1200",
     );
@@ -107,7 +135,9 @@ describe("status command", () => {
     expect(output()).toContain("- codex-1200");
     expect(output()).toContain("agent: claude-code");
     expect(output()).toContain("agent: codex");
-    expect(output()).toContain("effective_confirm_mode: approve");
-    expect(output()).toContain("effective_confirm_mode: lite");
+    expect(output()).toContain("effective_approval_mode: approve");
+    expect(output()).toContain("configured_workflow_mode: strict");
+    expect(output()).toContain("effective_approval_mode: confirm");
+    expect(output()).toContain("configured_workflow_mode: fast");
   });
 });

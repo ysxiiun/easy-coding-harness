@@ -431,7 +431,9 @@ describe("upgrade command", () => {
       input: "{}",
       encoding: "utf8",
     });
-    expect(stdout).toContain(`> **Easy Coding** · **Guard** · Waiting init · Upgrade to v${VERSION}`);
+    expect(stdout).toContain(
+      `> **Easy Coding** · **Approval: Guard** · **Workflow: Adaptive** · Waiting init · Upgrade to v${VERSION}`,
+    );
     expect(stdout).toContain(`[easy-coding:upgrade-init-pending:${VERSION}]`);
 
     const task = JSON.parse(
@@ -497,29 +499,36 @@ describe("upgrade command", () => {
     expect(await readFile(memoryPath, "utf8")).toBe("memory must stay byte-identical\n");
   });
 
-  it("migrates legacy confirmation fields to schema 2 and removes the old keys", async () => {
+  it("migrates legacy confirmation fields to schema 3 and removes the old keys", async () => {
     await init({ agent: "codex" });
     const configPath = path.join(tempDir, ".easy-coding", "config.yaml");
     const legacyConfig = (await readFile(configPath, "utf8"))
-      .replace("version: 2", "version: 1")
-      .replace("confirm_mode: guard", "strict_confirm: false\n  auto_mode: true")
+      .replace("version: 3", "version: 1")
+      .replace(
+        "approval_mode: guard\n  workflow_mode: adaptive",
+        "strict_confirm: false\n  auto_mode: true",
+      )
       .replace(/harness_version: .+/, "harness_version: 0.6.1");
     await writeFile(configPath, legacyConfig, "utf8");
 
     await upgrade({ yes: true });
 
     const migrated = await readFile(configPath, "utf8");
-    expect(migrated).toContain("version: 2");
-    expect(migrated).toContain("confirm_mode: auto");
+    expect(migrated).toContain("version: 3");
+    expect(migrated).toContain("approval_mode: auto");
+    expect(migrated).toContain("workflow_mode: adaptive");
     expect(migrated).not.toContain("strict_confirm");
     expect(migrated).not.toContain("auto_mode");
   });
 
-  it("preserves lite confirm mode while refreshing the harness version", async () => {
+  it("migrates lite to guard approval and fast workflow", async () => {
     await init({ agent: "codex" });
     const configPath = path.join(tempDir, ".easy-coding", "config.yaml");
     const liteConfig = (await readFile(configPath, "utf8"))
-      .replace("confirm_mode: guard", "confirm_mode: lite")
+      .replace(
+        "approval_mode: guard\n  workflow_mode: adaptive",
+        "confirm_mode: lite",
+      )
       .replace(/harness_version: .+/, "harness_version: 0.7.1");
     await writeFile(configPath, liteConfig, "utf8");
 
@@ -527,7 +536,9 @@ describe("upgrade command", () => {
 
     const upgraded = await readFile(configPath, "utf8");
     expect(upgraded).toContain(`harness_version: ${VERSION}`);
-    expect(upgraded).toContain("confirm_mode: lite");
+    expect(upgraded).toContain("approval_mode: guard");
+    expect(upgraded).toContain("workflow_mode: fast");
+    expect(upgraded).not.toContain("confirm_mode:");
   });
 
   it("normalizes an equal-core prerelease harness version to the exact CLI version", async () => {

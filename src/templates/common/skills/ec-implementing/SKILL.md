@@ -1,149 +1,100 @@
 ---
 name: ec-implementing
-description: IMPLEMENT-stage skill. Use when ec-workflow enters IMPLEMENT with a confirmed plan. Executes code or explicit no-code execution.jsonl units under strict scope control, enforces RULES compliance and encoding preservation, writes code-task tests per strategy, and dispatches sub-agents for every unit regardless of strategy.
+description: IMPLEMENT-stage skill. Executes the confirmed plan with workflow-mode-aware orchestration, strict scope control, shift-left tests, and structured execution evidence.
 ---
 
 # ec-implementing — execute the confirmed plan
 
-ec-workflow dispatches you when a confirmed task enters IMPLEMENT. You execute the confirmed
-delivery without re-opening decisions. Inputs: `task.json`, `dev-spec.md` (confirmed), `execution.jsonl`
-(plan record), `.easy-coding/RULES.md`, `.easy-coding/ABSTRACT.md`, and `test-strategy.md` for
-code tasks only. A read-only task has no test-strategy.md.
+Use only after ANALYSIS has frozen `task.json.workflow_mode` to `fast`, `standard`, or
+`strict`. Read `dev-spec.md`, the latest `plan` record in `execution.jsonl`, relevant RULES
+and ABSTRACT sections, and `test-strategy.md` for code tasks.
 
 Communicate with the user in the user's language.
 
-## Core discipline (non-negotiable)
+## Non-negotiable gates
 
-1. **Scope is law.** Only modify files listed in the dev-spec change-scope table. If you
-   discover you need another file, STOP and return to ANALYSIS to amend the plan. No
-   "while I'm here" edits.
-2. **RULES compliance.** Before each write, re-check the RULES sections relevant to that
-   file (use the unit's `rules_sections`). Violation → fix before writing, not after.
-3. **Encoding preservation.** Modifying an existing file keeps its original encoding
-   (UTF-8 / GBK / ...); never silently convert. New files follow the encoding declared in
-   the dev-spec.
-4. **Comment language.** Follow the project's existing comment language as recorded in RULES.
-   Do not decide it here.
-5. **Step-wise reporting.** After each file/module, emit a one-line progress note (file +
-   what changed). Do not batch everything into one final dump.
-6. **Self-audit gate.** When the unit is done, audit: are all edits within scope? any
-   undeclared dependency change? any leftover TODO/FIXME you introduced? Report failures;
-   never skip silently.
-7. **Tests (code tasks only, soft rule).** Write tests for [must-test]/[should-test] items per
-   test-strategy.md. Soft means: no project test infra → not forced; infra exists → required.
-   Read-only tasks have no test-strategy.md and write no tests.
-8. **No-code delivery is explicit and read-only.** Only a task whose `task.json.type` is
-   `doc`, `analysis`, or `report` may have `unit.files:[]`. Dispatch it with editable scope
-   `NONE — read-only deliverable`; the sub-agent modifies nothing and returns the full result
-   in `deliverable`. An empty scope on any code task is a gate failure, not permission to roam.
+1. Modify only files in the confirmed change-scope table. A new file requirement returns the
+   task to ANALYSIS.
+2. Preserve existing encoding and project comment conventions.
+3. Each unit must carry `acceptance_criteria`, `test_points`, `contracts`, and `risks`.
+   Missing unit context is an analysis defect; do not make the implementer rediscover it.
+4. Run the unit's cheapest meaningful test immediately after its implementation. Do not wait
+   until VERIFICATION to discover local contract mistakes.
+5. Append `dispatch` and `result` records for every unit, including main-agent execution.
+   Main-agent execution uses `reason:"main-inline:<workflow_mode>"`.
+6. A code task never transitions directly from IMPLEMENT to VERIFICATION. Every new code task
+   enters REVIEW.
+7. Read-only `doc` / `analysis` / `report` tasks remain `single` with `files:[]`, make no writes,
+   return a non-empty `deliverable`, then follow the mode-aware IMPLEMENT -> COMPLETE edge.
 
-## Sub-agent dispatch
+## Choose the execution owner
 
-Read the `plan` record's `strategy` field. EVERY strategy dispatches sub-agents — the field
-only decides the orchestration shape, never whether the main agent writes code itself:
+`strategy` defines dependency shape; `workflow_mode` defines assurance depth.
 
-- `single` → dispatch ONE sub-agent for the single unit.
-- `sequential` → dispatch sub-agents one at a time in dependency order (await each `result`
-  before dispatching the next).
-- `parallel` → dispatch sub-agents per level concurrently (see gate below).
+### Fast
 
-<HARD-GATE>
-EVERY STRATEGY = MANDATORY SUB-AGENT DISPATCH. NO EXCEPTIONS.
+- A single low-risk unit may be implemented inline by the main Agent.
+- Sequential units may stay inline when they share one small context and have no risky contract.
+- Dispatch a sub-agent only for genuine parallelism, specialist context, or context isolation.
 
-You MUST dispatch sub-agents using {{sub_agent_dispatch}} for every unit, whatever the
-strategy. You are FORBIDDEN from implementing any unit yourself in the main agent. Doing the
-work inline instead of dispatching is a protocol violation equivalent to bypassing the
-ANALYSIS -> IMPLEMENT gate selected by the effective confirm mode.
+### Standard
 
-Self-check before writing ANY implementation code:
-- Am I about to write implementation code in the main agent? → STOP. Dispatch a sub-agent.
-- Did every unit get a dispatch (single=1, sequential=N serial, parallel=N concurrent)? If no → STOP.
+- A single bounded unit may be implemented inline.
+- Dispatch independent parallel units and units with distinct technical context.
+- Keep dependent units sequential and pass the completed contract forward.
 
-There is NO case where the main agent writes implementation code itself. Even a single unit
-goes through a sub-agent — this isolates implementation context from the main agent's window.
-</HARD-GATE>
+### Strict
 
-## Dispatch loop (all strategies)
+- Dispatch multi-unit or high-risk implementation to sub-agents using {{sub_agent_dispatch}}.
+- For a truly indivisible unit, the main Agent may implement only when dispatch adds no
+  independence; record why and require independent REVIEW later.
+- Process dependency levels in order. Platform spawn rule: {{platform_spawn_instruction}}
 
-1. Read RULES.md and ABSTRACT.md once — the main agent pre-digests context; sub-agents never
-   read them.
-2. For each unit, build a **task card** (next section). Append a `dispatch` record before
-   dispatching and a `result` record per returned unit, to execution.jsonl.
-3. Dispatch according to strategy, via {{sub_agent_dispatch}}:
-   - `single` → dispatch the one unit, await its `result`.
-   - `sequential` → sort units by `depends_on`; dispatch one, await its `result`, then the next.
-   - `parallel` → sort `parallel_groups` by level; dispatch all units in a level concurrently,
-     await the level, then advance.
-   Platform spawn rule: {{platform_spawn_instruction}}
-4. After each unit/level returns: check for file conflicts (two units touched the same file),
-   collect `issues` and `needs_attention`. Resolve conflicts before advancing. For a no-code
-   unit, additionally require `changed_files:[]` and a non-empty string `deliverable`; a missing
-   deliverable or any file modification is a unit failure and must be re-dispatched.
-5. After recording a successful no-code result, output the complete `deliverable` to the user
-   verbatim in the current response before any summary or completion action. Never replace,
-   truncate, or hide it behind the one-line `summary` or leave it only in execution.jsonl.
-6. After all units/levels, summarize. For no-code delivery, the summary is supplemental and
-   must appear after the full deliverable.
+The main Agent owns orchestration, conflict resolution, evidence writing, and stage decisions.
+Sub-agents never dispatch other sub-agents or read `.easy-coding` workflow assets.
 
-## Task card — the sub-agent contract
+## Task card
 
-The main agent builds the card; the sub-agent never hunts for context itself. Card template:
-
-```
+```text
 # Task Card
-## Identity
-You are an Easy Coding implementation sub-agent. Complete the assigned unit and return
-structured results. Reply content IS the return value, not a message to a human.
-## Hard constraints
-- Do not call any Skill tool.
-- Do not read .claude/skills, .agents/skills, or any .easy-coding/ file.
-- Modify only files in "Editable scope".
-- Make no stage-transition decisions.
-## Task           {unit description extracted from dev-spec}
-## Delivery mode  {code | no-code read-only, derived from task.type and unit.files}
-## Editable scope {unit.files | NONE — read-only deliverable}
-## Coding rules   {RULES.md sections selected by unit.rules_sections}
-## Architecture   {ABSTRACT.md sections selected by unit.abstract_modules}
-## Output format
-Return: changed_files[], summary (one line), deliverable (full no-code result or null),
-issues[], needs_attention[].
+## Identity       Easy Coding implementation unit
+## Workflow Mode  {fast|standard|strict}
+## Task           {unit description}
+## Editable Scope {unit.files | NONE — read-only}
+## Acceptance     {unit.acceptance_criteria}
+## Test Points    {unit.test_points and exact targeted commands}
+## Contracts      {inputs, outputs, invariants shared with other units}
+## Risks          {known edge cases and compatibility risks}
+## Coding Rules   {pre-digested RULES sections}
+## Architecture   {pre-digested ABSTRACT sections}
+## Output
+changed_files[], summary, deliverable|null, issues[], needs_attention[]
 ```
 
-This enforces the three-layer escape guard: task boundary (only its files), stage boundary
-(no knowledge of the state machine), output boundary (structured return only). The sub-agent
-gets pre-digested context — it does not open RULES or ABSTRACT itself.
+## Dispatch and result loop
 
-## On unit failure or conflict
+1. Append a `dispatch` record before work begins.
+2. Execute according to dependency order and selected owner.
+3. Run targeted unit tests and self-audit scope, contracts, TODOs, and introduced warnings.
+4. Append one `result` record. Include unresolved issues rather than hiding them.
+5. If a result changes a cross-unit contract, stop dependent units and return to ANALYSIS.
+6. For parallel units, detect overlapping writes before advancing.
 
-A returned `issues` entry or a detected file conflict is handled by the MAIN agent. If a fix
-is needed, re-dispatch the unit with a `dispatch` record carrying a `reason` field. Do not
-let sub-agents re-dispatch each other.
+Do not emit a progress message for every trivial edit. Report at unit boundaries to reduce
+conversation overhead while keeping work observable.
 
 ## End state
 
-- **Code task:** after all units are done and self-audited, hand back to ec-workflow. In approve
-  mode it records IMPLEMENT -> REVIEW as the recommended pending edge and presents REVIEW /
-  skip to VERIFICATION / handoff. In guard/auto it automatically enters REVIEW. In lite it
-  automatically enters VERIFICATION and must not dispatch REVIEW.
-- **No-code read-only task:** after recording the successful result and showing the complete
-  deliverable, request COMPLETE in approve mode or auto-transition in guard/lite/auto. Do not
-  enter REVIEW, VERIFICATION, or MEMORY; do not write short or long memory. The state API only
-  accepts this terminal edge when the latest plan is `single` with `files:[]` and the latest
-  result has `changed_files:[]`, a non-empty `deliverable`, and no issues/needs_attention.
-  A matching `dispatch` record must immediately precede the accepted result among that unit's
-  execution records; an inline report without dispatch cannot complete.
+- Code task: after all units and targeted checks pass, hand control to ec-workflow for
+  IMPLEMENT -> REVIEW.
+- Read-only task: output the full deliverable, then request or auto-apply IMPLEMENT -> COMPLETE.
+- New risk above the frozen mode: call `raise-workflow-mode`; modes may rise but never silently
+  fall after ANALYSIS.
 
-If something invalidates the plan before completion, select IMPLEMENT -> ANALYSIS and follow
-the effective confirm mode instead of improvising.
+## Self-check
 
-## Self-check gates (before handing back)
-
-- [ ] EVERY unit was dispatched to a sub-agent — no inline implementation by the main agent? (VIOLATION if no)
-- [ ] Sequential units dispatched in dependency order; parallel units dispatched per level?
-- [ ] Each dispatched unit has a `dispatch` record in execution.jsonl?
-- [ ] Each returned unit has a `result` record?
-- [ ] No files modified outside the change-scope table?
-- [ ] For a no-code unit: changed_files is empty, deliverable is non-empty, and the full
-      deliverable was output verbatim to the user before completion?
-- [ ] For a no-code task: IMPLEMENT -> COMPLETE followed the effective confirm mode, with no
-      REVIEW, VERIFICATION, MEMORY, or memory write?
+- [ ] Every changed file is in scope and keeps its encoding.
+- [ ] Every unit has a dispatch/result pair and satisfied its acceptance criteria.
+- [ ] Targeted tests ran or a concrete blocker is recorded.
+- [ ] Cross-unit contracts still match.
+- [ ] Code tasks enter REVIEW, regardless of workflow mode.

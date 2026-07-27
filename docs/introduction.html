@@ -440,7 +440,7 @@
         <p class="tagline">给 AI 编程套上一套工作流规范——让它有章可循，而不是全凭 agent 当时的发挥。</p>
         <div class="chip-row">
           <span class="chip">固定阶段状态机</span>
-          <span class="chip">approve / guard / lite / auto 确认模式</span>
+          <span class="chip">Approval + Adaptive Workflow 双模式</span>
           <span class="chip">子代理隔离上下文</span>
           <span class="chip">项目记忆分层</span>
           <span class="chip">一份模板 · 三平台</span>
@@ -448,7 +448,7 @@
         </div>
         <div class="meta">
           <span>来源：<code>docs/introduction.md</code></span>
-          <span>版本：<code>0.8.3</code></span>
+          <span>版本：<code>0.9.0-beta.0</code></span>
           <span>适配：Claude Code · Codex · Qoder</span>
         </div>
       </header>
@@ -499,12 +499,12 @@
             <div class="idea-card">
               <div class="num">2</div>
               <h3>人机共创，关键节点设硬门控</h3>
-              <p>状态边由 <code>approve</code>、<code>guard</code>（默认）、<code>lite</code>、<code>auto</code> 控制，session 可覆盖项目配置。guard/auto 的代码主链进入 REVIEW，lite 直接进入 VERIFICATION；所有模式都保留 VERIFICATION 与产物门控。</p>
+              <p><code>approval_mode</code> 控制状态边是否等待，<code>workflow_mode</code> 控制状态内执行深度。Confirm 只在 ANALYSIS 后确认一次，随后在质量门禁通过后自动推进；Adaptive 在 ANALYSIS 后冻结为 Fast、Standard 或 Strict。所有新代码任务都保留 REVIEW 与 VERIFICATION 门控；Fast 执行最小充分检查，Standard 检查受影响范围，Strict 执行项目适用的完整 lint/typecheck/test/build。</p>
             </div>
             <div class="idea-card">
               <div class="num">3</div>
               <h3>上下文卫生</h3>
-              <p>实现、审查、验证都派子代理去干。实现细节是上下文的噪声源，隔离在子代理里，主代理只拿结论，主线才能一直清醒。</p>
+              <p>Fast 允许主代理内联处理低风险单元，Standard / Strict 按独立性和风险派发子代理。把真正有价值的实现、审查和验证上下文隔离出去，主线只保留决策与证据。</p>
             </div>
             <div class="idea-card">
               <div class="num">4</div>
@@ -529,7 +529,7 @@
               <span class="arrow">→</span>
               <div class="stage">IMPLEMENT</div>
               <span class="arrow">→</span>
-              <div class="stage">REVIEW<small>可跳过</small></div>
+              <div class="stage">REVIEW<small>代码任务必经</small></div>
               <span class="arrow">→</span>
               <div class="stage gate">VERIFICATION<small>验证门</small></div>
               <span class="arrow">→</span>
@@ -540,7 +540,7 @@
             <div class="loops">
               <div class="loop-item"><span class="loop-tag">repair loop</span><span>审查或验证发现问题，回到 IMPLEMENT 重新实现。</span></div>
               <div class="loop-item"><span class="loop-tag">replan</span><span>需要重新对齐方案时，确认后回到 ANALYSIS。</span></div>
-              <div class="loop-item"><span class="loop-tag mem">confirm mode</span><span>approve 逐边确认，guard 与 lite 只把关两个关键边，lite 跳过 REVIEW，auto 自动执行全部合法工作流边；关闭任务始终要求显式操作。</span></div>
+              <div class="loop-item"><span class="loop-tag mem">dual modes</span><span>approve / guard / confirm / auto 控制等待；adaptive / fast / standard / strict 控制执行深度，关闭任务始终要求显式操作。</span></div>
             </div>
           </div>
 
@@ -549,13 +549,13 @@
           <details>
             <summary>查看原始状态机（ASCII）</summary>
             <pre><code>INIT --[always auto]--> ANALYSIS -> IMPLEMENT -> REVIEW -> VERIFICATION -> MEMORY --[always auto]--> COMPLETE
-                                    \----------------> VERIFICATION
                                     \--[read-only, mode-aware]-----------------------> COMPLETE
                  ^            ^          |             |
                  +-- replan ---+          +--- fix -----+
                               ^                         |
                               +------- repair ----------+
-edge behavior --[approve / guard / lite / auto]--> target stage</code></pre>
+approval --[approve / guard / confirm / auto]--> transition wait policy
+workflow --[adaptive => fast / standard / strict]--> stage execution depth</code></pre>
           </details>
 
           <h3>一份模板，喂三个平台</h3>

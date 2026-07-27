@@ -4,7 +4,12 @@ import { CONFIG_FILE, EASY_CODING_DIR } from "../constants/paths.js";
 import { VERSION } from "../constants/version.js";
 import { renderBanner } from "../ui/banner.js";
 import { compareVersions } from "../utils/compare-versions.js";
-import { isConfirmMode, readConfigYaml } from "../utils/config-yaml.js";
+import {
+  isApprovalMode,
+  isConfiguredWorkflowMode,
+  readConfigYaml,
+  resolveLegacyBehavior,
+} from "../utils/config-yaml.js";
 import { pathExists } from "../utils/file-writer.js";
 import { listSessionFiles } from "../utils/session.js";
 import {
@@ -43,24 +48,41 @@ export async function status(): Promise<void> {
   }
   console.log(`  agents: ${config.agents.join(", ") || "(none)"}`);
   console.log(`  project: ${config.project.name}`);
-  const projectConfirmMode = isConfirmMode(config.behavior?.confirm_mode)
-    ? config.behavior.confirm_mode
-    : "guard";
-  console.log(`  confirm_mode: ${projectConfirmMode}`);
+  const migratedBehavior = resolveLegacyBehavior(config);
+  const projectApprovalMode = isApprovalMode(config.behavior?.approval_mode)
+    ? config.behavior.approval_mode
+    : migratedBehavior.approvalMode;
+  const projectWorkflowMode = isConfiguredWorkflowMode(config.behavior?.workflow_mode)
+    ? config.behavior.workflow_mode
+    : migratedBehavior.workflowMode;
+  console.log(`  approval_mode: ${projectApprovalMode}`);
+  console.log(`  workflow_mode: ${projectWorkflowMode}`);
   console.log("");
   console.log(chalk.bold("Sessions"));
-  console.log(`  project_confirm_mode: ${projectConfirmMode}`);
-  console.log(`  effective_confirm_mode: ${projectConfirmMode} (without a session override)`);
+  console.log(`  project_approval_mode: ${projectApprovalMode}`);
+  console.log(`  project_workflow_mode: ${projectWorkflowMode}`);
+  console.log(`  effective_approval_mode: ${projectApprovalMode} (without a session override)`);
+  console.log(`  configured_workflow_mode: ${projectWorkflowMode} (without a session override)`);
   if (sessions.length === 0) {
     console.log("  no session files");
   }
   for (const { key, session } of sessions) {
-    const sessionConfirmMode = session.confirm_mode;
+    const legacySessionMode = session.confirm_mode;
+    const hasLegacySessionMode = ["approve", "guard", "confirm", "auto"].includes(
+      String(legacySessionMode ?? ""),
+    );
+    const sessionApprovalMode =
+      session.approval_mode ?? (legacySessionMode === "lite" ? "guard" : legacySessionMode);
+    const sessionWorkflowMode =
+      session.workflow_mode ??
+      (legacySessionMode === "lite" ? "fast" : hasLegacySessionMode ? "adaptive" : undefined);
     console.log(`  - ${key}`);
     console.log(`    agent: ${session.agent ?? "legacy/unknown"}`);
     console.log(`    source: ${session.session_source ?? "legacy"}`);
-    console.log(`    confirm_mode: ${sessionConfirmMode ?? "project default"}`);
-    console.log(`    effective_confirm_mode: ${sessionConfirmMode ?? projectConfirmMode}`);
+    console.log(`    approval_mode: ${sessionApprovalMode ?? "project default"}`);
+    console.log(`    workflow_mode: ${sessionWorkflowMode ?? "project default"}`);
+    console.log(`    effective_approval_mode: ${sessionApprovalMode ?? projectApprovalMode}`);
+    console.log(`    configured_workflow_mode: ${sessionWorkflowMode ?? projectWorkflowMode}`);
     console.log(
       `    harness: ${session.harness_disabled ? "disabled for this session" : "enabled"}`,
     );
@@ -73,6 +95,9 @@ export async function status(): Promise<void> {
       const task = await readTaskJson(taskPath);
       console.log(`    current_task: ${session.current_task}`);
       console.log(`    current_stage: ${task.status}`);
+      console.log(
+        `    task_workflow_mode: ${task.workflow_mode ?? task.workflow_mode_proposal?.selected_mode ?? "not resolved"}`,
+      );
       console.log(`    last_agent: ${task.last_agent}`);
     } else {
       console.log(`    current_task: ${session.current_task} (task.json missing)`);

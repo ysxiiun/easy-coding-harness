@@ -1,112 +1,52 @@
 ---
 name: ec-task-management
-description: Task and session panel for Easy Coding. Use when the user runs {{skill_trigger}}ec-task-management, asks to see/create/continue/take over tasks, or asks to view or change the current session confirm mode.
+description: View and manage Easy Coding tasks plus project/session approval and workflow-mode settings.
 ---
 
-# ec-task-management — the task and session panel
+# ec-task-management — tasks and session modes
 
-A combined task and session panel: list unfinished tasks, create tasks, let the user choose one
-task to continue or take over, and manage the current session's confirm mode. Stage progression
-still belongs to ec-workflow; closure belongs to ec-task-close.
+Communicate with the user in the user's language. A bare invocation is read-only: show the
+panel and available actions, but do not mutate a session without an explicit choice.
 
-Communicate with the user in the user's language.
+## Default panel
 
-## Default panel contract
+Call the state API snapshot and show:
 
-A bare `{{skill_trigger}}ec-task-management` invocation means "show the full task and session
-panel", not just the unfinished task list. On every invocation:
+- current task, stage, last Agent, and pending transition;
+- `project_approval_mode`, `session_approval_mode`, `effective_approval_mode`;
+- `project_workflow_mode`, `session_workflow_mode`, `configured_workflow_mode`;
+- task `concrete_workflow_mode` or ANALYSIS proposal when present;
+- harness enabled/disabled state;
+- active and resumable tasks.
 
-1. Call `list-tasks --agent <agent-id>`.
-2. Call `snapshot --session-file <P>`.
-3. Show the unfinished tasks and a separate "Session confirm mode" section containing:
-   - `project_confirm_mode`
-   - `session_confirm_mode` (`project default` when null)
-   - `effective_confirm_mode`
-4. Show the supported conversational changes in the user's language: set this session to
-   `approve`, `guard`, `lite`, or `auto`, and restore the project default.
+Explain precedence:
 
-Never omit the confirm-mode section, even when the unfinished task list is empty. A bare panel
-invocation is read-only: do not set or clear the session override until the user explicitly asks
-for a change.
+`session override > project config > approval:guard / workflow:adaptive`
 
-## Capabilities
+## Session settings
 
-### List unfinished tasks
+After explicit user selection:
 
-Call the state API with the current agent id:
-`{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py list-tasks --agent <agent-id>`.
+```bash
+# approval
+{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py set-approval-mode --mode approve|guard|confirm|auto --agent <agent-id> --session-file <P>
+{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py clear-approval-mode --agent <agent-id> --session-file <P>
 
-Show only tasks whose `active` is true. For each task show:
-- id
-- title
-- status
-- created_at
-- action label:
-  - `continue` when `action == "continue"`
-  - `take over` when `action == "takeover"`
-- previous agent when `previous_agent` is present
-- latest handoff summary when `latest_handoff.summary` is present
+# workflow
+{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py set-workflow-mode --mode adaptive|fast|standard|strict --agent <agent-id> --session-file <P>
+{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py clear-workflow-mode --agent <agent-id> --session-file <P>
+```
 
-Use wording in the user's language. The important distinction is:
-- Continue: the current agent was already the last agent.
-- Take over: another agent was the last agent; show that previous agent.
+Changing a session setting affects future ANALYSIS proposals. It does not silently rewrite a
+mode already frozen on an active task. During ANALYSIS, regenerate and show the proposal. During
+IMPLEMENT or REVIEW, use `raise-workflow-mode` for a justified increase; lowering is forbidden.
+From VERIFICATION, return to IMPLEMENT first so the raised mode receives fresh REVIEW evidence.
 
-### Continue or take over a selected task
+Project settings are changed with `easy-coding config`, which edits both dimensions in one
+confirmed interaction.
 
-When the user chooses a listed task, call:
-`{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py claim-task --session-file <P> --task-id <task-id> --agent <agent-id>`.
+## Task actions
 
-Use the returned `status_context` as the authoritative status source for the rest of the
-current turn. Then report:
-- whether this was `continue` or `takeover`
-- the previous agent if returned
-- the latest handoff summary if returned
-- the current stage
-
-After claiming, hand control to ec-workflow semantics: read the task metadata and latest
-execution records, then resume from the current stage. Do not advance stages from this skill
-unless ec-workflow is explicitly invoked or the agent environment routes into it.
-
-### Create a task
-
-Create through the state API, never by hand-editing `task.json` or session files:
-`{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py create-task --session-file <P> --task-id <MM-DD-short-name> --type <feature|bugfix|refactor|perf|doc|analysis|report|workflow> --title "<one-line summary>" --agent <agent-id> --no-set-current`.
-
-If the user explicitly wants to start the task now, omit `--no-set-current`; otherwise leave
-the current workflow pointer untouched and tell them to run `{{skill_trigger}}ec-workflow`
-when ready.
-
-The command returns `status_line` and `status_context`. If the command sets or changes
-`current_task`, use the returned context as the authoritative status source for the rest of
-the current turn instead of older hook-injected status text.
-
-### View or change this session's confirm mode
-
-Use the snapshot already required by the default panel and show:
-- `project_confirm_mode`
-- `session_confirm_mode` (`project default` when null)
-- `effective_confirm_mode`
-
-When the user asks to change the current session, use native choice UI when available. When the
-UI is limited to three choices, offer `guard` (recommended default), `lite`, and `auto`; accept
-`approve` or `restore project default` through the native free-form Other input. A text fallback
-must list all four modes and the restore action.
-
-Set an override through the state API, never by editing the session JSON:
-`{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py set-confirm-mode --session-file <P> --mode <approve|guard|lite|auto> --agent <agent-id>`.
-
-Restore project configuration through:
-`{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py clear-confirm-mode --session-file <P> --agent <agent-id>`.
-
-Use the returned snapshot as authoritative and report the effective mode. Preserve any existing
-`pending_transition`; when it becomes automatic, ec-workflow consumes its original target via
-`auto-transition` instead of losing the completed stage outcome. The exception is an existing
-IMPLEMENT -> REVIEW edge after switching to lite: ec-workflow must cancel it and automatically
-enter VERIFICATION because lite never runs REVIEW.
-
-## Boundaries
-
-- Do not close or cancel tasks — that is ec-task-close.
-- Do not advance stages directly from this skill.
-- Do not ask who the next agent will be. A takeover is decided by the agent that claims the
-  task, not by the agent that last handed it off.
+Support listing, creating, selecting, claiming, handing off, and closing tasks through the
+state API. Preserve pending transitions when merely changing approval mode. Never infer user
+acceptance from opening this panel.

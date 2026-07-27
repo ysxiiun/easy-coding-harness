@@ -73,27 +73,21 @@ describe("configureCodex", () => {
       "utf8",
     );
     expect(skill).toContain("`$ec-init`");
-    expect(skill).toContain("MUST actually invoke it in the same turn");
-    expect(skill).toContain("The code-task IMPLEMENT completion fallback must preserve");
-    expect(skill).toContain("Skip REVIEW and enter VERIFICATION");
-    expect(skill).toContain("An empty, dismissed, timed-out, or unparseable choice result");
-    expect(skill).toContain("disable or omit any timeout or auto-resolution setting");
-    expect(skill).toContain("render the matching complete numbered fallback as normal assistant");
-    expect(skill).toContain("Do not invoke or retry the native choice again in that turn");
-    expect(skill).toContain("Before re-presenting any manual gate, consume a");
-    expect(skill).toContain("A bare Other");
+    expect(skill).toContain("approval_mode = approve|guard|confirm|auto");
+    expect(skill).toContain("workflow_mode = adaptive|fast|standard|strict");
+    expect(skill).toContain("New code tasks never skip REVIEW");
+    expect(skill).toContain("raise-workflow-mode");
+    expect(skill).toContain("Missing: tell the user to run `easy-coding init`");
+    expect(skill).toContain("During VERIFICATION, return to IMPLEMENT before");
     expect(skill).not.toContain("{{");
     const analysisSkill = await readFile(
       path.join(tempDir, ".agents", "skills", "ec-analysis", "SKILL.md"),
       "utf8",
     );
-    expect(analysisSkill).toContain("Confirm entering IMPLEMENT (recommended)");
-    expect(analysisSkill).toContain("Hand off to another agent");
-    expect(analysisSkill).toContain("Other — use the native free-form Other input");
-    expect(analysisSkill).toContain("disable or omit any timeout or auto-resolution setting");
-    expect(analysisSkill).toContain("render all three numbered branches as");
-    expect(analysisSkill).toContain("persistent timeout\nfallback");
-    expect(analysisSkill).toContain("do not invoke or retry native choice in that turn");
+    expect(analysisSkill).toContain("propose-workflow-mode");
+    expect(analysisSkill).toContain("mechanical minimum");
+    expect(analysisSkill).toContain("acceptance_criteria");
+    expect(analysisSkill).toContain("No transition without a valid workflow proposal");
     const noHarnessSkill = await readFile(
       path.join(tempDir, ".agents", "skills", "ec-no-harness", "SKILL.md"),
       "utf8",
@@ -112,11 +106,9 @@ describe("configureCodex", () => {
       path.join(tempDir, ".agents", "skills", "ec-task-management", "SKILL.md"),
       "utf8",
     );
-    expect(taskManagementSkill).toContain("show the full task and session\npanel");
-    expect(taskManagementSkill).toContain("snapshot --session-file <P>");
-    expect(taskManagementSkill).toContain(
-      "Never omit the confirm-mode section, even when the unfinished task list is empty",
-    );
+    expect(taskManagementSkill).toContain("project_approval_mode");
+    expect(taskManagementSkill).toContain("configured_workflow_mode");
+    expect(taskManagementSkill).toContain("set-workflow-mode");
     expect(taskManagementSkill).not.toContain("{{");
 
     expect(await pathExists(path.join(tempDir, ".codex", "hooks", "session-start.py"))).toBe(true);
@@ -160,11 +152,11 @@ describe("configureCodex", () => {
     expect(main).toContain("Qoder: `/ec-*`");
     expect(main).toContain("single Markdown blockquote status line");
     expect(main).toContain(
-      "- Ready: > **Easy Coding** · **{confirm-mode}** · Ready · Use `ec-workflow` to start or resume a task, `ec-brainstorming` to brainstorm, or `ec-task-management` to manage tasks or session settings",
+      "- Ready: > **Easy Coding** · **Approval: {approval-mode}** · **Workflow: {workflow-mode}** · Ready",
     );
-    expect(main).toContain("lite chooses IMPLEMENT -> VERIFICATION");
+    expect(main).toContain("Every new code task runs REVIEW");
     expect(main).toContain("A confirmation-required boundary is not fully presented");
-    expect(main).toContain("approve-mode code IMPLEMENT gate must instead preserve");
+    expect(main).toContain("code IMPLEMENT gate must preserve enter REVIEW");
     expect(main).toContain("explicitly guarantees an indefinite wait");
     expect(main).toContain("pre-render the matching numbered fallback");
     expect(main).toContain("consume a matching\n  numbered reply against the stored edge");
@@ -355,36 +347,26 @@ describe("configureQoder", () => {
       "utf8",
     );
     expect(skill).toContain("`/ec-init`");
-    expect(skill).toContain("MUST actually invoke it in the same turn");
-    expect(skill).toContain("The code-task IMPLEMENT completion fallback must preserve");
-    expect(skill).toContain("Skip REVIEW and enter VERIFICATION");
-    expect(skill).toContain("An empty, dismissed, timed-out, or unparseable choice result");
-    expect(skill).toContain("disable or omit any timeout or auto-resolution setting");
-    expect(skill).toContain("render the matching complete numbered fallback as normal assistant");
-    expect(skill).toContain("Do not invoke or retry the native choice again in that turn");
-    expect(skill).toContain("Before re-presenting any manual gate, consume a");
-    expect(skill).toContain("A bare Other");
+    expect(skill).toContain("approval_mode = approve|guard|confirm|auto");
+    expect(skill).toContain("workflow_mode = adaptive|fast|standard|strict");
+    expect(skill).toContain("New code tasks never skip REVIEW");
+    expect(skill).toContain("raise-workflow-mode");
     expect(skill).not.toContain("{{");
     const analysisSkill = await readFile(
       path.join(tempDir, ".qoder", "skills", "ec-analysis", "SKILL.md"),
       "utf8",
     );
-    expect(analysisSkill).toContain("Confirm entering IMPLEMENT (recommended)");
-    expect(analysisSkill).toContain("Hand off to another agent");
-    expect(analysisSkill).toContain("Other — use the native free-form Other input");
-    expect(analysisSkill).toContain("disable or omit any timeout or auto-resolution setting");
-    expect(analysisSkill).toContain("render all three numbered branches as");
-    expect(analysisSkill).toContain("persistent timeout\nfallback");
-    expect(analysisSkill).toContain("do not invoke or retry native choice in that turn");
+    expect(analysisSkill).toContain("propose-workflow-mode");
+    expect(analysisSkill).toContain("mechanical minimum");
+    expect(analysisSkill).toContain("acceptance_criteria");
+    expect(analysisSkill).toContain("No transition without a valid workflow proposal");
     const taskManagementSkill = await readFile(
       path.join(tempDir, ".qoder", "skills", "ec-task-management", "SKILL.md"),
       "utf8",
     );
-    expect(taskManagementSkill).toContain("show the full task and session\npanel");
-    expect(taskManagementSkill).toContain("snapshot --session-file <P>");
-    expect(taskManagementSkill).toContain(
-      "Never omit the confirm-mode section, even when the unfinished task list is empty",
-    );
+    expect(taskManagementSkill).toContain("project_approval_mode");
+    expect(taskManagementSkill).toContain("configured_workflow_mode");
+    expect(taskManagementSkill).toContain("set-workflow-mode");
     expect(taskManagementSkill).not.toContain("{{");
     const gitSkill = await readFile(
       path.join(tempDir, ".qoder", "skills", "ec-git", "SKILL.md"),
@@ -397,7 +379,7 @@ describe("configureQoder", () => {
 
     const main = await readFile(path.join(tempDir, "AGENTS.md"), "utf8");
     expect(main).toContain("A confirmation-required boundary is not fully presented");
-    expect(main).toContain("approve-mode code IMPLEMENT gate must instead preserve");
+    expect(main).toContain("code IMPLEMENT gate must preserve enter REVIEW");
     expect(main).toContain("explicitly guarantees an indefinite wait");
     expect(main).toContain("pre-render the matching numbered fallback");
     expect(main).toContain("consume a matching\n  numbered reply against the stored edge");

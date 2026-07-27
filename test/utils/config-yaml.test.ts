@@ -6,7 +6,8 @@ import {
   addAgentsToConfig,
   createDefaultConfig,
   ensureProjectId,
-  migrateConfirmModeConfig,
+  migrateBehaviorConfig,
+  setBehaviorModes,
   setConfirmMode,
   updateHarnessVersion,
   updateSupermoduleConfig,
@@ -49,31 +50,44 @@ afterEach(async () => {
 });
 
 describe("config-yaml", () => {
-  it("creates schema 2 configs with guard as the default confirm mode", () => {
+  it("creates schema 3 configs with guard approval and adaptive workflow defaults", () => {
     const config = createDefaultConfig({
       projectName: "demo",
       harnessVersion: "1.0.0",
       agents: ["claude-code"],
     });
-    expect(config.version).toBe(2);
-    expect(config.behavior).toEqual({ confirm_mode: "guard" });
+    expect(config.version).toBe(3);
+    expect(config.behavior).toEqual({
+      approval_mode: "guard",
+      workflow_mode: "adaptive",
+    });
   });
 
   it("migrates legacy confirmation booleans and removes them", async () => {
-    await migrateConfirmModeConfig(configPath);
+    await migrateBehaviorConfig(configPath);
     const content = await readFile(configPath, "utf8");
-    expect(content).toContain("version: 2");
-    expect(content).toContain("confirm_mode: approve");
+    expect(content).toContain("version: 3");
+    expect(content).toContain("approval_mode: approve");
+    expect(content).toContain("workflow_mode: adaptive");
     expect(content).not.toContain("strict_confirm");
     expect(content).not.toContain("auto_mode");
   });
 
-  it("writes an explicit confirm mode without restoring legacy keys", async () => {
-    await setConfirmMode(configPath, "lite");
+  it("writes explicit behavior modes without restoring legacy keys", async () => {
+    await setBehaviorModes(configPath, "confirm", "fast");
     const content = await readFile(configPath, "utf8");
-    expect(content).toContain("confirm_mode: lite");
+    expect(content).toContain("approval_mode: confirm");
+    expect(content).toContain("workflow_mode: fast");
     expect(content).not.toContain("strict_confirm");
     expect(content).not.toContain("auto_mode");
+  });
+
+  it("keeps an existing workflow mode when the deprecated approval setter is used", async () => {
+    await setBehaviorModes(configPath, "guard", "strict");
+    await setConfirmMode(configPath, "auto");
+    const content = await readFile(configPath, "utf8");
+    expect(content).toContain("approval_mode: auto");
+    expect(content).toContain("workflow_mode: strict");
   });
 
   it("updates harness_version while preserving comments", async () => {

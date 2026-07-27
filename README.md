@@ -70,21 +70,26 @@ easy-coding init --submodules packages/a,packages/b
 
 ```text
 INIT --[always auto]--> ANALYSIS -> IMPLEMENT -> REVIEW -> VERIFICATION -> MEMORY --[always auto]--> COMPLETE
-                                    \----------------> VERIFICATION
                                     \--[read-only, mode-aware]-----------------------> COMPLETE
                  ^            ^          |             |
                  +-- replan ---+          +--- fix -----+
                               ^                         |
                               +------- repair ----------+
-edge behavior --[approve / guard / lite / auto]--> target stage
+approval --[approve / guard / confirm / auto]--> transition wait policy
+workflow --[adaptive => fast / standard / strict]--> stage execution depth
 any stage --[user abort via ec-task-close]--> CLOSED
 ```
 
-- 生效确认模式优先级为 session 覆盖 > 项目 `behavior.confirm_mode` > `guard` 默认值。
-- `approve` 除 `INIT → ANALYSIS`、`MEMORY → COMPLETE` 外逐边确认；`guard` 与 `lite` 只确认 `ANALYSIS → IMPLEMENT`、`VERIFICATION → MEMORY`；`auto` 自动执行全部合法工作流边。任何模式下关闭任务都必须显式执行。
-- `guard` / `auto` 的代码主链在 IMPLEMENT 后默认进入 REVIEW；`lite` 不执行 REVIEW，直接进入 VERIFICATION；`approve` 可明确选择 REVIEW 或跳过它。确认模式不绕过状态合法性、方案产物或验证门控。
+- 审批模式优先级为 session 覆盖 > 项目 `behavior.approval_mode` > `guard`；`approve`
+  逐边确认，`guard` 确认 ANALYSIS → IMPLEMENT 与 VERIFICATION → MEMORY，`confirm` 只在
+  ANALYSIS → IMPLEMENT 确认一次，随后各阶段在质量门禁通过后自动推进，`auto` 从开始即
+  自动推进。
+- 工作流模式优先级为 session 覆盖 > 项目 `behavior.workflow_mode` > `adaptive`。Adaptive 在 ANALYSIS 结束时根据风险解析、展示并冻结为 `fast`、`standard` 或 `strict`，用户可在风险下限之上调整。
+- 所有新代码任务都完整进入 REVIEW；不同工作流模式只调整各状态内部的上下文加载、执行主体、审查独立性、验证范围和记忆深度，不绕过状态或证据门禁。
 - 显式 `doc` / `analysis` / `report` 只读任务不生成 `test-strategy.md`；展示完整报告后按生效模式进入 COMPLETE，不执行 REVIEW、VERIFICATION 或 MEMORY，也不写任务记忆。
-- `VERIFICATION` 是验证硬门控，未实际运行的 lint、typecheck、test 不算通过。
+- `VERIFICATION` 是验证硬门控：Fast 运行最小充分检查，Standard 运行受影响范围检查，
+  Strict 运行项目适用的完整 lint/typecheck/test/build；所选模式要求的检查未真实执行
+  并留下当前指纹下的绿色证据，就不算通过。
 - `MEMORY` 先写入本次任务短期记忆，再执行长期记忆阈值门禁；未超过阈值时长期沉淀为 no-op。
 
 ## Supermodule 模型
@@ -108,7 +113,7 @@ any stage --[user abort via ec-task-close]--> CLOSED
 | `easy-coding add-agent` | 给已接入项目追加 Claude Code、Codex 或 Qoder 支持；supermodule 父仓可按已初始化子仓分层追加 |
 | `easy-coding upgrade` | CLI 升级后同步项目内生成文件，生成区覆盖，用户资产保留；supermodule 父仓会同步升级已初始化子仓 |
 | `easy-coding update` | 更新全局 CLI 到最新发布版 |
-| `easy-coding config` | 交互修改当前项目的 `confirm_mode` |
+| `easy-coding config` | 交互修改当前项目的 `approval_mode` 与 `workflow_mode` |
 | `easy-coding status` | 查看已安装平台、harness 版本、当前任务状态 |
 | `easy-coding clear` | 移除 harness 安装物，保留 tasks、spec、memory、project.yaml 等用户资产；supermodule 父仓支持交互选择、`--submodules` 和 `--no-submodules` |
 
@@ -158,10 +163,11 @@ easy-coding upgrade
 
 `upgrade` 会刷新生成区内的 skills、hooks、agents、主约束模板和运行时模板，不会删除已有任务、spec、memory、project.yaml 或项目知识文件。
 
-升级到 0.7.0 时，旧 `strict_confirm` / `auto_mode` 会一次性迁移为
-`behavior.confirm_mode` 并从配置中删除。项目级模式用 `easy-coding config` 修改（要求
+升级到 0.9.0 时，旧 `strict_confirm` / `auto_mode` / `confirm_mode` 会一次性迁移为
+`behavior.approval_mode` 与 `behavior.workflow_mode`；旧 `lite` 映射为 `guard + fast`。
+项目级模式用 `easy-coding config` 修改（要求
 项目 Harness 与 CLI 版本完全一致，否则先执行 `easy-coding upgrade` 或更新 CLI）；当前
-session 的临时覆盖通过 `ec-task-management` 对话修改。
+session 的两类临时覆盖通过 `ec-task-management` 对话修改。
 
 若当前会话不希望 Harness 接管，显式调用 `/ec-no-harness`（Codex 使用
 `$ec-no-harness`）。它只旁路 Easy Coding，不关闭其他 hooks，也不忽略其他 skills；

@@ -148,6 +148,9 @@ describe("task-json", () => {
       "ANALYSIS",
     ]);
     expect(waiting.pending_transition).toMatchObject({ from: "ANALYSIS", to: "IMPLEMENT" });
+    expect(waiting.workflow_mode).toBe("strict");
+    expect(waiting.workflow_mode_legacy).toBe(true);
+    expect(waiting).not.toHaveProperty("workflow_mode_legacy_direct_edge");
 
     const memory = JSON.parse(await readFile(memoryPath, "utf8"));
     expect(memory.status).toBe("MEMORY");
@@ -156,8 +159,265 @@ describe("task-json", () => {
     ]);
     expect(memory.memory_progress.short_memory_written).toBe(true);
     expect(memory.memory_progress.legacy_short_memory_assumed).toBe(true);
+    expect(memory.workflow_mode).toBe("strict");
 
     const session = JSON.parse(await readFile(sessionPath, "utf8"));
     expect(session.last_seen_stage).toBe("ANALYSIS");
+  });
+
+  it("does not let one stale lite session downgrade a shared migrated task", async () => {
+    const taskPath = getTaskJsonPath(tempDir, "shared-task");
+    await mkdir(path.dirname(taskPath), { recursive: true });
+    await writeFile(
+      taskPath,
+      JSON.stringify({
+        type: "feature",
+        status: "IMPLEMENT",
+        created_at: "2026-07-27T00:00:00Z",
+        created_by: "codex",
+        last_agent: "codex",
+        stage_history: [
+          { stage: "IMPLEMENT", agent: "codex", entered_at: "2026-07-27T00:00:00Z" },
+        ],
+      }),
+      "utf8",
+    );
+    const sessionsDir = path.join(tempDir, ".easy-coding", "sessions");
+    await mkdir(sessionsDir, { recursive: true });
+    await writeFile(
+      path.join(sessionsDir, "active-guard.json"),
+      JSON.stringify({
+        current_task: "shared-task",
+        agent: "codex",
+        confirm_mode: "guard",
+      }),
+      "utf8",
+    );
+    await writeFile(
+      path.join(sessionsDir, "stale-lite.json"),
+      JSON.stringify({
+        current_task: "shared-task",
+        agent: "codex",
+        confirm_mode: "lite",
+      }),
+      "utf8",
+    );
+
+    expect(await migrateLegacyWorkflowState(tempDir)).toEqual({
+      tasksUpdated: 1,
+      sessionsUpdated: 2,
+    });
+
+    const task = JSON.parse(await readFile(taskPath, "utf8"));
+    expect(task).toMatchObject({
+      workflow_mode: "strict",
+      workflow_mode_confirmed_by: "upgrade-migration",
+      workflow_mode_legacy: true,
+    });
+    expect(task).not.toHaveProperty("workflow_mode_legacy_direct_edge");
+    const guardSession = JSON.parse(
+      await readFile(path.join(sessionsDir, "active-guard.json"), "utf8"),
+    );
+    expect(guardSession).toMatchObject({
+      approval_mode: "guard",
+      workflow_mode: "adaptive",
+      workflow_mode_legacy_alias_override: true,
+    });
+    expect(guardSession).not.toHaveProperty("workflow_mode_legacy_confirm_override");
+  });
+
+  it("preserves project-level legacy lite as fast for an active task", async () => {
+    const configPath = path.join(tempDir, ".easy-coding", "config.yaml");
+    await mkdir(path.dirname(configPath), { recursive: true });
+    await writeFile(
+      configPath,
+      ["version: 2", "behavior:", "  confirm_mode: lite", ""].join("\n"),
+      "utf8",
+    );
+    const taskPath = getTaskJsonPath(tempDir, "project-lite-task");
+    await mkdir(path.dirname(taskPath), { recursive: true });
+    await writeFile(
+      taskPath,
+      JSON.stringify({
+        type: "feature",
+        status: "IMPLEMENT",
+        created_at: "2026-07-27T00:00:00Z",
+        created_by: "codex",
+        last_agent: "codex",
+        stage_history: [
+          { stage: "IMPLEMENT", agent: "codex", entered_at: "2026-07-27T00:00:00Z" },
+        ],
+        pending_transition: {
+          from: "IMPLEMENT",
+          to: "REVIEW",
+          requested_at: "2026-07-27T00:01:00Z",
+          requested_by: "codex",
+        },
+      }),
+      "utf8",
+    );
+
+    expect(await migrateLegacyWorkflowState(tempDir)).toEqual({
+      tasksUpdated: 1,
+      sessionsUpdated: 0,
+    });
+
+    const task = JSON.parse(await readFile(taskPath, "utf8"));
+    expect(task).toMatchObject({
+      workflow_mode: "fast",
+      workflow_mode_confirmed_by: "upgrade-migration",
+      workflow_mode_legacy: true,
+      workflow_mode_legacy_direct_edge: true,
+    });
+    expect(task.pending_transition).toMatchObject({
+      from: "IMPLEMENT",
+      to: "REVIEW",
+    });
+  });
+
+  it("keeps a legacy non-lite session override above a project-level lite default", async () => {
+    const configPath = path.join(tempDir, ".easy-coding", "config.yaml");
+    await mkdir(path.dirname(configPath), { recursive: true });
+    await writeFile(
+      configPath,
+      ["version: 2", "behavior:", "  confirm_mode: lite", ""].join("\n"),
+      "utf8",
+    );
+    const taskPath = getTaskJsonPath(tempDir, "session-guard-task");
+    await mkdir(path.dirname(taskPath), { recursive: true });
+    await writeFile(
+      taskPath,
+      JSON.stringify({
+        type: "feature",
+        status: "IMPLEMENT",
+        created_at: "2026-07-27T00:00:00Z",
+        created_by: "codex",
+        last_agent: "codex",
+        stage_history: [
+          { stage: "IMPLEMENT", agent: "codex", entered_at: "2026-07-27T00:00:00Z" },
+        ],
+      }),
+      "utf8",
+    );
+    const sessionPath = path.join(tempDir, ".easy-coding", "sessions", "guard.json");
+    await mkdir(path.dirname(sessionPath), { recursive: true });
+    await writeFile(
+      sessionPath,
+      JSON.stringify({
+        current_task: "session-guard-task",
+        agent: "codex",
+        confirm_mode: "guard",
+      }),
+      "utf8",
+    );
+
+    expect(await migrateLegacyWorkflowState(tempDir)).toEqual({
+      tasksUpdated: 1,
+      sessionsUpdated: 1,
+    });
+
+    const task = JSON.parse(await readFile(taskPath, "utf8"));
+    expect(task).toMatchObject({
+      workflow_mode: "strict",
+      workflow_mode_confirmed_by: "upgrade-migration",
+      workflow_mode_legacy: true,
+    });
+    expect(task).not.toHaveProperty("workflow_mode_legacy_direct_edge");
+    const session = JSON.parse(await readFile(sessionPath, "utf8"));
+    expect(session).toMatchObject({
+      approval_mode: "guard",
+      workflow_mode: "adaptive",
+      workflow_mode_legacy_alias_override: true,
+    });
+    expect(session).not.toHaveProperty("confirm_mode");
+    expect(session).not.toHaveProperty("workflow_mode_legacy_confirm_override");
+  });
+
+  it("preserves an explicitly pending legacy direct edge", async () => {
+    const taskPath = getTaskJsonPath(tempDir, "pending-direct-task");
+    await mkdir(path.dirname(taskPath), { recursive: true });
+    await writeFile(
+      taskPath,
+      JSON.stringify({
+        type: "feature",
+        status: "IMPLEMENT",
+        created_at: "2026-07-27T00:00:00Z",
+        created_by: "codex",
+        last_agent: "codex",
+        stage_history: [
+          { stage: "IMPLEMENT", agent: "codex", entered_at: "2026-07-27T00:00:00Z" },
+        ],
+        pending_transition: {
+          from: "IMPLEMENT",
+          to: "VERIFICATION",
+          requested_at: "2026-07-27T00:01:00Z",
+          requested_by: "codex",
+        },
+      }),
+      "utf8",
+    );
+
+    expect(await migrateLegacyWorkflowState(tempDir)).toEqual({
+      tasksUpdated: 1,
+      sessionsUpdated: 0,
+    });
+
+    const task = JSON.parse(await readFile(taskPath, "utf8"));
+    expect(task).toMatchObject({
+      workflow_mode: "strict",
+      workflow_mode_legacy: true,
+      workflow_mode_legacy_direct_edge: true,
+    });
+  });
+
+  it("does not downgrade a user-frozen task mode from a legacy lite session", async () => {
+    const taskPath = getTaskJsonPath(tempDir, "strict-task");
+    await mkdir(path.dirname(taskPath), { recursive: true });
+    await writeFile(
+      taskPath,
+      JSON.stringify({
+        type: "feature",
+        status: "REVIEW",
+        created_at: "2026-07-27T00:00:00Z",
+        created_by: "codex",
+        last_agent: "codex",
+        stage_history: [
+          { stage: "REVIEW", agent: "codex", entered_at: "2026-07-27T00:00:00Z" },
+        ],
+        workflow_mode: "strict",
+        workflow_mode_confirmed_at: "2026-07-27T00:00:00Z",
+        workflow_mode_confirmed_by: "codex",
+      }),
+      "utf8",
+    );
+    const sessionPath = path.join(tempDir, ".easy-coding", "sessions", "legacy-lite.json");
+    await mkdir(path.dirname(sessionPath), { recursive: true });
+    await writeFile(
+      sessionPath,
+      JSON.stringify({
+        current_task: "strict-task",
+        created_at: "2026-07-27T00:00:00Z",
+        confirm_mode: "lite",
+      }),
+      "utf8",
+    );
+
+    expect(await migrateLegacyWorkflowState(tempDir)).toEqual({
+      tasksUpdated: 0,
+      sessionsUpdated: 1,
+    });
+
+    const task = JSON.parse(await readFile(taskPath, "utf8"));
+    expect(task.workflow_mode).toBe("strict");
+    expect(task.workflow_mode_confirmed_by).toBe("codex");
+    expect(task).not.toHaveProperty("workflow_mode_legacy");
+
+    const session = JSON.parse(await readFile(sessionPath, "utf8"));
+    expect(session).toMatchObject({
+      approval_mode: "guard",
+      workflow_mode: "fast",
+      workflow_mode_legacy_confirm_override: true,
+    });
+    expect(session).not.toHaveProperty("confirm_mode");
   });
 });

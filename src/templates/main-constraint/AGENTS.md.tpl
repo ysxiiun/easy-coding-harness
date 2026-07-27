@@ -11,13 +11,13 @@ user in the user's language.
 Start every work reply with the single Markdown blockquote status line injected by the hook,
 then a blank line. Do not render the machine breadcrumbs to the user.
 
-`{confirm-mode}` is the capitalized effective mode (`Approve`, `Guard`, `Lite`, or `Auto`); a session
-override takes precedence over the project mode.
+`{approval-mode}` is the effective approval mode and `{workflow-mode}` is the configured or
+task-frozen execution mode; session overrides take precedence over project settings.
 
-- Ready: > **Easy Coding** · **{confirm-mode}** · Ready · Use `ec-workflow` to start or resume a task, `ec-brainstorming` to brainstorm, or `ec-task-management` to manage tasks or session settings
-- Waiting init: > **Easy Coding** · **{confirm-mode}** · Waiting init · Use `ec-init` to initialize
-- Active task: > **Easy Coding** · **{confirm-mode}** · `{current-task}` · `{workflow-state}`
-- Handoff: > **Easy Coding** · **{confirm-mode}** · `{current-task}` · `{workflow-state}` · Handoff -> `{source-agent}`
+- Ready: > **Easy Coding** · **Approval: {approval-mode}** · **Workflow: {workflow-mode}** · Ready · Use `ec-workflow` to start or resume a task, `ec-brainstorming` to brainstorm, or `ec-task-management` to manage tasks or session settings
+- Waiting init: > **Easy Coding** · **Approval: {approval-mode}** · **Workflow: {workflow-mode}** · Waiting init · Use `ec-init` to initialize
+- Active task: > **Easy Coding** · **Approval: {approval-mode}** · **Workflow: {workflow-mode}** · `{current-task}` · `{workflow-state}`
+- Handoff: > **Easy Coding** · **Approval: {approval-mode}** · **Workflow: {workflow-mode}** · `{current-task}` · `{workflow-state}` · Handoff -> `{source-agent}`
 
 Skill names in the status line are bare names (`ec-init`, `ec-workflow`) and never include
 platform prefixes such as `/` or `$`. If no status line is injected, do not invent one.
@@ -31,7 +31,7 @@ Trigger Easy Coding skills with your platform prefix — Codex: `$ec-*`, Qoder: 
 - `ec-brainstorming` — design exploration before building (hard design gate)
 - `ec-analysis` `ec-implementing` `ec-reviewing` `ec-verification` — workflow stages
 - `ec-memory` — short/long memory archive
-- `ec-task-management` — task/session panel: list/create tasks and view/change the session confirm mode · `ec-task-close` — interrupt a task
+- `ec-task-management` — task/session panel and approval/workflow mode settings · `ec-task-close` — interrupt a task
 - `ec-no-harness` — bypass only Easy Coding for the current session
 - `ec-git` — git discipline · `ec-meta` — understand/customize the harness
 
@@ -39,11 +39,12 @@ First run `ec-init`; daily work goes through `ec-workflow`.
 
 ## Workflow discipline
 
-- Effective confirm mode is session override > project `behavior.confirm_mode` > `guard`.
-  `approve` confirms every legal edge except INIT -> ANALYSIS and MEMORY -> COMPLETE; `guard`
-  and `lite` confirm only ANALYSIS -> IMPLEMENT and VERIFICATION -> MEMORY; `auto` confirms none.
-  Guard/auto code flow chooses IMPLEMENT -> REVIEW; lite chooses IMPLEMENT -> VERIFICATION and
-  never runs REVIEW. Confirmation mode never changes scope, delivery form, or evidence gates.
+- Approval mode is session override > project `behavior.approval_mode` > `guard`; workflow mode
+  is session override > project `behavior.workflow_mode` > `adaptive`. Approval controls waiting;
+  workflow controls execution depth. ANALYSIS shows and freezes adaptive to fast/standard/strict.
+  Confirm approval waits only at ANALYSIS -> IMPLEMENT, then advances green later stages
+  automatically. Every new code task runs REVIEW; no mode changes scope, delivery form, or
+  evidence gates.
 - Confirmation-required edges use `pending_transition`; automatic edges use the restricted
   `auto-transition` API. A read-only task creates no test-strategy.md, never enters REVIEW,
   VERIFICATION, or MEMORY, and writes no task memory.
@@ -51,8 +52,8 @@ First run `ec-init`; daily work goes through `ec-workflow`.
   business branches. When a native user-choice tool is available, invoke it in the same turn with
   the complete gate. An ordinary gate offers "confirm entering/returning to the target stage"
   (recommended) and "hand off to another agent", with free-form Other for revisions. The special
-  approve-mode code IMPLEMENT gate must instead preserve enter REVIEW, skip to VERIFICATION, and
-  handoff, with free-form Other. Use a native choice without a text pre-fallback only when the tool
+  code IMPLEMENT gate must preserve enter REVIEW and handoff, with free-form Other. Use a native
+  choice without a text pre-fallback only when the tool
   explicitly guarantees an indefinite wait; disable or omit automatic timeout/resolution in that
   case. Otherwise pre-render the matching numbered fallback before invoking native choice once,
   so timeout cannot remove the user's path forward. Empty, dismissed, timed-out, or unparseable
@@ -68,8 +69,9 @@ First run `ec-init`; daily work goes through `ec-workflow`.
   without editing the skeleton, ask every unresolved decision during analysis, and wait. Only
   after all decisions are resolved may the agent fill the complete dev-spec.md. The final report
   contains neither `[阶段：ANALYSIS]` nor a `待用户决策` section.
-- For code tasks, VERIFICATION is a hard gate: lint + typecheck + test must pass on fresh
-  evidence, and coverage must match the test strategy, before completion.
+- REVIEW and VERIFICATION are fingerprinted hard gates. Review evidence must match the final
+  implementation; verification evidence must match final implementation and config. The frozen
+  workflow mode selects targeted, impacted, or full commands without weakening the green gate.
 - MEMORY combines short-memory creation and the conditional long-memory gate. Entry follows the
   effective confirmation mode; once memory processing completes, COMPLETE is automatic.
 - NO CODE-TASK COMPLETION CLAIMS WITHOUT FRESH VERIFICATION EVIDENCE.
@@ -82,7 +84,7 @@ First run `ec-init`; daily work goes through `ec-workflow`.
 
 - Workflow state operations go through `{{platform_config_dir}}/hooks/easy_coding_state.py`;
   do not hand-edit session files, `current_task`, task `status`, `stage_history`,
-  `pending_transition`, `memory_progress`, or `last_agent`.
+  `pending_transition`, workflow mode proposal/freeze fields, `memory_progress`, or `last_agent`.
 - The hook injects `[easy-coding:session-file:P]`; pass that path to the state script with
   `--session-file <P>` when changing the current task or stage.
 - Workflow session files live at `{{workflow_state_path}}`; the CLI only installs files and

@@ -44,7 +44,7 @@ beforeEach(async () => {
   await writeFile(
     configPath,
     [
-      "version: 2",
+      "version: 3",
       `harness_version: ${VERSION}`,
       "agents:",
       "  - codex",
@@ -52,7 +52,8 @@ beforeEach(async () => {
       "  id: ec-test",
       "  name: demo",
       "behavior:",
-      "  confirm_mode: guard",
+      "  approval_mode: guard",
+      "  workflow_mode: adaptive",
       "",
     ].join("\n"),
     "utf8",
@@ -66,25 +67,28 @@ afterEach(async () => {
 });
 
 describe("config command", () => {
-  it("interactively updates the project confirm mode", async () => {
-    promptMocks.select.mockResolvedValue("lite");
+  it("interactively updates project approval and workflow modes", async () => {
+    promptMocks.select.mockResolvedValueOnce("confirm").mockResolvedValueOnce("strict");
     promptMocks.confirm.mockResolvedValue(true);
 
     await config();
 
-    expect(await readFile(configPath, "utf8")).toContain("confirm_mode: lite");
+    const content = await readFile(configPath, "utf8");
+    expect(content).toContain("approval_mode: confirm");
+    expect(content).toContain("workflow_mode: strict");
     expect(promptMocks.outro).toHaveBeenCalledWith(
-      expect.stringContaining("Project confirm mode updated to lite"),
+      expect.stringContaining("Project modes updated: approval=confirm, workflow=strict"),
     );
   });
 
   it("leaves the config unchanged when confirmation is declined", async () => {
-    promptMocks.select.mockResolvedValue("approve");
+    promptMocks.select.mockResolvedValueOnce("approve").mockResolvedValueOnce("fast");
     promptMocks.confirm.mockResolvedValue(false);
 
     await config();
 
-    expect(await readFile(configPath, "utf8")).toContain("confirm_mode: guard");
+    expect(await readFile(configPath, "utf8")).toContain("approval_mode: guard");
+    expect(await readFile(configPath, "utf8")).toContain("workflow_mode: adaptive");
     expect(promptMocks.cancel).toHaveBeenCalledWith("Configuration cancelled.");
   });
 

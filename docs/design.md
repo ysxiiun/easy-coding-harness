@@ -30,24 +30,28 @@ easy-coding-harness 是从 Easy Coding Skill（v4.3.2）升级而来，而非另
 
 - **项目知识四层体系不变**：SOUL.md（身份层）→ RULES.md（约束层）→ ABSTRACT.md（认知层）→ memory/（记忆层），文件格式、读取顺序、作用域定义完全兼容。
 - **记忆系统 schema v2 不变**：短期记忆的 frontmatter 格式、滑动窗口机制（max 10 / keep 5）、长期记忆的三文件结构（MEMORY.md + BUSINESS.md + TECHNICAL.md）——已有项目的记忆文件可以直接复用。
-- **约束严格度可配置**：固定状态机、读写分离和 VERIFICATION 硬门始终保留；`approve / guard / lite / auto` 调整状态边确认范围，lite 额外跳过 REVIEW，但不改变验证证据要求。
+- **审批与执行深度正交**：固定状态机、读写分离、REVIEW 和 VERIFICATION 硬门始终保留；`approval_mode` 调整等待范围，`workflow_mode` 调整每个状态内部的执行深度。
 - **项目模式检测保留**：自动区分初创/迭代项目并调整行为策略，这是 easy-coding 独有的能力。
 
 从 Skill 升级到 Harness，用户的项目知识文件、记忆数据、编码规范零迁移成本。
 
-### 三、六工作阶段 + 分层确认模式约束编码流程
+### 三、六工作阶段 + 审批/工作流双模式约束编码流程
 
 三个对标项目（easy-coding、Trellis、superpowers）中**最严格的**控制系统。
 
-**状态机**：INIT → ANALYSIS → IMPLEMENT → REVIEW → VERIFICATION → MEMORY → COMPLETE。代码任务可明确跳过 REVIEW，但不可跳过 VERIFICATION；显式只读任务在 IMPLEMENT 展示完整报告后直接结束，不进入后续工作阶段。
+**状态机**：INIT → ANALYSIS → IMPLEMENT → REVIEW → VERIFICATION → MEMORY → COMPLETE。新代码任务不可跳过 REVIEW 或 VERIFICATION；显式只读任务在 IMPLEMENT 展示完整报告后直接结束。
 
-**确认模式 + 专项硬门控**：
+**双模式 + 专项硬门控**：
 
-1. **状态边确认**——INIT → ANALYSIS、MEMORY → COMPLETE 始终自动；approve 其余工作流边逐一确认，guard 与 lite 只确认 ANALYSIS → IMPLEMENT 与 VERIFICATION → MEMORY，auto 自动执行所有合法工作流边。guard/auto 的代码主链默认进入 REVIEW，lite 从 IMPLEMENT 直接进入 VERIFICATION；CLOSED 始终由显式关闭操作进入。
-2. **VERIFICATION 门控**——代码任务的 lint + typecheck + test 必须全部通过且是本轮新鲜证据。只读任务不进入该阶段。
-3. **MEMORY 长期门控**——MEMORY 先写短期记忆，再由状态 API 按阈值决定长期沉淀或 no-op；提示词不能绕过机械指令。
+1. **状态边审批**——INIT → ANALYSIS、MEMORY → COMPLETE 始终自动；approve 逐边确认，
+   guard 确认 ANALYSIS → IMPLEMENT 与 VERIFICATION → MEMORY，confirm 只确认
+   ANALYSIS → IMPLEMENT，之后在机械门禁通过后自动执行，auto 从开始即自动执行。
+   CLOSED 始终由显式关闭操作进入。
+2. **状态内深度**——Adaptive 在 ANALYSIS 结束时根据机械风险下限解析并冻结 Fast、Standard 或 Strict；冻结后只能升档。三个模式都运行完整代码状态链。
+3. **VERIFICATION 门控**——Fast 执行最小充分的定向检查，Standard 执行受影响范围的 lint/typecheck/test，Strict 执行项目适用的完整 lint/typecheck/test/build；所选模式要求的检查都必须留下当前指纹下的新鲜绿色证据。只读任务不进入该阶段。
+4. **MEMORY 长期门控**——MEMORY 先写短期记忆，再由状态 API 按阈值决定长期沉淀或 no-op；提示词不能绕过机械指令。
 
-**修复循环有范围守卫**：验收阶段的修改请求会对照 dev-spec 判断范围——范围内修复按生效模式回到 IMPLEMENT，approve 可重新选择 REVIEW 或 VERIFICATION，guard/auto 默认回到 REVIEW，lite 直接回到 VERIFICATION；范围外建议创建新任务。
+**修复循环有范围守卫**：验收阶段的修改请求会对照 dev-spec 判断范围——范围内修复回到 IMPLEMENT 并重新进入 REVIEW；范围外建议创建新任务。
 
 **CLOSED 是独立终态**：从任何阶段都可由用户中断到 CLOSED，且不执行记忆流程——未完成任务的记忆是脏数据。
 
@@ -189,7 +193,8 @@ INIT ─自动→ ANALYSIS → IMPLEMENT → REVIEW → VERIFICATION → MEMORY 
           +--- 重规划 --+          +--- 修复 ----+
                        ↑                         │
                        +------- 验收修复 --------+
-状态边 ──[approve / guard / lite / auto]──→ 目标阶段
+审批模式 ──[approve / guard / confirm / auto]──→ 状态边等待策略
+工作流模式 ──[adaptive => fast / standard / strict]──→ 状态内执行深度
 
 任何阶段 ──[用户主动中断]──→ CLOSED
 ```
@@ -198,10 +203,14 @@ INIT ─自动→ ANALYSIS → IMPLEMENT → REVIEW → VERIFICATION → MEMORY 
 
 #### 2.2 硬门控设计
 
-- **确认模式**：session 覆盖优先于项目 `behavior.confirm_mode`，缺失时为 `guard`。`approve` 除 INIT → ANALYSIS、MEMORY → COMPLETE 外逐边确认；`guard` 与 `lite` 只确认 ANALYSIS → IMPLEMENT、VERIFICATION → MEMORY；lite 禁止 IMPLEMENT → REVIEW；`auto` 自动执行全部合法工作流边。CLOSED 始终要求显式关闭操作。
-- **pending_transition**：仅确认模式要求人工确认时记录；自动边走受限 `auto-transition`。guard/auto 的代码主链从 IMPLEMENT 默认进入 REVIEW，lite 直接进入 VERIFICATION，approve 可选择是否 REVIEW。
-- **确认门展示**：存在人工确认边时，Agent 必须实际调用平台原生选项能力。普通确认门完整展示“确认进入/返回目标阶段”“交接给其他智能体”和 free-form Other；Approve 模式代码 IMPLEMENT 特殊门必须保留“进入 REVIEW”“跳过 REVIEW 进入 VERIFICATION”“交接”和 free-form Other。只有平台明确保证永久等待时，才可仅调用原生选择，并禁用或省略 timeout / auto-resolution；不能用较长的有限超时冒充永久等待。无法确认永久等待时，必须先在普通 assistant 文本中输出完整编号兜底，再调用一次原生选择，确保原生超时即使终止当前轮，文本门仍留在会话中。原生选择返回空值、被取消、超时或无法解析时保留 `pending_transition`，不重试原生框；若尚未预输出编号且控制权返回，则立即补充编号。用户稍后回复编号时，恢复流程必须先按当前 `pending_transition` 消费编号，再决定是否重新展示门禁；禁止重新唤起选择框或退化为单一“回复确认执行”提示。
-- **VERIFICATION**：lint + typecheck + test 必须全部通过，且必须是本轮新鲜执行的结果——上一轮的结果不算，"should pass" 不是证据。
+- **审批模式**：session 覆盖优先于项目 `behavior.approval_mode`，缺失时为 `guard`。
+  `approve` 逐边确认，`guard` 确认两个关键边，`confirm` 只确认 ANALYSIS → IMPLEMENT，
+  `auto` 自动执行全部合法边。所有自动边仍需满足机械质量门禁，CLOSED 始终要求显式
+  关闭。
+- **工作流模式**：session 覆盖优先于项目 `behavior.workflow_mode`，缺失时为 `adaptive`。ANALYSIS 保存 configured/selected/minimum/source/reasons 提案，进入 IMPLEMENT 时原子冻结为具体模式。
+- **pending_transition**：仅审批模式要求人工确认时记录；自动边走受限 `auto-transition`。所有新代码主链从 IMPLEMENT 进入 REVIEW。
+- **确认门展示**：存在人工确认边时，Agent 完整展示“确认进入/返回目标阶段”“交接给其他智能体”和 free-form Other。模式选择已包含在 ANALYSIS 方案中，用户可在风险下限之上修改。取消、超时或无法解析时保留 `pending_transition`。
+- **VERIFICATION**：Fast 运行最小充分的定向检查，Standard 运行受影响范围的 lint/typecheck/test，Strict 运行项目适用的完整 lint/typecheck/test/build；所选模式要求的检查必须绑定当前实现与配置指纹并全部通过，"should pass" 不是证据。
 - **MEMORY**：进入方式服从确认模式；进入后先写短期记忆，再执行长期记忆阈值门禁，完成后自动进入 COMPLETE。
 
 #### 2.3 启动序列
@@ -305,7 +314,7 @@ ec-analysis 是从需求到可执行方案的翻译器。
 
 ---
 
-显式 `doc` / `analysis` / `report` 无代码任务使用 `single` 空文件范围且不生成 `test-strategy.md`。子代理不得修改文件，必须在 `deliverable` 返回完整结果；主 Agent 原样展示后，通过受限的 IMPLEMENT → COMPLETE 自动边直接结束。状态 API 会校验匹配的 dispatch/result、零文件改动、非空 deliverable 和无遗留问题；此类任务不进入 REVIEW、VERIFICATION、MEMORY，也不写任务记忆。
+显式 `doc` / `analysis` / `report` 无代码任务使用 `single` 空文件范围且不生成 `test-strategy.md`。执行者不得修改文件，必须在 `deliverable` 返回完整结果；主 Agent 原样展示后，通过受限的 IMPLEMENT → COMPLETE 边结束。此类任务不进入 REVIEW、VERIFICATION、MEMORY，也不写任务记忆。
 
 ---
 
@@ -324,23 +333,35 @@ ec-analysis 是从需求到可执行方案的翻译器。
 #### 5.2 分级判定
 
 - `accept`：全部通过，推进到 VERIFICATION
-- `fix`：发现问题但可修，在 REVIEW 内派发修复并重新审查（最多 3 轮）
+- `fix`：发现问题但可修，在 REVIEW 内按语义单元合并修复，只复审受影响维度；同类
+  问题连续两轮仍存在时停止盲目返工，转为 `replan` 或 `blocked`
 - `replan`：方案本身有缺陷，回退 ANALYSIS
 - `blocked`：外部阻塞，暂停报告
 
 每个发现必须引用具体文件和行号——"looks good" 不是合格的审查意见。
 
-#### 5.3 强制双 reviewer
+#### 5.3 按工作流模式选择审查独立性
 
-无论变更规模，REVIEW 都并行派发正确性与规范性两个子代理，主 Agent 汇总后做判定。只读任务在 IMPLEMENT 展示报告后已直接结束，不进入 REVIEW。
+- `fast`：主 Agent 对最终 diff 做一次覆盖正确性、范围、测试和明显安全风险的自审。
+- `standard`：派发一个独立 reviewer，组合检查正确性、契约、测试和规范。
+- `strict`：至少派发两个独立维度，分别覆盖正确性/契约与规范/测试/安全；状态 API
+  要求当前实现指纹下至少两个不同维度全部通过。
+
+代码任务无论模式都进入 REVIEW；降低调度数量不等于删除检查维度。只读任务在
+IMPLEMENT 展示报告后已直接结束，不进入 REVIEW。
 
 ---
 
 ### 6. 验证闸门（ec-verification）
 
-#### 6.1 并行门禁
+#### 6.1 按影响面执行门禁
 
-lint、typecheck、test 三项检查**必须同时启动**，全部通过才放行。
+- `fast`：执行直接覆盖改动行为的最小命令和必要回归。
+- `standard`：执行受影响范围的 lint、typecheck、test 与全部必测项。
+- `strict`：执行项目适用的完整 lint、typecheck、test、build 门禁。
+
+相互独立且能实质节省时间的检查可以并行；不能为了并行而固定启动与当前项目或改动
+无关的命令。所有证据必须绑定最终实现与配置指纹，任一当前证据失败都不能放行。
 
 #### 6.2 测试覆盖校验
 
@@ -354,7 +375,7 @@ lint、typecheck、test 三项检查**必须同时启动**，全部通过才放�
 
 验证通过后进入用户验收窗口：
 - 用户满意 → 触发归档流程
-- 小修复（在 dev-spec 范围内）→ 回退 IMPLEMENT，完成后重新选择 REVIEW 或直接 VERIFICATION
+- 小修复（在 dev-spec 范围内）→ 回退 IMPLEMENT，完成后重新进入 REVIEW
 - 超出 dev-spec 范围 → 建议创建新任务
 - 取消 → ec-task-close
 
@@ -531,7 +552,7 @@ Claude Code 同样将 session 初始化限定在 `SessionStart`；Qoder 没有�
 | ec-task-close | 任务中断与关闭（确认意图 → 记录原因 → 清理状态） |
 | ec-no-harness | 当前 session 旁路 Easy Coding；保留任务状态与其他 skills/hooks |
 
-`ec-task-management` 的默认面板同时读取任务列表和 session snapshot。即使没有未完成任务，仍展示项目确认模式、session 覆盖和最终生效模式，并给出设置 `approve/guard/lite/auto` 或恢复项目默认值的对话入口；裸唤起只读，不自动写入覆盖值。
+`ec-task-management` 的默认面板同时读取任务列表和 session snapshot。即使没有未完成任务，仍展示项目/会话审批模式、配置工作流模式和任务冻结模式，并给出两类设置或恢复项目默认值的入口；裸唤起只读。
 
 ec-task-close 的关键设计：CLOSED 是终态，**不执行记忆流程**——未完成任务的记忆是脏数据。
 

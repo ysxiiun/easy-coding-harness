@@ -5,9 +5,14 @@ import type { AgentPlatform } from "../types/platform.js";
 import type { SupermoduleConfig } from "../types/supermodule.js";
 import { writeTextFile } from "./file-writer.js";
 
-export const CONFIG_SCHEMA_VERSION = 2;
-export const CONFIRM_MODES = ["approve", "guard", "lite", "auto"] as const;
-export type ConfirmMode = (typeof CONFIRM_MODES)[number];
+export const CONFIG_SCHEMA_VERSION = 3;
+export const APPROVAL_MODES = ["approve", "guard", "confirm", "auto"] as const;
+export const CONFIGURED_WORKFLOW_MODES = ["adaptive", "fast", "standard", "strict"] as const;
+export const CONCRETE_WORKFLOW_MODES = ["fast", "standard", "strict"] as const;
+export type ApprovalMode = (typeof APPROVAL_MODES)[number];
+export type ConfiguredWorkflowMode = (typeof CONFIGURED_WORKFLOW_MODES)[number];
+export type ConcreteWorkflowMode = (typeof CONCRETE_WORKFLOW_MODES)[number];
+export type LegacyConfirmMode = ApprovalMode | "lite";
 
 export interface EasyCodingConfig {
   version: number;
@@ -26,7 +31,8 @@ export interface EasyCodingConfig {
     auto_archive_days: number;
   };
   behavior: {
-    confirm_mode: ConfirmMode;
+    approval_mode: ApprovalMode;
+    workflow_mode: ConfiguredWorkflowMode;
   };
   supermodule?: SupermoduleConfig;
   [key: string]: unknown;
@@ -56,7 +62,8 @@ export function createDefaultConfig(params: {
       auto_archive_days: 30,
     },
     behavior: {
-      confirm_mode: "guard",
+      approval_mode: "guard",
+      workflow_mode: "adaptive",
     },
   };
   if (params.supermodule) {
@@ -125,46 +132,85 @@ export async function updateHarnessVersion(
   });
 }
 
-export function isConfirmMode(value: unknown): value is ConfirmMode {
-  return typeof value === "string" && CONFIRM_MODES.includes(value as ConfirmMode);
+export function isApprovalMode(value: unknown): value is ApprovalMode {
+  return typeof value === "string" && APPROVAL_MODES.includes(value as ApprovalMode);
 }
 
-export function resolveLegacyConfirmMode(config: EasyCodingConfig): ConfirmMode {
-  // 旧布尔值只在 CLI 迁移写入时读取；安装后的运行时只消费 confirm_mode。
+export function isConfiguredWorkflowMode(value: unknown): value is ConfiguredWorkflowMode {
+  return (
+    typeof value === "string" && CONFIGURED_WORKFLOW_MODES.includes(value as ConfiguredWorkflowMode)
+  );
+}
+
+export function resolveLegacyBehavior(config: EasyCodingConfig): {
+  approvalMode: ApprovalMode;
+  workflowMode: ConfiguredWorkflowMode;
+} {
   const behavior = (config.behavior ?? {}) as unknown as Record<string, unknown>;
-  if (isConfirmMode(behavior.confirm_mode)) {
-    return behavior.confirm_mode;
-  }
-  if (behavior.auto_mode === true) {
-    return "auto";
-  }
-  if (behavior.strict_confirm === true) {
-    return "approve";
-  }
-  return "guard";
+  const legacyLite = behavior.confirm_mode === "lite";
+  const approvalMode = isApprovalMode(behavior.approval_mode)
+    ? behavior.approval_mode
+    : isApprovalMode(behavior.confirm_mode)
+      ? behavior.confirm_mode
+      : behavior.auto_mode === true
+        ? "auto"
+        : behavior.strict_confirm === true
+          ? "approve"
+          : "guard";
+  const workflowMode = isConfiguredWorkflowMode(behavior.workflow_mode)
+    ? behavior.workflow_mode
+    : legacyLite
+      ? "fast"
+      : "adaptive";
+  return { approvalMode, workflowMode };
 }
 
-export async function setConfirmMode(
+export async function setBehaviorModes(
   filePath: string,
-  mode: ConfirmMode,
+  approvalMode: ApprovalMode,
+  workflowMode: ConfiguredWorkflowMode,
 ): Promise<EasyCodingConfig> {
   return updateConfigYaml(filePath, (config) => {
     const legacyBehavior = (config.behavior ?? {}) as unknown as Record<string, unknown>;
     const behavior = Object.fromEntries(
       Object.entries(legacyBehavior).filter(
-        ([key]) => key !== "strict_confirm" && key !== "auto_mode",
+        ([key]) =>
+          key !== "strict_confirm" &&
+          key !== "auto_mode" &&
+          key !== "confirm_mode" &&
+          key !== "approval_mode" &&
+          key !== "workflow_mode",
       ),
     );
-    behavior.confirm_mode = mode;
+    behavior.approval_mode = approvalMode;
+    behavior.workflow_mode = workflowMode;
     config.behavior = behavior as EasyCodingConfig["behavior"];
     config.version = CONFIG_SCHEMA_VERSION;
   });
 }
 
-export async function migrateConfirmModeConfig(filePath: string): Promise<EasyCodingConfig> {
+export async function migrateBehaviorConfig(filePath: string): Promise<EasyCodingConfig> {
   const config = await readConfigYaml(filePath);
-  return setConfirmMode(filePath, resolveLegacyConfirmMode(config));
+  const { approvalMode, workflowMode } = resolveLegacyBehavior(config);
+  return setBehaviorModes(filePath, approvalMode, workflowMode);
 }
+
+/** @deprecated Use setBehaviorModes. Kept for API compatibility during the 0.9 beta. */
+export async function setConfirmMode(
+  filePath: string,
+  mode: LegacyConfirmMode,
+): Promise<EasyCodingConfig> {
+  const config = await readConfigYaml(filePath);
+  const { workflowMode } = resolveLegacyBehavior(config);
+  return setBehaviorModes(
+    filePath,
+    mode === "lite" ? "guard" : mode,
+    mode === "lite" ? "fast" : workflowMode,
+  );
+}
+
+/** @deprecated Use migrateBehaviorConfig. */
+export const migrateConfirmModeConfig = migrateBehaviorConfig;
 
 export async function ensureProjectId(filePath: string): Promise<string> {
   let projectId = "";

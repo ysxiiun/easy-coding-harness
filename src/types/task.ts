@@ -9,7 +9,10 @@ export type Stage =
   | "CLOSED";
 
 export type TaskStatus = "PENDING" | Stage;
-export type ConfirmMode = "approve" | "guard" | "lite" | "auto";
+export type ApprovalMode = "approve" | "guard" | "confirm" | "auto";
+export type ConfiguredWorkflowMode = "adaptive" | "fast" | "standard" | "strict";
+export type WorkflowMode = Exclude<ConfiguredWorkflowMode, "adaptive">;
+export type WorkflowModeSource = "project" | "session" | "adaptive" | "user" | "migration";
 
 export interface StageHistoryEntry {
   stage: Stage;
@@ -50,7 +53,12 @@ export interface MemoryProgress {
 export interface SessionFile {
   current_task: string | null;
   created_at: string;
-  confirm_mode?: ConfirmMode;
+  approval_mode?: ApprovalMode;
+  workflow_mode?: ConfiguredWorkflowMode;
+  /** Pre-0.9 session compatibility; migrated on first write. */
+  confirm_mode?: ApprovalMode | "lite";
+  workflow_mode_legacy_confirm_override?: boolean;
+  workflow_mode_legacy_alias_override?: boolean;
   harness_disabled?: boolean;
   last_seen_task?: string | null;
   last_seen_stage?: string;
@@ -65,6 +73,28 @@ export interface TaskJson {
   last_agent: string;
   stage_history: StageHistoryEntry[];
   pending_transition?: PendingTransition;
+  workflow_mode_proposal?: {
+    configured_mode: ConfiguredWorkflowMode;
+    selected_mode: WorkflowMode;
+    minimum_mode: WorkflowMode;
+    source: WorkflowModeSource;
+    reasons: string[];
+    proposed_at: string;
+    proposed_by: string;
+  };
+  workflow_mode?: WorkflowMode;
+  workflow_mode_confirmed_at?: string;
+  workflow_mode_confirmed_by?: string;
+  workflow_mode_escalations?: Array<{
+    from: WorkflowMode;
+    to: WorkflowMode;
+    reason: string;
+    raised_at: string;
+    raised_by: string;
+  }>;
+  workflow_mode_legacy?: boolean;
+  workflow_mode_legacy_direct_edge?: boolean;
+  workflow_mode_legacy_review_bypass_fingerprint?: string;
   memory_progress?: MemoryProgress;
   confirmed_by_user?: boolean;
   test_strategy_confirmed?: boolean;
@@ -86,12 +116,16 @@ export interface Unit {
   depends_on: string[];
   rules_sections?: string[];
   abstract_modules?: string[];
+  acceptance_criteria?: string[];
+  test_points?: string[];
+  contracts?: string[];
+  risks?: string[];
 }
 
 export type ExecutionRecord =
   | {
       type: "plan";
-      strategy: "single" | "sequential" | "parallel"; // orchestration shape — all dispatch sub-agents
+      strategy: "single" | "sequential" | "parallel";
       units: Unit[];
       parallel_groups?: { level: number; units: string[] }[];
     }
@@ -103,13 +137,35 @@ export type ExecutionRecord =
       changed_files: string[];
       summary: string;
       deliverable?: string | null;
+      checks?: { command: string; passed: boolean; failures?: string[] }[];
       issues: unknown[];
       needs_attention: unknown[];
     }
   | {
       type: "review";
       dimension: string;
-      findings: { file: string; line: number; issue: string; severity: string }[];
+      passed: boolean;
+      implementation_fingerprint: string;
+      reviewer: string;
+      timestamp: string;
+      findings: {
+        file: string;
+        line: number;
+        issue: string;
+        severity: "error" | "warning" | "info";
+      }[];
     }
-  | { type: "verify"; check: string; passed: boolean; failures?: string[] }
+  | {
+      type: "verify";
+      check: string;
+      check_type: "lint" | "typecheck" | "test" | "build";
+      command?: string;
+      passed: boolean;
+      applicable?: boolean;
+      not_applicable_reason?: string;
+      implementation_fingerprint: string;
+      config_fingerprint: string;
+      timestamp: string;
+      failures?: string[];
+    }
   | { type: "handoff"; from: string; stage: Stage; summary: string; timestamp: string };

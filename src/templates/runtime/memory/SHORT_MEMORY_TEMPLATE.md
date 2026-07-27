@@ -5,6 +5,7 @@ source_task: MM-DD-task-slug
 date: YYYY-MM-DD
 task_type: feature | bugfix | refactor | perf | doc | workflow
 project_mode: startup | iteration
+workflow_mode: fast | standard | strict
 domain:
   - "{business domain or module}"
 tags:
@@ -38,6 +39,7 @@ target_long: BUSINESS | TECHNICAL | BOTH | NONE
 - Scope: {modules, pages, interfaces, or files involved}
 - Result: {completed / partially completed / not completed, with reasons}
 - Key Constraints: {encoding, compatibility, interface, spec, or user-specified constraints; "none" if none}
+- Workflow Mode: {frozen mode and why it was selected or escalated}
 
 ## Execution Evidence
 

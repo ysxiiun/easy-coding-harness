@@ -1,5 +1,5 @@
 import { execFileSync, execSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -47,6 +47,8 @@ async function writeReadyAnalysisArtifacts(root: string, taskId: string): Promis
       "U1：实现 fixture。",
       "### 测试策略",
       "执行 fixture 测试。",
+      "### Workflow Mode",
+      "配置 adaptive，选择 standard。",
       "### 风险与注意事项",
       "无额外风险。",
       "",
@@ -65,12 +67,28 @@ async function writeReadyAnalysisArtifacts(root: string, taskId: string): Promis
           type: "backend",
           files: ["src/example.ts"],
           depends_on: [],
+          acceptance_criteria: ["fixture works"],
+          test_points: ["fixture test"],
+          contracts: ["none"],
+          risks: ["none"],
         },
       ],
     })}\n`,
     "utf8",
   );
   await writeFile(path.join(taskDir, "test-strategy.md"), "# Test strategy\n", "utf8");
+  const taskPath = path.join(taskDir, "task.json");
+  const task = JSON.parse(await readFile(taskPath, "utf8"));
+  task.workflow_mode_proposal = {
+    configured_mode: "adaptive",
+    selected_mode: "standard",
+    minimum_mode: "fast",
+    source: "adaptive",
+    reasons: ["fixture"],
+    proposed_at: "2026-07-27T00:00:00Z",
+    proposed_by: "claude-code",
+  };
+  await writeFile(taskPath, JSON.stringify(task, null, 2), "utf8");
 }
 
 beforeEach(async () => {
@@ -91,34 +109,20 @@ describe("configureClaude", () => {
       "utf8",
     );
     expect(skill).toContain("`/ec-init`");
-    expect(skill).toContain("claim-task --session-file");
-    expect(skill).toContain("handoff-task --session-file");
-    expect(skill).toContain("request-transition --session-file");
-    expect(skill).toContain("confirm-transition --session-file");
-    expect(skill).toContain("MUST actually invoke it in the same turn");
-    expect(skill).toContain("Plain-text numbered choices are fallback only");
-    expect(skill).toContain("The code-task IMPLEMENT completion fallback must preserve");
-    expect(skill).toContain("Skip REVIEW and enter VERIFICATION");
-    expect(skill).toContain("An empty, dismissed, timed-out, or unparseable choice result");
-    expect(skill).toContain("disable or omit any timeout or auto-resolution setting");
+    expect(skill).toContain("approval_mode = approve|guard|confirm|auto");
+    expect(skill).toContain("workflow_mode = adaptive|fast|standard|strict");
+    expect(skill).toContain("New code tasks never skip REVIEW");
+    expect(skill).toContain("Preserve `pending_transition` on cancellation");
+    expect(skill).toContain("raise-workflow-mode");
+    expect(skill).toContain("review fingerprint");
+    expect(skill).toContain("verification fingerprint");
+    expect(skill).toContain("Missing: tell the user to run `easy-coding init`");
+    expect(skill).toContain("During VERIFICATION, return to IMPLEMENT before");
     expect(skill).toContain(
-      "render the matching complete numbered fallback as normal assistant text before",
+      "[easy-coding:lite-review-bypass-required:IMPLEMENT->REVIEW]",
     );
-    expect(skill).toContain("Do not invoke or retry the native choice again in that turn");
-    expect(skill).toContain("Before re-presenting any manual gate, consume a");
-    expect(skill).toContain("A bare Other");
-    expect(skill).toContain('Never report "no valid');
-    expect(skill).toContain('choice" and then show only a confirmation instruction');
-    expect(skill).toContain("Current task pointer exists");
-    expect(skill).toContain("No current task pointer");
-    expect(skill).toContain("edge with `effective_confirm_mode`");
-    expect(skill).toContain("automatic code path chooses REVIEW");
-    expect(skill).toContain("In `lite`, IMPLEMENT must enter VERIFICATION directly");
-    expect(skill).toContain(
-      "Handle\n   `[easy-coding:lite-review-bypass-required:IMPLEMENT->REVIEW]` before the generic pending-edge",
-    );
-    expect(skill).toContain("missing user-visible delivery keeps");
-    expect(skill).not.toContain("before re-walking\n  REVIEW -> VERIFICATION");
+    expect(skill).toContain("one-time `workflow_mode_legacy_direct_edge`");
+    expect(skill).not.toContain("Skip REVIEW");
     expect(skill).not.toContain("open the target agent");
     expect(skill).not.toContain("next_agent");
     expect(skill).not.toContain("{{");
@@ -135,38 +139,19 @@ describe("configureClaude", () => {
       path.join(tempDir, ".claude", "skills", "ec-analysis", "SKILL.md"),
       "utf8",
     );
-    expect(analysisSkill).toContain("Resolve the decision gate");
-    expect(analysisSkill).toContain("Do not fill dev-spec.md");
-    expect(analysisSkill).toContain("all 12 must be present");
-    expect(analysisSkill).toContain("explicitly no-code");
-    expect(analysisSkill).toContain("MUST NOT create\n   `test-strategy.md`");
-    expect(analysisSkill).toContain("ANALYSIS -> IMPLEMENT choice gate (hard)");
-    expect(analysisSkill).toContain("Confirm entering IMPLEMENT (recommended)");
-    expect(analysisSkill).toContain("Hand off to another agent");
-    expect(analysisSkill).toContain("Other — use the native free-form Other input");
-    expect(analysisSkill).toContain("disable or omit any timeout or auto-resolution setting");
-    expect(analysisSkill).toContain("render all three numbered branches as");
-    expect(analysisSkill).toContain("persistent timeout\nfallback");
-    expect(analysisSkill).toContain("do not invoke or retry native choice in that turn");
-    const planExampleMatch = analysisSkill.match(/```json\n([^\n]+)\n```/);
-    expect(planExampleMatch).not.toBeNull();
-    const planExample = JSON.parse(planExampleMatch?.[1] ?? "{}") as {
-      units: Array<{ id: string; type?: string }>;
-      parallel_groups: Array<{ units: string[] }>;
-    };
-    const exampleUnitIds = planExample.units.map((unit) => unit.id).sort();
-    const groupedUnitIds = planExample.parallel_groups.flatMap((group) => group.units).sort();
-    expect(groupedUnitIds).toEqual(exampleUnitIds);
-    expect(planExample.units.every((unit) => Boolean(unit.type))).toBe(true);
+    expect(analysisSkill).toContain("Progressive context loading");
+    expect(analysisSkill).toContain("propose-workflow-mode");
+    expect(analysisSkill).toContain("mechanical minimum");
+    expect(analysisSkill).toContain("acceptance_criteria");
+    expect(analysisSkill).toContain("No transition without a valid workflow proposal");
 
     const implementingSkill = await readFile(
       path.join(tempDir, ".claude", "skills", "ec-implementing", "SKILL.md"),
       "utf8",
     );
-    expect(implementingSkill).toContain("output the complete `deliverable` to the user");
-    expect(implementingSkill).toContain("Never replace,\n   truncate, or hide it");
-    expect(implementingSkill).toContain("request COMPLETE in approve mode or auto-transition");
-    expect(implementingSkill).toContain("followed the effective confirm mode");
+    expect(implementingSkill).toContain("A single low-risk unit may be implemented inline");
+    expect(implementingSkill).toContain("acceptance_criteria");
+    expect(implementingSkill).toContain("Code tasks enter REVIEW");
 
     const implementerAgent = await readFile(
       path.join(tempDir, ".claude", "agents", "ec-implementer.md"),
@@ -179,7 +164,9 @@ describe("configureClaude", () => {
       path.join(tempDir, ".claude", "skills", "ec-reviewing", "SKILL.md"),
       "utf8",
     );
-    expect(reviewingSkill).toContain("auto-complete from IMPLEMENT and never enter REVIEW");
+    expect(reviewingSkill).toContain("Every new code task enters REVIEW");
+    expect(reviewingSkill).toContain("implementation_fingerprint");
+    expect(reviewingSkill).toContain("two consecutive rounds");
     expect(reviewingSkill).not.toContain("Deliverable mode");
 
     const devSpecSkeleton = await readFile(
@@ -195,17 +182,11 @@ describe("configureClaude", () => {
       path.join(tempDir, ".claude", "skills", "ec-task-management", "SKILL.md"),
       "utf8",
     );
-    expect(taskManagementSkill).toContain("list-tasks --agent");
-    expect(taskManagementSkill).toContain("claim-task --session-file");
-    expect(taskManagementSkill).toContain("previous_agent");
-    expect(taskManagementSkill).toContain("take over");
-    expect(taskManagementSkill).toContain("show the full task and session\npanel");
-    expect(taskManagementSkill).toContain("snapshot --session-file <P>");
-    expect(taskManagementSkill).toContain(
-      "Never omit the confirm-mode section, even when the unfinished task list is empty",
-    );
-    expect(taskManagementSkill).toContain("set-confirm-mode --session-file <P>");
-    expect(taskManagementSkill).toContain("clear-confirm-mode --session-file <P>");
+    expect(taskManagementSkill).toContain("project_approval_mode");
+    expect(taskManagementSkill).toContain("configured_workflow_mode");
+    expect(taskManagementSkill).toContain("set-approval-mode");
+    expect(taskManagementSkill).toContain("set-workflow-mode");
+    expect(taskManagementSkill).toContain("raise-workflow-mode");
     expect(taskManagementSkill).not.toContain("{{");
 
     const gitSkill = await readFile(
@@ -257,7 +238,7 @@ describe("configureClaude", () => {
     expect(main).toContain("easy-coding-harness generated");
     expect(main).toContain("single Markdown blockquote status line");
     expect(main).toContain(
-      "- Ready: > **Easy Coding** · **{confirm-mode}** · Ready · Use `ec-workflow` to start or resume a task, `ec-brainstorming` to brainstorm, or `ec-task-management` to manage tasks or session settings",
+      "- Ready: > **Easy Coding** · **Approval: {approval-mode}** · **Workflow: {workflow-mode}** · Ready",
     );
     expect(main).not.toContain("[ Easy Coding ] ready");
     expect(main).not.toContain("tasks``");
@@ -266,11 +247,12 @@ describe("configureClaude", () => {
     expect(main).toContain("`/ec-meta`");
     expect(main).toContain("`/ec-no-harness`");
     expect(main).toContain("`pending_transition`");
-    expect(main).toContain("project `behavior.confirm_mode`");
+    expect(main).toContain("project `behavior.approval_mode`");
+    expect(main).toContain("project `behavior.workflow_mode`");
     expect(main).toContain("`auto-transition`");
-    expect(main).toContain("lite chooses IMPLEMENT -> VERIFICATION");
+    expect(main).toContain("Every new code task runs REVIEW");
     expect(main).toContain("A confirmation-required boundary is not fully presented");
-    expect(main).toContain("approve-mode code IMPLEMENT gate must instead preserve");
+    expect(main).toContain("code IMPLEMENT gate must preserve enter REVIEW");
     expect(main).toContain("explicitly guarantees an indefinite wait");
     expect(main).toContain("pre-render the matching numbered fallback");
     expect(main).toContain("consume a matching\n  numbered reply against the stored edge");
@@ -281,8 +263,9 @@ describe("configureClaude", () => {
       path.join(tempDir, ".claude", "skills", "ec-verification", "SKILL.md"),
       "utf8",
     );
-    expect(verificationSkill).toContain("request-transition --stage MEMORY");
-    expect(verificationSkill).toContain("guard/auto default to REVIEW");
+    expect(verificationSkill).toContain("evidence-fingerprints");
+    expect(verificationSkill).toContain("implementation_fingerprint");
+    expect(verificationSkill).toContain("config_fingerprint");
     expect(verificationSkill).not.toContain("then re-REVIEW");
     expect(verificationSkill).not.toContain("MEMORY_SHORT");
     expect(verificationSkill).not.toContain("MEMORY_LONG");
@@ -381,7 +364,7 @@ describe("configureClaude", () => {
       encoding: "utf8",
     });
     expect(stdout).toContain(
-      "> **Easy Coding** · **Guard** · Waiting init · Use `ec-init` to initialize",
+      "> **Easy Coding** · **Approval: Guard** · **Workflow: Adaptive** · Waiting init · Use `ec-init` to initialize",
     );
     expect(stdout).toContain("[workflow-state:idle]");
     expect(stdout).toContain("[easy-coding:init-required]");
@@ -408,7 +391,7 @@ describe("configureClaude", () => {
     });
 
     expect(stdout).toContain(
-      "> **Easy Coding** · **Guard** · Ready · Use `ec-workflow` to start or resume a task, `ec-brainstorming` to brainstorm, or `ec-task-management` to manage tasks or session settings",
+      "> **Easy Coding** · **Approval: Guard** · **Workflow: Adaptive** · Ready · Use `ec-workflow` to start or resume a task, `ec-brainstorming` to brainstorm, or `ec-task-management` to manage tasks or session settings",
     );
     expect(stdout).toContain("[workflow-state:idle]");
   });
@@ -425,7 +408,7 @@ describe("configureClaude", () => {
     });
 
     expect(stdout).toContain(
-      "> **Easy Coding** · **Guard** · Ready · Use `ec-workflow` to start or resume a task, `ec-brainstorming` to brainstorm, or `ec-task-management` to manage tasks or session settings",
+      "> **Easy Coding** · **Approval: Guard** · **Workflow: Adaptive** · Ready · Use `ec-workflow` to start or resume a task, `ec-brainstorming` to brainstorm, or `ec-task-management` to manage tasks or session settings",
     );
     expect(stdout).not.toContain("tasks`");
     expect(stdout).toContain("[workflow-state:idle]");
@@ -500,7 +483,9 @@ describe("configureClaude", () => {
       encoding: "utf8",
     });
 
-    expect(stdout).toContain("> **Easy Coding** · **Guard** · Ready · Use `ec-workflow`");
+    expect(stdout).toContain(
+      "> **Easy Coding** · **Approval: Guard** · **Workflow: Adaptive** · Ready · Use `ec-workflow`",
+    );
     expect(stdout).toContain("[workflow-state:idle]");
     expect(stdout).not.toContain("06-12-active");
   });
@@ -552,7 +537,7 @@ describe("configureClaude", () => {
     });
 
     expect(stdout).toContain(
-      "> **Easy Coding** · **Guard** · `06-10-demo` · `IMPLEMENT` · Handoff -> `codex`",
+      "> **Easy Coding** · **Approval: Guard** · **Workflow: Adaptive** · `06-10-demo` · `IMPLEMENT` · Handoff -> `codex`",
     );
     expect(stdout).toContain("[workflow-state:IMPLEMENT]");
     expect(stdout).toContain("[current-task:06-10-demo]");
@@ -613,7 +598,9 @@ describe("configureClaude", () => {
     });
 
     expect(stdout).toContain('"hookEventName": "UserPromptSubmit"');
-    expect(stdout).toContain("> **Easy Coding** · **Guard** · `06-26-analysis` · `ANALYSIS`");
+    expect(stdout).toContain(
+      "> **Easy Coding** · **Approval: Guard** · **Workflow: Adaptive** · `06-26-analysis` · `ANALYSIS`",
+    );
     expect(stdout).toContain("[workflow-state:ANALYSIS]");
     expect(stdout).toContain("[current-task:06-26-analysis]");
   });
@@ -642,7 +629,9 @@ describe("configureClaude", () => {
       encoding: "utf8",
     });
 
-    expect(stdout).toContain("> **Easy Coding** · **Guard** · `missing-task` · `MISSING`");
+    expect(stdout).toContain(
+      "> **Easy Coding** · **Approval: Guard** · **Workflow: Adaptive** · `missing-task` · `MISSING`",
+    );
     expect(stdout).toContain("Use `ec-workflow` to start or resume a task");
     expect(stdout).toContain("[workflow-state:idle]");
     expect(stdout).toContain("[current-task:missing-task]");
@@ -702,7 +691,9 @@ describe("configureClaude", () => {
       encoding: "utf8",
     });
 
-    expect(stdout).toContain("> **Easy Coding** · **Guard** · Ready · Use `ec-workflow`");
+    expect(stdout).toContain(
+      "> **Easy Coding** · **Approval: Guard** · **Workflow: Adaptive** · Ready · Use `ec-workflow`",
+    );
     expect(stdout).toContain("[workflow-state:idle]");
     expect(stdout).not.toContain("[current-task:06-12-done]");
     expect(stdout).not.toContain("[current-task:06-12-active]");
@@ -761,7 +752,9 @@ describe("configureClaude", () => {
       encoding: "utf8",
     });
 
-    expect(stdout).toContain("> **Easy Coding** · **Guard** · `06-25-confirm` · `ANALYSIS`");
+    expect(stdout).toContain(
+      "> **Easy Coding** · **Approval: Guard** · **Workflow: Adaptive** · `06-25-confirm` · `ANALYSIS`",
+    );
     expect(stdout).toContain("[workflow-state:ANALYSIS]");
     expect(stdout).toContain("[easy-coding:pending-transition:ANALYSIS->IMPLEMENT]");
     const task = JSON.parse(
@@ -827,7 +820,9 @@ describe("configureClaude", () => {
       encoding: "utf8",
     });
 
-    expect(stdout).toContain("> **Easy Coding** · **Guard** · `06-25-revise` · `ANALYSIS`");
+    expect(stdout).toContain(
+      "> **Easy Coding** · **Approval: Guard** · **Workflow: Adaptive** · `06-25-revise` · `ANALYSIS`",
+    );
     expect(stdout).toContain("[workflow-state:ANALYSIS]");
     expect(stdout).toContain("[easy-coding:pending-transition:ANALYSIS->IMPLEMENT]");
     const task = JSON.parse(
@@ -903,7 +898,9 @@ describe("configureClaude", () => {
         input: JSON.stringify({ cwd: tempDir, prompt }),
         encoding: "utf8",
       });
-      expect(stdout).toContain("> **Easy Coding** · **Guard** · `06-25-discuss` · `ANALYSIS`");
+      expect(stdout).toContain(
+        "> **Easy Coding** · **Approval: Guard** · **Workflow: Adaptive** · `06-25-discuss` · `ANALYSIS`",
+      );
       expect(stdout).toContain("[easy-coding:pending-transition:ANALYSIS->IMPLEMENT]");
     }
 
@@ -964,7 +961,9 @@ describe("configureClaude", () => {
       encoding: "utf8",
     });
 
-    expect(stdout).toContain("> **Easy Coding** · **Guard** · `06-25-verify` · `VERIFICATION`");
+    expect(stdout).toContain(
+      "> **Easy Coding** · **Approval: Guard** · **Workflow: Adaptive** · `06-25-verify` · `VERIFICATION`",
+    );
     expect(stdout).toContain("[workflow-state:VERIFICATION]");
     expect(stdout).toContain("[easy-coding:pending-transition:VERIFICATION->MEMORY]");
     const task = JSON.parse(
@@ -1024,7 +1023,9 @@ describe("configureClaude", () => {
       encoding: "utf8",
     });
 
-    expect(stdout).toContain("> **Easy Coding** · **Guard** · `06-25-review` · `REVIEW`");
+    expect(stdout).toContain(
+      "> **Easy Coding** · **Approval: Guard** · **Workflow: Adaptive** · `06-25-review` · `REVIEW`",
+    );
     expect(stdout).toContain("[workflow-state:REVIEW]");
     const task = JSON.parse(
       await readFile(
@@ -1067,7 +1068,7 @@ describe("configureClaude", () => {
     };
     expect(createOutput.status).toBe("INIT");
     expect(createOutput.status_line).toContain(
-      "> **Easy Coding** · **Guard** · `06-12-api` · `INIT`",
+      "> **Easy Coding** · **Approval: Guard** · **Workflow: Adaptive** · `06-12-api` · `INIT`",
     );
     expect(createOutput.status_context).toContain("[workflow-state:INIT]");
     expect(createOutput.status_context).toContain("[current-task:06-12-api]");
@@ -1075,6 +1076,58 @@ describe("configureClaude", () => {
     const stages = ["ANALYSIS", "IMPLEMENT", "REVIEW", "VERIFICATION", "MEMORY", "COMPLETE"];
     const automaticStages = new Set(["ANALYSIS", "REVIEW", "VERIFICATION", "COMPLETE"]);
     for (const stage of stages) {
+      if (stage === "VERIFICATION" || stage === "MEMORY") {
+        const fingerprints = JSON.parse(
+          execFileSync(
+            "python3",
+            [
+              stateApi,
+              "evidence-fingerprints",
+              "--session-file",
+              sessionFile,
+              "--agent",
+              "claude-code",
+            ],
+            { cwd: tempDir, encoding: "utf8" },
+          ),
+        ) as {
+          implementation_fingerprint: string;
+          config_fingerprint: string;
+        };
+        const record =
+          stage === "VERIFICATION"
+            ? {
+                type: "review",
+                dimension: "integration",
+                passed: true,
+                reviewer: "claude-code",
+                implementation_fingerprint: fingerprints.implementation_fingerprint,
+                timestamp: "2026-07-27T00:00:00Z",
+                findings: [],
+              }
+            : {
+                type: "verify",
+                check: "integration fixture",
+                check_type: "test",
+                command: "fixture",
+                passed: true,
+                applicable: true,
+                implementation_fingerprint: fingerprints.implementation_fingerprint,
+                config_fingerprint: fingerprints.config_fingerprint,
+                timestamp: "2026-07-27T00:00:00Z",
+              };
+        await appendFile(
+          path.join(
+            tempDir,
+            ".easy-coding",
+            "tasks",
+            "06-12-api",
+            "execution.jsonl",
+          ),
+          `${JSON.stringify(record)}\n`,
+          "utf8",
+        );
+      }
       if (stage === "COMPLETE") {
         const memoryId = "SM-019f69d3-5c86-7a10-87a1-7f1774ccb959";
         const memoryName = `${memoryId}_20260612_fixture.md`;
@@ -1176,12 +1229,15 @@ describe("configureClaude", () => {
       };
       if (stage === "COMPLETE") {
         expect(transitionOutput.status).toBe("idle");
-        expect(transitionOutput.status_line).toContain("> **Easy Coding** · **Guard** · Ready");
+        expect(transitionOutput.status_line).toContain(
+          "> **Easy Coding** · **Approval: Guard** · **Workflow: Adaptive** · Ready",
+        );
         expect(transitionOutput.status_context).toContain("[workflow-state:idle]");
       } else {
         expect(transitionOutput.status).toBe(stage);
+        const expectedWorkflow = stage === "ANALYSIS" ? "Adaptive" : "Standard";
         expect(transitionOutput.status_line).toContain(
-          `> **Easy Coding** · **Guard** · \`06-12-api\` · \`${stage}\``,
+          `> **Easy Coding** · **Approval: Guard** · **Workflow: ${expectedWorkflow}** · \`06-12-api\` · \`${stage}\``,
         );
         expect(transitionOutput.status_context).toContain(`[workflow-state:${stage}]`);
       }
@@ -1252,7 +1308,9 @@ describe("configureClaude", () => {
       input: "{}",
       encoding: "utf8",
     });
-    expect(stdout).toContain("> **Easy Coding** · **Guard** · Ready · Use `ec-workflow`");
+    expect(stdout).toContain(
+      "> **Easy Coding** · **Approval: Guard** · **Workflow: Adaptive** · Ready · Use `ec-workflow`",
+    );
     expect(stdout).toContain("[workflow-state:idle]");
   });
 
