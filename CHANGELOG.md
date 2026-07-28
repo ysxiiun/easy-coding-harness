@@ -6,6 +6,18 @@
 - `y`：常规功能升级
 - `z`：日常 bug 修复
 
+## 0.9.0
+
+- 正式发布相互独立的 `approval_mode` 与 `workflow_mode`：审批等待不再与执行深度
+  耦合，新增仅在 ANALYSIS → IMPLEMENT 确认一次的 `confirm` 审批模式，并默认使用
+  `adaptive` 在分析结束时自动选择、展示和冻结工作流模式。
+- 保留完整代码任务状态链，所有新代码任务均进入 REVIEW；通过 `fast`、`standard`、
+  `strict` 调整各状态内部的上下文加载、审查独立性、验证范围与记忆深度，在减少
+  Token、时间和重复返工的同时维持机械质量下限。
+- 正式启用实现与配置指纹绑定的 REVIEW/VERIFICATION 证据、语义单元返工与连续失败
+  重分析机制；配置 Schema 升至 3，并完整兼容旧 `lite`、approve、guard、auto 及
+  0.9 之前在途任务的迁移语义。
+
 ## 0.9.0-beta.0
 
 - 将单一 `behavior.confirm_mode` 拆分为 `behavior.approval_mode` 与
