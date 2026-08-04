@@ -87,6 +87,7 @@ DEFAULT_SHORT_TERM_KEEP = 5
 SESSION_STALE_THRESHOLD_HOURS = 30 * 24
 SESSION_COMPONENT_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
 SESSION_AGENT_NAMESPACES = {"claude-code", "codex", "qoder", "unknown"}
+CODEX_AGENT_PATH_PATTERN = re.compile(r"^/root(?:/[a-z0-9._-]+)*$")
 LEGACY_STATE_LOCK_TIMEOUT_SECONDS = 5.0
 LEGACY_STATE_LOCK_STALE_SECONDS = 60.0
 LEGACY_STATE_LOCK_POLL_SECONDS = 0.02
@@ -153,9 +154,24 @@ def short_memory_id_sort_key(memory_id: str) -> tuple[int, str]:
     return (2, memory_id)
 
 
+def normalize_agent_identity(agent: str | None) -> str:
+    raw_agent = str(agent or "unknown").strip()
+    normalized = raw_agent.lower()
+    # Codex 协作树中的 /root 路径表示 Codex 内部执行者，不是一个新的跨平台 Agent。
+    if CODEX_AGENT_PATH_PATTERN.fullmatch(normalized):
+        return "codex"
+    if normalized in SESSION_AGENT_NAMESPACES:
+        return normalized
+    return raw_agent
+
+
 def normalize_session_agent(agent: str | None) -> str:
-    normalized = str(agent or "unknown").strip().lower()
+    normalized = normalize_agent_identity(agent)
     return normalized if normalized in SESSION_AGENT_NAMESPACES else "unknown"
+
+
+def agents_equivalent(first: str | None, second: str | None) -> bool:
+    return normalize_agent_identity(first) == normalize_agent_identity(second)
 
 
 def detect_runtime_agent() -> str:
@@ -2046,7 +2062,7 @@ def build_status_line(
         status = str(state["status"])
         line = f"{status_brand} · `{task_id}` · `{status}`"
         last_agent = state.get("last_agent")
-        if agent and last_agent and last_agent != agent:
+        if agent and last_agent and not agents_equivalent(last_agent, agent):
             line += f" · Handoff -> `{last_agent}`"
         if state["is_terminal"] or state["task_missing"]:
             line += f" · {HELP_SUFFIX}"
@@ -2090,7 +2106,7 @@ def build_machine_breadcrumbs(
         if state["task_missing"]:
             lines.append(f"[easy-coding:current-task-missing:{task_id}]")
         last_agent = state.get("last_agent")
-        if agent and last_agent and last_agent != agent:
+        if agent and last_agent and not agents_equivalent(last_agent, agent):
             lines.append(f"[easy-coding:handoff-from:{last_agent}]")
         pending = state.get("pending_transition")
         if isinstance(pending, dict):
@@ -2200,7 +2216,7 @@ def task_claim_action(task: dict, agent: str | None) -> str | None:
     if status in TERMINAL_STATUSES or not agent:
         return None
     last_agent = task.get("last_agent")
-    return "continue" if not last_agent or last_agent == agent else "takeover"
+    return "continue" if not last_agent or agents_equivalent(last_agent, agent) else "takeover"
 
 
 def list_tasks(root: Path, agent: str | None = None) -> list[dict]:
@@ -2459,7 +2475,11 @@ def claim_task(root: Path, task_id: str, agent: str, session_file: str | Path | 
         raise StateError(f"Cannot claim terminal task: {task_id}")
 
     previous_agent = task.get("last_agent")
-    action = "continue" if not previous_agent or previous_agent == agent else "takeover"
+    action = (
+        "continue"
+        if not previous_agent or agents_equivalent(previous_agent, agent)
+        else "takeover"
+    )
     latest_handoff = latest_handoff_record(root, task_id)
     task["last_agent"] = agent
     write_task(root, task_id, task)
@@ -3324,21 +3344,25 @@ def main() -> int:
         root = resolve_root(getattr(args, "cwd", None))
         session_file = getattr(args, "session_file", None)
         command = args.command or "snapshot"
-        agent = normalize_session_agent(getattr(args, "agent", None) or detect_runtime_agent())
+        agent = normalize_agent_identity(
+            getattr(args, "agent", None) or detect_runtime_agent()
+        )
+        session_agent = normalize_session_agent(agent)
+        visible_agent = None if agent == "unknown" else agent
         if session_file is None and command == "project-init-complete":
             raise StateError(
                 "project-init-complete requires --session-file from the current hook context."
             )
         if session_file is None and command not in {"list-tasks", "memory-new-id"}:
-            if agent == "unknown":
+            if session_agent == "unknown":
                 raise StateError(
                     "Cannot resolve the logical session. Pass --session-file or --agent."
                 )
-            _, session_file = ensure_hook_session(root, {}, agent)
+            _, session_file = ensure_hook_session(root, {}, session_agent)
         if command == "snapshot":
             emit(snapshot_state(root, session_file))
         elif command == "list-tasks":
-            emit({"tasks": list_tasks(root, getattr(args, "agent", None))})
+            emit({"tasks": list_tasks(root, visible_agent)})
         elif command == "create-task":
             emit(
                 attach_status_context(
@@ -3348,11 +3372,11 @@ def main() -> int:
                         args.task_id,
                         args.type,
                         args.title,
-                        args.agent,
+                        agent,
                         not args.no_set_current,
                         session_file,
                     ),
-                    args.agent,
+                    agent,
                     session_file,
                 )
             )
@@ -3360,8 +3384,8 @@ def main() -> int:
             emit(
                 attach_status_context(
                     root,
-                    set_current_task(root, args.task_id, args.agent, session_file),
-                    args.agent,
+                    set_current_task(root, args.task_id, agent, session_file),
+                    agent,
                     session_file,
                 )
             )
@@ -3369,8 +3393,8 @@ def main() -> int:
             emit(
                 attach_status_context(
                     root,
-                    clear_current_task(root, args.agent, session_file),
-                    args.agent,
+                    clear_current_task(root, agent, session_file),
+                    agent,
                     session_file,
                 )
             )
@@ -3378,8 +3402,8 @@ def main() -> int:
             emit(
                 attach_status_context(
                     root,
-                    set_session_approval_mode(root, args.mode, args.agent, session_file),
-                    args.agent,
+                    set_session_approval_mode(root, args.mode, agent, session_file),
+                    agent,
                     session_file,
                 )
             )
@@ -3387,8 +3411,8 @@ def main() -> int:
             emit(
                 attach_status_context(
                     root,
-                    set_session_legacy_confirm_mode(root, args.mode, args.agent, session_file),
-                    args.agent,
+                    set_session_legacy_confirm_mode(root, args.mode, agent, session_file),
+                    agent,
                     session_file,
                 )
             )
@@ -3396,8 +3420,8 @@ def main() -> int:
             emit(
                 attach_status_context(
                     root,
-                    clear_session_approval_mode(root, args.agent, session_file),
-                    args.agent,
+                    clear_session_approval_mode(root, agent, session_file),
+                    agent,
                     session_file,
                 )
             )
@@ -3405,8 +3429,8 @@ def main() -> int:
             emit(
                 attach_status_context(
                     root,
-                    clear_session_legacy_confirm_mode(root, args.agent, session_file),
-                    args.agent,
+                    clear_session_legacy_confirm_mode(root, agent, session_file),
+                    agent,
                     session_file,
                 )
             )
@@ -3414,8 +3438,8 @@ def main() -> int:
             emit(
                 attach_status_context(
                     root,
-                    set_session_workflow_mode(root, args.mode, args.agent, session_file),
-                    args.agent,
+                    set_session_workflow_mode(root, args.mode, agent, session_file),
+                    agent,
                     session_file,
                 )
             )
@@ -3423,8 +3447,8 @@ def main() -> int:
             emit(
                 attach_status_context(
                     root,
-                    clear_session_workflow_mode(root, args.agent, session_file),
-                    args.agent,
+                    clear_session_workflow_mode(root, agent, session_file),
+                    agent,
                     session_file,
                 )
             )
@@ -3439,11 +3463,11 @@ def main() -> int:
                         args.minimum,
                         args.source,
                         args.reason,
-                        args.agent,
+                        agent,
                         args.task_id,
                         session_file,
                     ),
-                    args.agent,
+                    agent,
                     session_file,
                 )
             )
@@ -3458,7 +3482,7 @@ def main() -> int:
                         "minimum_mode": minimum_mode,
                         "reasons": reasons,
                     },
-                    args.agent,
+                    visible_agent,
                     session_file,
                 )
             )
@@ -3470,11 +3494,11 @@ def main() -> int:
                         root,
                         args.mode,
                         args.reason,
-                        args.agent,
+                        agent,
                         args.task_id,
                         session_file,
                     ),
-                    args.agent,
+                    agent,
                     session_file,
                 )
             )
@@ -3489,7 +3513,7 @@ def main() -> int:
                         "task_id": resolved_task_id,
                         **evidence_fingerprints(root, resolved_task_id),
                     },
-                    args.agent,
+                    visible_agent,
                     session_file,
                 )
             )
@@ -3497,8 +3521,8 @@ def main() -> int:
             emit(
                 attach_status_context(
                     root,
-                    set_harness_disabled(root, True, args.agent, session_file),
-                    args.agent,
+                    set_harness_disabled(root, True, agent, session_file),
+                    agent,
                     session_file,
                 )
             )
@@ -3506,8 +3530,8 @@ def main() -> int:
             emit(
                 attach_status_context(
                     root,
-                    set_harness_disabled(root, False, args.agent, session_file),
-                    args.agent,
+                    set_harness_disabled(root, False, agent, session_file),
+                    agent,
                     session_file,
                 )
             )
@@ -3515,8 +3539,8 @@ def main() -> int:
             emit(
                 attach_status_context(
                     root,
-                    handoff_task(root, args.agent, args.summary, args.task_id, session_file),
-                    args.agent,
+                    handoff_task(root, agent, args.summary, args.task_id, session_file),
+                    agent,
                     session_file,
                 )
             )
@@ -3524,8 +3548,8 @@ def main() -> int:
             emit(
                 attach_status_context(
                     root,
-                    claim_task(root, args.task_id, args.agent, session_file),
-                    args.agent,
+                    claim_task(root, args.task_id, agent, session_file),
+                    agent,
                     session_file,
                 )
             )
@@ -3536,12 +3560,12 @@ def main() -> int:
                     request_transition(
                         root,
                         args.stage,
-                        args.agent,
+                        agent,
                         args.task_id,
                         session_file,
                         args.reason,
                     ),
-                    args.agent,
+                    agent,
                     session_file,
                 )
             )
@@ -3549,8 +3573,8 @@ def main() -> int:
             emit(
                 attach_status_context(
                     root,
-                    confirm_transition(root, args.agent, args.stage, args.task_id, session_file),
-                    args.agent,
+                    confirm_transition(root, agent, args.stage, args.task_id, session_file),
+                    agent,
                     session_file,
                 )
             )
@@ -3558,8 +3582,8 @@ def main() -> int:
             emit(
                 attach_status_context(
                     root,
-                    auto_transition(root, args.stage, args.agent, args.task_id, session_file),
-                    args.agent,
+                    auto_transition(root, args.stage, agent, args.task_id, session_file),
+                    agent,
                     session_file,
                 )
             )
@@ -3567,8 +3591,8 @@ def main() -> int:
             emit(
                 attach_status_context(
                     root,
-                    cancel_transition(root, args.agent, args.task_id, session_file),
-                    args.agent,
+                    cancel_transition(root, agent, args.task_id, session_file),
+                    agent,
                     session_file,
                 )
             )
@@ -3581,11 +3605,11 @@ def main() -> int:
                     memory_short_complete(
                         root,
                         args.file,
-                        args.agent,
+                        agent,
                         args.task_id,
                         session_file,
                     ),
-                    args.agent,
+                    agent,
                     session_file,
                 )
             )
@@ -3605,11 +3629,11 @@ def main() -> int:
                     memory_complete(
                         root,
                         args.action,
-                        args.agent,
+                        agent,
                         args.task_id,
                         session_file,
                     ),
-                    args.agent,
+                    agent,
                     session_file,
                 )
             )
@@ -3617,8 +3641,8 @@ def main() -> int:
             emit(
                 attach_status_context(
                     root,
-                    close_current_task(root, args.reason, args.agent, session_file),
-                    args.agent,
+                    close_current_task(root, args.reason, agent, session_file),
+                    agent,
                     session_file,
                 )
             )
@@ -3626,8 +3650,8 @@ def main() -> int:
             emit(
                 attach_status_context(
                     root,
-                    project_init_complete(root, args.agent),
-                    args.agent,
+                    project_init_complete(root, agent),
+                    agent,
                     session_file,
                 )
             )

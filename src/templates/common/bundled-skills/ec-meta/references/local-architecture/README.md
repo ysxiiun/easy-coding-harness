@@ -93,6 +93,9 @@ demand.
 continues. All platform-agnostic artifacts (dev-spec, execution.jsonl, task.json, memory)
 make cross-agent handoff lossless. `task.json.last_agent` records the last owner so a new
 agent knows a task was handed off rather than self-interrupted.
+Owner identities use platform namespaces. Codex collaboration paths such as `/root` and
+`/root/...` normalize to `codex`, so internal Codex delegation is not mistaken for a cross-agent
+handoff; existing task files with those paths remain compatible without migration.
 
 Handoff is target-less. The leaving agent writes a `handoff` record with `from`, `stage`,
 `summary`, and `timestamp`, then releases its session pointer. It does not know or record the

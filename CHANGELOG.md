@@ -6,6 +6,16 @@
 - `y`：常规功能升级
 - `z`：日常 bug 修复
 
+## 0.9.1-beta.0
+
+- 修复 Codex 根代理把协作路径 `/root` 写入 `task.json.last_agent` 后，hook 运行时身份
+  `codex` 因字符串不一致而错误展示 `Handoff -> /root` 的问题。
+- 状态 API 统一规范化 Agent 身份，并在状态行、机器 breadcrumb、任务列表与 claim
+  判定中兼容存量 `/root`、`/root/...` 所有者；真实 Claude Code、Codex、Qoder 跨平台
+  交接语义保持不变，存量任务无需迁移或手工改写。
+- 新增 Codex 根代理写入归一化、存量状态展示和真实跨平台 takeover 回归测试，同步架构
+  说明与介绍页版本。
+
 ## 0.9.0
 
 - 正式发布相互独立的 `approval_mode` 与 `workflow_mode`：审批等待不再与执行深度
