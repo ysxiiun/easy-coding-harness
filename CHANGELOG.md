@@ -6,6 +6,15 @@
 - `y`：常规功能升级
 - `z`：日常 bug 修复
 
+## 0.9.1
+
+- 正式发布 Codex Agent 身份归一化修复：协作路径 `/root`、`/root/...` 与平台身份
+  `codex` 视为同一所有者，不再错误展示 `Handoff -> /root`。
+- 状态写入统一保存规范化身份，同时兼容存量任务数据；Claude Code、Codex、Qoder
+  之间的真实跨平台交接语义保持不变。
+- 汇总 `0.9.1-beta.0` 的状态行、机器 breadcrumb、任务列表、claim 判定、回归测试与
+  架构文档验证结果。
+
 ## 0.9.1-beta.0
 
 - 修复 Codex 根代理把协作路径 `/root` 写入 `task.json.last_agent` 后，hook 运行时身份
