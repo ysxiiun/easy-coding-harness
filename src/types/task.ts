@@ -64,6 +64,33 @@ export interface SessionFile {
   last_seen_stage?: string;
 }
 
+export interface SpecSource {
+  schema: "easy-dev-spec/v1";
+  spec_id: string;
+  revision: number;
+  path: string;
+  sha256: string;
+}
+
+export interface SpecRepositoryBinding {
+  repo_id: string;
+  name: string;
+  path: string;
+  baseline_commit: string;
+  baseline_status: "exact" | "scope-unchanged" | "scope-drifted" | "baseline-unavailable";
+}
+
+export interface SpecDependencyEvidence {
+  source_task_id: string;
+  task_id: string;
+  dependency_type: "hard" | "contract" | "integration";
+  required_evidence: string;
+  status: "satisfied" | "pending";
+  evidence?: string;
+  satisfied_at?: string;
+  satisfied_by?: string;
+}
+
 export interface TaskJson {
   type: string;
   title?: string;
@@ -105,6 +132,10 @@ export interface TaskJson {
   spawned_tasks?: string[];
   closed_reason?: string | null;
   repos?: string[];
+  spec_source?: SpecSource;
+  selected_spec_tasks?: string[];
+  spec_repositories?: SpecRepositoryBinding[];
+  spec_dependency_evidence?: SpecDependencyEvidence[];
   init_log?: unknown[];
 }
 
@@ -120,6 +151,11 @@ export interface Unit {
   test_points?: string[];
   contracts?: string[];
   risks?: string[];
+  repo_id?: string;
+  source_task_id?: string;
+  source_step_ids?: string[];
+  symbols?: string[];
+  test_commands?: string[];
 }
 
 export type ExecutionRecord =
@@ -129,7 +165,14 @@ export type ExecutionRecord =
       units: Unit[];
       parallel_groups?: { level: number; units: string[] }[];
     }
-  | { type: "dispatch"; unit_id: string; timestamp: string; reason?: string }
+  | {
+      type: "dispatch";
+      unit_id: string;
+      timestamp: string;
+      reason?: string;
+      repo_id?: string;
+      source_task_id?: string;
+    }
   | {
       type: "result";
       unit_id: string;
@@ -140,6 +183,8 @@ export type ExecutionRecord =
       checks?: { command: string; passed: boolean; failures?: string[] }[];
       issues: unknown[];
       needs_attention: unknown[];
+      repo_id?: string;
+      source_task_id?: string;
     }
   | {
       type: "review";
@@ -148,6 +193,8 @@ export type ExecutionRecord =
       implementation_fingerprint: string;
       reviewer: string;
       timestamp: string;
+      repo_id?: string;
+      source_task_id?: string;
       findings: {
         file: string;
         line: number;
@@ -166,6 +213,8 @@ export type ExecutionRecord =
       implementation_fingerprint: string;
       config_fingerprint: string;
       timestamp: string;
+      repo_id?: string;
+      source_task_id?: string;
       failures?: string[];
     }
   | { type: "handoff"; from: string; stage: Stage; summary: string; timestamp: string };

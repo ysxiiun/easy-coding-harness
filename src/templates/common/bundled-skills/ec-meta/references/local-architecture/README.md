@@ -73,6 +73,21 @@ frozen concrete mode, and any `pending_transition`; `dev-spec.md` is the human-r
 /`review`/`verify`/`handoff` records). Because plan and log live on disk, not in an agent's
 context window, a task survives session end and agent switches with zero information loss.
 
+## Canonical Spec integration
+
+An `easy-dev-spec/v1` Canonical Spec is a read-only design source, not progress storage.
+`inspect-dev-spec` validates the document with the protocol implementation pinned from
+`easy-dev-spec@7eb9b64`; after explicit task selection, `select-dev-spec-scope` returns one
+deterministic producer-compatible closure per repository, and `create-task-from-spec` creates one
+Harness task with the source ID/revision/SHA, selected task IDs, portable repository bindings,
+baseline classifications, and dependency evidence.
+
+ANALYSIS derives local `dev-spec.md`, `execution.jsonl`, and `test-strategy.md` for the selected
+consumption closure. Canonical-backed units keep repository, source task/steps, files, symbols,
+and test commands. Hard dependencies shape the Unit DAG, READY contracts can run in parallel,
+and integration dependencies block end-to-end completion until evidence is recorded. The source
+Canonical Spec is never rewritten with Harness runtime state.
+
 ## Memory system
 
 Short memory: one schema-v2 file per task, sliding window (max 10, keep 5). Long memory:
@@ -93,9 +108,10 @@ demand.
 continues. All platform-agnostic artifacts (dev-spec, execution.jsonl, task.json, memory)
 make cross-agent handoff lossless. `task.json.last_agent` records the last owner so a new
 agent knows a task was handed off rather than self-interrupted.
-Owner identities use platform namespaces. Codex collaboration paths such as `/root` and
-`/root/...` normalize to `codex`, so internal Codex delegation is not mistaken for a cross-agent
-handoff; existing task files with those paths remain compatible without migration.
+Owner identities use platform namespaces. Codex root identities such as `root`, `/root`, and
+their collaboration subpaths normalize to `codex`, so internal Codex delegation is not mistaken
+for a cross-agent handoff; existing task files with those identities remain compatible without
+migration.
 
 Handoff is target-less. The leaving agent writes a `handoff` record with `from`, `stage`,
 `summary`, and `timestamp`, then releases its session pointer. It does not know or record the

@@ -1,7 +1,7 @@
 ---
 memory_schema: 2
 memory_file: MEMORY
-last_updated: 2026-06-30
+last_updated: 2026-08-05
 ---
 
 # 长期记忆索引
@@ -15,6 +15,10 @@ last_updated: 2026-06-30
 | 主题 | 类型 | 关键词 | 详情文件 | 状态 | 最近更新 | 来源 |
 |---|---|---|---|---|---|---|
 | Supermodule CLI 支持 | technical/business | supermodule, init re-entry, clear tui, submodules | `TECHNICAL.md`, `BUSINESS.md` | active | 2026-06-30 | supermodule-support |
+| 共享产物去本地化 | technical | absolute path, project_path, bytecode, __pycache__, portable artifacts | `TECHNICAL.md` | active | 2026-08-05 | SM-20260703-001 |
+| 状态机与 ANALYSIS 交付契约 | technical | auto-transition, dev-spec skeleton, read-only completion, evidence gate | `TECHNICAL.md` | active | 2026-08-05 | SM-20260711-002 |
+| 行为模式与任务/session 面板 | technical | approval_mode, workflow_mode, snapshot, task management, status line | `TECHNICAL.md` | active | 2026-08-05 | SM-20260711-003, SM-20260711-004 |
+| 旧 Lite 跳审语义 | technical | lite, review bypass, legacy direct edge | `TECHNICAL.md` | deprecated | 2026-08-05 | SM-20260713-005 |
 
 ## 当前重点业务域
 
@@ -23,6 +27,7 @@ last_updated: 2026-06-30
 ## 当前重点技术域
 
 - CLI supermodule 目标解析、父仓拓扑刷新、无参数 TUI 安全默认值
+- Harness 共享产物可移植性、状态机机械门禁、行为配置与任务/session 可观察性
 
 ## 读取策略
 
@@ -36,3 +41,4 @@ last_updated: 2026-06-30
 | 日期 | 来源 | 处理结果 |
 |---|---|---|
 | 2026-06-30 | interactive_init | 新建 schema v2 长期记忆索引 |
+| 2026-08-05 | SM-20260703-001 至 SM-20260713-005 | 归纳 5 条窗口外短期记忆；淘汰旧 Lite 跳审语义，保留当前 migration 兼容边界 |

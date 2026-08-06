@@ -233,6 +233,15 @@ describe("configureClaude", () => {
     expect(
       await readFile(path.join(tempDir, ".claude", "hooks", "easy_coding_state.py"), "utf8"),
     ).toContain("READY_LINE");
+    expect(
+      await readFile(path.join(tempDir, ".claude", "hooks", "easy_dev_spec.py"), "utf8"),
+    ).toContain("7eb9b64cdb4c8c338c5871c3c759526f2c78fb8e");
+    expect(
+      await readFile(
+        path.join(tempDir, ".claude", "hooks", "easy_dev_spec_protocol.py"),
+        "utf8",
+      ),
+    ).toContain('SCHEMA = "easy-dev-spec/v1"');
 
     const main = await readFile(path.join(tempDir, "CLAUDE.md"), "utf8");
     expect(main).toContain("easy-coding-harness generated");
@@ -258,6 +267,14 @@ describe("configureClaude", () => {
     expect(main).toContain("consume a matching\n  numbered reply against the stored edge");
     expect(main).toContain("read-only task creates no test-strategy.md");
     expect(main).toContain("ask every unresolved decision during analysis");
+
+    const workflowSkill = await readFile(
+      path.join(tempDir, ".claude", "skills", "ec-workflow", "SKILL.md"),
+      "utf8",
+    );
+    expect(workflowSkill).toContain("inspect-dev-spec");
+    expect(workflowSkill).toContain("select-dev-spec-scope");
+    expect(workflowSkill).toContain("create-task-from-spec");
 
     const verificationSkill = await readFile(
       path.join(tempDir, ".claude", "skills", "ec-verification", "SKILL.md"),

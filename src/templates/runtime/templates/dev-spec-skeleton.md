@@ -24,6 +24,13 @@
 - 需求 vs 现有代码：[[EC_TODO:填写结果或“无冲突”]]
 - Dev-Spec vs 现有代码：[[EC_TODO:填写结果或“无冲突”]]
 
+### Canonical Spec 来源
+- **来源**：[[EC_TODO:非 Canonical 任务写“无”；否则填写 repo-relative path、spec_id、revision、SHA-256]]
+- **选择任务 / 仓库**：[[EC_TODO:非 Canonical 任务写“无”；否则填写 selected task IDs 与 repo IDs]]
+- **消费闭包**：[[EC_TODO:非 Canonical 任务写“无”；否则填写 contracts、direct dependencies、changes、steps、tests 摘要]]
+- **基线与冲突**：[[EC_TODO:非 Canonical 任务写“无”；否则逐仓填写 exact/scope-unchanged/scope-drifted/baseline-unavailable 及处理结论]]
+- **待闭合 integration**：[[EC_TODO:非 Canonical 任务或不存在时写“无”；否则列依赖边和证据要求]]
+
 ### 影响面分析
 - **涉及模块**：[[EC_TODO:涉及模块]]
 - **核心类 / 页面 / 接口**：[[EC_TODO:核心类 / 页面 / 接口]]
@@ -49,11 +56,11 @@
 
 ### 实施拆解
 
-| 单元 | 说明 | 类型 | 涉及文件 | 依赖 | 验收条件 | 测试点 | 跨单元契约 |
-|------|------|------|---------|------|---------|-------|-----------|
-| U1 | [[EC_TODO:单元标题]] | [[EC_TODO:backend/frontend/test/...]] | [[EC_TODO:涉及文件]] | — | [[EC_TODO:可验证结果]] | [[EC_TODO:定向验证]] | [[EC_TODO:输入输出或“无”]] |
-| U2 | [[EC_TODO:单元标题]] | [[EC_TODO:单元类型]] | [[EC_TODO:涉及文件]] | — | [[EC_TODO:可验证结果]] | [[EC_TODO:定向验证]] | [[EC_TODO:输入输出或“无”]] |
-| U3 | [[EC_TODO:单元标题]] | [[EC_TODO:单元类型]] | [[EC_TODO:涉及文件]] | U1, U2 | [[EC_TODO:可验证结果]] | [[EC_TODO:定向验证]] | [[EC_TODO:与 U1/U2 的契约]] |
+| 单元 | 说明 | 类型 | 仓库 / 来源任务 / 步骤 | 涉及文件 / 符号 | 依赖 | 验收条件 | 测试点 / 命令 | 跨单元契约 |
+|------|------|------|----------------------|-----------------|------|---------|---------------|-----------|
+| U1 | [[EC_TODO:单元标题]] | [[EC_TODO:backend/frontend/test/...]] | [[EC_TODO:普通任务写“当前仓库 / 无 / 无”；Canonical 写 repo_id / source_task_id / source_step_ids]] | [[EC_TODO:文件与 symbols]] | — | [[EC_TODO:可验证结果]] | [[EC_TODO:定向验证与 test_commands]] | [[EC_TODO:输入输出或“无”]] |
+| U2 | [[EC_TODO:单元标题]] | [[EC_TODO:单元类型]] | [[EC_TODO:仓库 / 来源任务 / 步骤]] | [[EC_TODO:文件与 symbols]] | — | [[EC_TODO:可验证结果]] | [[EC_TODO:定向验证与命令]] | [[EC_TODO:输入输出或“无”]] |
+| U3 | [[EC_TODO:单元标题]] | [[EC_TODO:单元类型]] | [[EC_TODO:仓库 / 来源任务 / 步骤]] | [[EC_TODO:文件与 symbols]] | U1, U2 | [[EC_TODO:可验证结果]] | [[EC_TODO:定向验证与命令]] | [[EC_TODO:与 U1/U2 的契约]] |
 
 **执行策略**：[[EC_TODO:parallel / sequential / single]]
 - 第一批（并行）：U1 [[EC_TODO:单元标题]] ｜ U2 [[EC_TODO:单元标题]]

@@ -44,6 +44,9 @@ with `.easy-coding/sessions/` always excluded. The CLI already added it to `.git
    `repo_paths`), the commit/push covers every involved repo. Read `repo_paths` from the
    current task state to locate each checkout, check changes, and commit/push them as one
    coherent change set — do not leave a sub-repo behind.
+   For Canonical-backed tasks, this set is exactly the repositories referenced by
+   `selected_spec_tasks` and resolved in `spec_repositories`; unselected Spec repositories stay
+   out of scope.
 5. **Supermodule two-step commits.** If the current repo has `.gitmodules`, or the current
    task touches a git submodule path, treat each submodule as an independent git boundary:
    commit and push child repos first, then commit and push the parent gitlink update. If a
@@ -59,6 +62,7 @@ with `.easy-coding/sessions/` always excluded. The CLI already added it to `.git
 - Do not commit `spec/dev/` unless the user explicitly asks.
 - Do not omit managed `easy-coding upgrade` changes merely because they were created outside
   the current agent turn.
+- Never modify or stage the source Canonical Spec merely to record Harness execution progress.
 - In a supermodule task launched from the parent root, parent `.easy-coding/` belongs to the
   parent git. Child `.easy-coding/memory/` changes created by memory archive belong to the
   owning child git and must be committed before the parent gitlink update.

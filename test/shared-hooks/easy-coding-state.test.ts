@@ -3422,9 +3422,9 @@ describe("easy_coding_state.py automatic and optional transitions", () => {
 });
 
 describe("easy_coding_state.py handoff and claim", () => {
-  it("treats legacy Codex /root ownership as the current codex agent", async () => {
+  it("treats stored Codex root ownership as the current codex agent", async () => {
     await writeSessionFixture("06-26-root-owner");
-    await writeTaskFixture("06-26-root-owner", "VERIFICATION", "/root");
+    await writeTaskFixture("06-26-root-owner", "VERIFICATION", "root");
 
     const statusContext = execFileSync(
       "python3",
@@ -3444,8 +3444,8 @@ describe("easy_coding_state.py handoff and claim", () => {
       { cwd: tempDir, encoding: "utf8" },
     );
 
-    expect(statusContext).not.toContain("Handoff -> `/root`");
-    expect(statusContext).not.toContain("[easy-coding:handoff-from:/root]");
+    expect(statusContext).not.toContain("Handoff -> `root`");
+    expect(statusContext).not.toContain("[easy-coding:handoff-from:root]");
   });
 
   it("writes a target-less handoff record and clears the current session pointer", async () => {
@@ -3606,21 +3606,19 @@ describe("easy_coding_state.py handoff and claim", () => {
     expect(session.current_task).toBe("06-26-claim");
   });
 
-  it("canonicalizes a Codex /root caller before persisting task ownership", async () => {
+  it("canonicalizes a Codex root caller for session resolution and persisted ownership", async () => {
     await writeSessionFixture(null);
-    await writeTaskFixture("06-26-root-claim", "IMPLEMENT", "/root");
+    await writeTaskFixture("06-26-root-claim", "IMPLEMENT", "root");
 
     const output = execFileSync(
       "python3",
       [
         stateApiPath(),
         "claim-task",
-        "--session-file",
-        ".easy-coding/sessions/test.json",
         "--task-id",
         "06-26-root-claim",
         "--agent",
-        "/root",
+        "root",
       ],
       { cwd: tempDir, encoding: "utf8" },
     );
@@ -3631,8 +3629,8 @@ describe("easy_coding_state.py handoff and claim", () => {
     };
 
     expect(snapshot.action).toBe("continue");
-    expect(snapshot.previous_agent).toBe("/root");
-    expect(snapshot.status_context).not.toContain("Handoff -> `/root`");
+    expect(snapshot.previous_agent).toBe("root");
+    expect(snapshot.status_context).not.toContain("Handoff -> `root`");
 
     const task = JSON.parse(
       await readFile(

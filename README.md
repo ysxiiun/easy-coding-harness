@@ -92,6 +92,23 @@ any stage --[user abort via ec-task-close]--> CLOSED
   并留下当前指纹下的绿色证据，就不算通过。
 - `MEMORY` 先写入本次任务短期记忆，再执行长期记忆阈值门禁；未超过阈值时长期沉淀为 no-op。
 
+## Canonical Dev Spec
+
+Harness 可选择性消费 easy-dev-spec 生成的单文件 `easy-dev-spec/v1` Canonical Spec：
+
+1. `ec-workflow` 先只读检查 manifest、仓库、任务 DAG、依赖和 baseline，不创建任务。
+2. 用户明确选择一个或多个 Spec task；`select-dev-spec-scope` 按仓库提取确定性消费
+   闭包，Harness 不默认导入整份 Spec，也不会读取未选任务正文。
+3. 一次选择创建一个 Harness task；ANALYSIS 使用最终 producer READY 门禁，并将
+   selected task 映射为带 `repo_id`、`source_task_id`、source steps、文件、符号和测试
+   命令的 Unit。
+4. `hard` 依赖决定执行顺序，冻结的 `contract` 依赖允许并行编码，`integration` 依赖
+   在证据闭合前阻止全链路完成。
+
+Canonical Spec 是只读设计源；`.easy-coding/tasks/<task-id>/` 下的 `dev-spec.md`、
+`execution.jsonl` 和 `test-strategy.md` 是绑定来源 SHA-256 的运行时派生物，不会把开发
+进度写回源 Spec。无 Canonical manifest 的历史 Dev-Spec 继续走原有整文分析流程。
+
 ## Supermodule 模型
 
 在包含 `.gitmodules` 的父仓中，Easy Coding Harness 按 git 边界分层运行：

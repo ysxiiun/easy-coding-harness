@@ -6,6 +6,22 @@
 - `y`：常规功能升级
 - `z`：日常 bug 修复
 
+## 0.10.0-beta.0
+
+- 接入 `easy-dev-spec/v1` Canonical Spec：同步最终 producer 协议实现并新增只读
+  `inspect-dev-spec`、确定性 `select-dev-spec-scope`、选择式 `create-task-from-spec` 与
+  依赖证据 `satisfy-spec-dependency` 状态 API；用户选择多个 Spec task 后仍只创建一个
+  Harness task，消费上下文按仓库形成闭包。
+- Task、Unit 与执行证据新增来源 Spec SHA、仓库、source task/step、符号和测试命令追踪；
+  ANALYSIS 使用最终 READY 语义机械校验全局、契约、仓库、任务和验收闭环，并继续校验
+  仓库身份、基线、hard 依赖及 task/change/step/test 追踪。
+- IMPLEMENT、REVIEW、VERIFICATION 与 Git 范围按 `repo_id` 隔离；pending integration
+  依赖允许完成本地检查，但在证据闭合前禁止进入 MEMORY 或宣称全链路完成。
+- 保持历史/legacy task、现有状态图、approval/workflow mode 与指纹证据兼容；Canonical
+  Spec 始终只读，本地 dev-spec、execution plan 和 test strategy 作为带来源哈希的派生物。
+- 补齐 Codex 根身份兼容：真实运行时写入的裸 `root`、既有 `/root` 及其协作子路径统一
+  规范化为 `codex`，避免状态行、breadcrumb、任务列表与 claim 再次误报跨 Agent handoff。
+
 ## 0.9.1
 
 - 正式发布 Codex Agent 身份归一化修复：协作路径 `/root`、`/root/...` 与平台身份

@@ -42,7 +42,9 @@ Append one record per executed check:
   "passed": true,
   "implementation_fingerprint": "<state-api value>",
   "config_fingerprint": "<state-api value>",
-  "timestamp": "<ISO-8601>"
+  "timestamp": "<ISO-8601>",
+  "repo_id": "<canonical repo-id; omit for non-Canonical tasks>",
+  "source_task_id": "<canonical task-id; omit for non-Canonical tasks>"
 }
 ```
 
@@ -63,6 +65,27 @@ do not append a later synthetic pass without rerunning the failed command.
 - `confirm` and `auto` advance after the green gate without introducing another mandatory
   user wait.
 - A reported in-scope problem returns to IMPLEMENT; out-of-scope work becomes a separate task.
+
+For Canonical-backed tasks, run each repository's commands from `task.repo_paths[repo_id]` and
+cover every selected task's source test IDs. Report pending integration edges separately from
+local green checks. They do not block local implementation evidence, but the state API blocks
+`VERIFICATION -> MEMORY` until evidence is recorded with `satisfy-spec-dependency`. Never claim
+end-to-end completion while an integration edge remains pending. Every Canonical verify record
+includes the owning `repo_id` and `source_task_id`; duplicate check names in different source
+tasks remain separate evidence records. In `strict`, every involved repository independently
+records all four check types; a repository-specific non-applicable record still needs its reason
+and source ownership.
+
+Record the exact integration edge only after its evidence exists:
+
+```bash
+{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py satisfy-spec-dependency \
+  --task-id <harness-task-id> \
+  --source-task <source-spec-task-id> \
+  --spec-task <target-spec-task-id> \
+  --evidence "<verifiable evidence>" \
+  --agent <agent>
+```
 
 The state API rejects VERIFICATION -> MEMORY unless all evidence for the current implementation
 and config fingerprints is green.

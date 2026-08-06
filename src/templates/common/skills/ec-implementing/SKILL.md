@@ -60,6 +60,11 @@ Sub-agents never dispatch other sub-agents or read `.easy-coding` workflow asset
 ## Identity       Easy Coding implementation unit
 ## Workflow Mode  {fast|standard|strict}
 ## Task           {unit description}
+## Source Spec    {spec_id@revision + sha256 | NONE}
+## Source Task    {source_task_id | NONE}
+## Repository     {repo_id + resolved repository root | current project}
+## Source Steps   {source_step_ids | NONE}
+## Symbols        {symbols | confirmed local symbols}
 ## Editable Scope {unit.files | NONE — read-only}
 ## Acceptance     {unit.acceptance_criteria}
 ## Test Points    {unit.test_points and exact targeted commands}
@@ -68,17 +73,23 @@ Sub-agents never dispatch other sub-agents or read `.easy-coding` workflow asset
 ## Coding Rules   {pre-digested RULES sections}
 ## Architecture   {pre-digested ABSTRACT sections}
 ## Output
-changed_files[], summary, deliverable|null, issues[], needs_attention[]
+status:"completed", repo_id|null, source_task_id|null, changed_files[], summary,
+deliverable|null, issues:[], needs_attention:[]
 ```
 
 ## Dispatch and result loop
 
-1. Append a `dispatch` record before work begins.
+1. Append a `dispatch` record before work begins. Canonical-backed records include `repo_id` and
+   `source_task_id`; resolve every file relative to `task.repo_paths[repo_id]` before dispatch.
 2. Execute according to dependency order and selected owner.
 3. Run targeted unit tests and self-audit scope, contracts, TODOs, and introduced warnings.
-4. Append one `result` record. Include unresolved issues rather than hiding them.
+4. Append one `result` record. Only a successful unit uses `status:"completed"`; include
+   unresolved issues rather than hiding them, and do not advance while `issues` or
+   `needs_attention` is non-empty.
 5. If a result changes a cross-unit contract, stop dependent units and return to ANALYSIS.
 6. For parallel units, detect overlapping writes before advancing.
+7. If implementation needs a file, symbol, repository, or source step outside the mapped
+   Canonical change set, stop and return to ANALYSIS instead of expanding scope implicitly.
 
 Do not emit a progress message for every trivial edit. Report at unit boundaries to reduce
 conversation overhead while keeping work observable.

@@ -12,6 +12,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 import sys
 
+from easy_dev_spec import (
+    EasyDevSpecError,
+    inspect_spec,
+    inspection_summary,
+    select_consumption_scopes,
+    select_tasks,
+)
+
 
 TERMINAL_STATUSES = {"COMPLETE", "CLOSED"}
 HELP_SUFFIX = (
@@ -87,7 +95,7 @@ DEFAULT_SHORT_TERM_KEEP = 5
 SESSION_STALE_THRESHOLD_HOURS = 30 * 24
 SESSION_COMPONENT_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
 SESSION_AGENT_NAMESPACES = {"claude-code", "codex", "qoder", "unknown"}
-CODEX_AGENT_PATH_PATTERN = re.compile(r"^/root(?:/[a-z0-9._-]+)*$")
+CODEX_AGENT_PATH_PATTERN = re.compile(r"^/?root(?:/[a-z0-9._-]+)*$")
 LEGACY_STATE_LOCK_TIMEOUT_SECONDS = 5.0
 LEGACY_STATE_LOCK_STALE_SECONDS = 60.0
 LEGACY_STATE_LOCK_POLL_SECONDS = 0.02
@@ -157,7 +165,7 @@ def short_memory_id_sort_key(memory_id: str) -> tuple[int, str]:
 def normalize_agent_identity(agent: str | None) -> str:
     raw_agent = str(agent or "unknown").strip()
     normalized = raw_agent.lower()
-    # Codex 协作树中的 /root 路径表示 Codex 内部执行者，不是一个新的跨平台 Agent。
+    # Codex 可能把根执行者写成 root 或 /root；两者及其协作子路径都属于同一平台身份。
     if CODEX_AGENT_PATH_PATTERN.fullmatch(normalized):
         return "codex"
     if normalized in SESSION_AGENT_NAMESPACES:
@@ -1071,6 +1079,337 @@ def is_read_only_execution_plan(plan: object) -> bool:
     )
 
 
+def stored_spec_path(root: Path, task: dict) -> Path:
+    source = task.get("spec_source")
+    if not isinstance(source, dict) or not is_non_empty_string(source.get("path")):
+        raise StateError("Spec-backed task is missing spec_source.path.")
+    raw_path = Path(str(source["path"]))
+    path = raw_path if raw_path.is_absolute() else root / raw_path
+    resolved = path.resolve()
+    try:
+        resolved.relative_to(root.resolve())
+    except ValueError as exc:
+        raise StateError("Spec-backed task source path must remain inside the project root.") from exc
+    return resolved
+
+
+def inspect_task_spec(root: Path, task: dict) -> tuple[dict, dict]:
+    source = task.get("spec_source")
+    selected = task.get("selected_spec_tasks")
+    repo_paths = task.get("repo_paths")
+    if not isinstance(source, dict) or not is_string_list(selected, allow_empty=False):
+        raise StateError("Spec-backed task source and selected task metadata are incomplete.")
+    try:
+        inspection = inspect_spec(
+            stored_spec_path(root, task),
+            root,
+            repo_paths if isinstance(repo_paths, dict) else {},
+            selected,
+        )
+        satisfied = {
+            f"{record.get('source_task_id')}->{record.get('task_id')}": str(record.get("evidence"))
+            for record in task.get("spec_dependency_evidence", [])
+            if isinstance(record, dict)
+            and record.get("status") == "satisfied"
+            and is_non_empty_string(record.get("task_id"))
+            and is_non_empty_string(record.get("evidence"))
+        }
+        selection = select_tasks(inspection, selected, satisfied)
+    except EasyDevSpecError as exc:
+        raise StateError(f"Canonical Spec validation failed: {exc}") from exc
+    stored_dependencies = task.get("spec_dependency_evidence")
+    if not isinstance(stored_dependencies, list):
+        raise StateError("Spec-backed task dependency metadata is incomplete.")
+    expected_by_edge = {
+        (record.get("source_task_id"), record.get("task_id")): record
+        for record in selection["dependency_records"]
+    }
+    stored_by_edge = {
+        (record.get("source_task_id"), record.get("task_id")): record
+        for record in stored_dependencies
+        if isinstance(record, dict)
+    }
+    if (
+        len(stored_by_edge) != len(stored_dependencies)
+        or set(stored_by_edge) != set(expected_by_edge)
+    ):
+        raise StateError("Canonical Spec dependency metadata no longer matches source selection.")
+    for edge, expected in expected_by_edge.items():
+        stored = stored_by_edge[edge]
+        for field in ("dependency_type", "required_evidence", "status"):
+            if stored.get(field) != expected.get(field):
+                raise StateError(
+                    "Canonical Spec dependency metadata no longer matches source selection."
+                )
+        if stored.get("evidence") != expected.get("evidence"):
+            raise StateError(
+                "Canonical Spec dependency evidence no longer matches its recorded status."
+            )
+    if source.get("schema") != inspection.get("schema"):
+        raise StateError("Canonical Spec schema no longer matches task.json.")
+    if source.get("spec_id") != inspection.get("spec_id"):
+        raise StateError("Canonical Spec ID no longer matches task.json.")
+    if source.get("revision") != inspection.get("revision"):
+        raise StateError("Canonical Spec revision no longer matches task.json.")
+    if source.get("sha256") != inspection.get("source_sha256"):
+        raise StateError("Canonical Spec SHA-256 changed after task creation.")
+    selected_repo_ids = set(selection["selected_repo_ids"])
+    stored_bindings = task.get("spec_repositories")
+    if not isinstance(stored_bindings, list):
+        raise StateError("Spec-backed task repository metadata is incomplete.")
+    stored_by_repo = {
+        str(binding.get("repo_id")): binding
+        for binding in stored_bindings
+        if isinstance(binding, dict) and is_non_empty_string(binding.get("repo_id"))
+    }
+    current_by_repo = {
+        str(binding.get("repo_id")): binding
+        for binding in inspection.get("repository_bindings", [])
+        if isinstance(binding, dict)
+        and str(binding.get("repo_id")) in selected_repo_ids
+    }
+    if (
+        len(stored_by_repo) != len(stored_bindings)
+        or set(stored_by_repo) != selected_repo_ids
+        or set(current_by_repo) != selected_repo_ids
+    ):
+        raise StateError("Canonical Spec repository bindings no longer match task.json.")
+    for repo_id in selected_repo_ids:
+        stored = stored_by_repo[repo_id]
+        current = current_by_repo[repo_id]
+        for field in ("repo_id", "name", "path", "baseline_commit"):
+            if stored.get(field) != current.get(field):
+                raise StateError("Canonical Spec repository bindings no longer match task.json.")
+    return inspection, selection
+
+
+def is_valid_spec_execution_plan(root: Path, task: dict, plan: object) -> bool:
+    if not isinstance(plan, dict):
+        return False
+    try:
+        inspection, selection = inspect_task_spec(root, task)
+    except StateError:
+        return False
+    selected_ids = set(selection["selected_task_ids"])
+    task_by_id = {item["task_id"]: item for item in selection["selected_tasks"]}
+    change_by_id = {
+        str(change["change_id"]): change for change in selection["selected_changes"]
+    }
+    step_by_id = {
+        str(step["step_id"]): step for step in selection["selected_steps"]
+    }
+    test_by_id = {
+        str(test["test_id"]): test for test in selection["selected_tests"]
+    }
+    changes_by_task: dict[str, list[dict]] = {task_id: [] for task_id in selected_ids}
+    tests_by_task: dict[str, list[dict]] = {task_id: [] for task_id in selected_ids}
+    for change in selection["selected_changes"]:
+        changes_by_task[str(change["task_id"])].append(change)
+    for test in selection["selected_tests"]:
+        tests_by_task[str(test["task_id"])].append(test)
+
+    units = [unit for unit in plan.get("units", []) if isinstance(unit, dict)]
+    units_by_task: dict[str, list[dict]] = {task_id: [] for task_id in selected_ids}
+    covered_steps: dict[str, list[str]] = {task_id: [] for task_id in selected_ids}
+    covered_files: dict[str, set[str]] = {task_id: set() for task_id in selected_ids}
+    covered_symbols: dict[str, set[str]] = {task_id: set() for task_id in selected_ids}
+    covered_commands: dict[str, set[str]] = {task_id: set() for task_id in selected_ids}
+    unit_by_id = {str(unit["id"]): unit for unit in units}
+    unit_id_by_step: dict[str, str] = {}
+    for unit in units:
+        source_task_id = unit.get("source_task_id")
+        if source_task_id not in selected_ids:
+            return False
+        source_task_id = str(source_task_id)
+        source_task = task_by_id[source_task_id]
+        if unit.get("repo_id") != source_task.get("repo_id"):
+            return False
+        for field in ("source_step_ids", "symbols", "test_commands"):
+            if not is_string_list(unit.get(field), allow_empty=False):
+                return False
+        allowed_steps = set(source_task.get("step_ids", []))
+        if not set(unit["source_step_ids"]).issubset(allowed_steps):
+            return False
+        source_steps = [step_by_id.get(str(step_id)) for step_id in unit["source_step_ids"]]
+        if any(
+            step is None or step.get("task_id") != source_task_id
+            for step in source_steps
+        ):
+            return False
+        step_change_ids = {
+            str(change_id)
+            for step in source_steps
+            if isinstance(step, dict)
+            for change_id in step.get("change_ids", [])
+        }
+        step_test_ids = {
+            str(test_id)
+            for step in source_steps
+            if isinstance(step, dict)
+            for test_id in step.get("test_ids", [])
+        }
+        step_files = {
+            str(change_by_id[change_id]["path"])
+            for change_id in step_change_ids
+            if change_id in change_by_id
+        }
+        step_symbols = {
+            str(symbol)
+            for change_id in step_change_ids
+            if change_id in change_by_id
+            for symbol in change_by_id[change_id].get("symbols", [])
+        }
+        step_commands = {
+            str(test_by_id[test_id]["command"])
+            for test_id in step_test_ids
+            if test_id in test_by_id
+        }
+        # Unit 必须保存它声明的 source steps 的完整文件、符号和源测试映射；附加本地命令可保留。
+        if (
+            not step_change_ids.issubset(change_by_id)
+            or not step_test_ids.issubset(test_by_id)
+            or set(unit.get("files", [])) != step_files
+            or set(unit["symbols"]) != step_symbols
+            or not set(unit["test_commands"]).issuperset(step_commands)
+        ):
+            return False
+        for step_id in unit["source_step_ids"]:
+            normalized_step_id = str(step_id)
+            if normalized_step_id in unit_id_by_step:
+                return False
+            unit_id_by_step[normalized_step_id] = str(unit["id"])
+        units_by_task[source_task_id].append(unit)
+        covered_steps[source_task_id].extend(unit["source_step_ids"])
+        covered_files[source_task_id].update(unit.get("files", []))
+        covered_symbols[source_task_id].update(unit["symbols"])
+        covered_commands[source_task_id].update(unit["test_commands"])
+
+    for source_task_id, source_task in task_by_id.items():
+        if not units_by_task[source_task_id]:
+            return False
+        steps = covered_steps[source_task_id]
+        if len(steps) != len(set(steps)) or set(steps) != set(source_task.get("step_ids", [])):
+            return False
+        if covered_files[source_task_id] != {
+            str(change["path"]) for change in changes_by_task[source_task_id]
+        }:
+            return False
+        if covered_symbols[source_task_id] != {
+            str(symbol)
+            for change in changes_by_task[source_task_id]
+            for symbol in change.get("symbols", [])
+        }:
+            return False
+        if not covered_commands[source_task_id].issuperset({
+            str(test["command"]) for test in tests_by_task[source_task_id]
+        }):
+            return False
+
+    # 同一 source task 内的 Step DAG 也必须投影到 Unit DAG；合并在同一 Unit 的步骤无需自依赖。
+    for step_id, step in step_by_id.items():
+        owner_unit_id = unit_id_by_step.get(step_id)
+        if owner_unit_id is None:
+            return False
+        owner_unit = unit_by_id[owner_unit_id]
+        for dependency_step_id in step.get("depends_on_step_ids", []):
+            dependency_unit_id = unit_id_by_step.get(str(dependency_step_id))
+            if dependency_unit_id is None:
+                return False
+            if (
+                dependency_unit_id != owner_unit_id
+                and dependency_unit_id not in owner_unit.get("depends_on", [])
+            ):
+                return False
+
+    # hard 依赖必须投影为 Unit DAG，不能只保存在说明文字中。
+    unit_ids_by_task = {
+        source_task_id: {str(unit["id"]) for unit in source_units}
+        for source_task_id, source_units in units_by_task.items()
+    }
+    for edge in inspection.get("dependency_edges", []):
+        source_task_id = str(edge.get("source_task_id") or "")
+        dependency_task_id = str(edge.get("task_id") or "")
+        if (
+            edge.get("dependency_type") != "hard"
+            or source_task_id not in selected_ids
+            or dependency_task_id not in selected_ids
+        ):
+            continue
+        dependency_ids = unit_ids_by_task[dependency_task_id]
+        depended_on_within_dependency = {
+            dependency
+            for unit in units_by_task[dependency_task_id]
+            for dependency in unit.get("depends_on", [])
+            if dependency in dependency_ids
+        }
+        dependency_terminals = dependency_ids - depended_on_within_dependency
+        source_units = units_by_task[source_task_id]
+        source_ids = unit_ids_by_task[source_task_id]
+        source_roots = [
+            unit
+            for unit in source_units
+            if not set(unit.get("depends_on", [])).intersection(source_ids)
+        ]
+        if not dependency_terminals or any(
+            not dependency_terminals.issubset(set(unit.get("depends_on", [])))
+            for unit in source_roots
+        ):
+            return False
+    return True
+
+
+def contains_spec_marker(content: str, marker: str) -> bool:
+    boundary_characters = (
+        r"A-Za-z0-9_/" + ("." if "/" in marker or "." in marker else "") + "-"
+    )
+    return (
+        re.search(
+            rf"(?<![{boundary_characters}]){re.escape(marker)}(?![{boundary_characters}])",
+            content,
+        )
+        is not None
+    )
+
+
+def missing_spec_test_strategy_markers(
+    selection: dict, plan: dict, content: str
+) -> list[str]:
+    unit_ids_by_step = {
+        str(step_id): str(unit["id"])
+        for unit in plan.get("units", [])
+        if isinstance(unit, dict)
+        for step_id in unit.get("source_step_ids", [])
+    }
+    owner_units_by_test: dict[str, set[str]] = {}
+    for step in selection.get("selected_steps", []):
+        if not isinstance(step, dict):
+            continue
+        owner_unit_id = unit_ids_by_step.get(str(step.get("step_id") or ""))
+        if not owner_unit_id:
+            continue
+        for test_id in step.get("test_ids", []):
+            owner_units_by_test.setdefault(str(test_id), set()).add(owner_unit_id)
+
+    missing: list[str] = []
+    for test in selection.get("selected_tests", []):
+        if not isinstance(test, dict):
+            continue
+        test_id = str(test.get("test_id") or "")
+        markers = {
+            test_id,
+            str(test.get("task_id") or ""),
+            str(test.get("file") or ""),
+            str(test.get("command") or ""),
+            *owner_units_by_test.get(test_id, set()),
+        }
+        missing.extend(
+            marker
+            for marker in sorted(markers)
+            if marker and not contains_spec_marker(content, marker)
+        )
+    return list(dict.fromkeys(missing))
+
+
 def read_project_schema_version(root: Path) -> int:
     path = root / ".easy-coding" / "config.yaml"
     try:
@@ -1105,10 +1444,15 @@ def has_valid_execution_plan(root: Path, task_id: str) -> bool:
     task_type = str(task.get("type") or "").strip().lower() if task else ""
     if task_type in NO_CODE_TASK_TYPES:
         return is_read_only_execution_plan(latest_plan)
-    return is_valid_execution_plan(
+    valid = is_valid_execution_plan(
         latest_plan,
         require_unit_contracts=read_project_schema_version(root) >= 3,
     )
+    if not valid:
+        return False
+    if task and isinstance(task.get("spec_source"), dict):
+        return is_valid_spec_execution_plan(root, task, latest_plan)
+    return True
 
 
 def execution_records(root: Path, task_id: str) -> list[dict]:
@@ -1131,10 +1475,10 @@ def execution_records(root: Path, task_id: str) -> list[dict]:
 def latest_execution_plan(root: Path, task_id: str) -> dict | None:
     latest: dict | None = None
     for record in execution_records(root, task_id):
-        if record.get("type") == "plan" and is_valid_execution_plan(
-            record, allow_empty_files=True
-        ):
+        if record.get("type") == "plan":
             latest = record
+    if latest is None or not is_valid_execution_plan(latest, allow_empty_files=True):
+        return None
     return latest
 
 
@@ -1188,6 +1532,44 @@ def minimize_repository_scopes(repository: Path, scopes: set[Path]) -> list[Path
 def task_repository_scopes(
     root: Path, task: dict | None, plan: dict
 ) -> list[tuple[Path, list[Path]]]:
+    if task and isinstance(task.get("spec_source"), dict):
+        repo_paths = task.get("repo_paths")
+        if not isinstance(repo_paths, dict):
+            raise StateError("Spec-backed task is missing repo_paths.")
+        repositories: dict[Path, set[Path]] = {}
+        for unit in plan.get("units", []):
+            if not isinstance(unit, dict) or not is_non_empty_string(unit.get("repo_id")):
+                raise StateError("Spec-backed execution unit is missing repo_id.")
+            repo_id = str(unit["repo_id"])
+            raw_repo_path = repo_paths.get(repo_id)
+            if not is_non_empty_string(raw_repo_path):
+                raise StateError(f"Spec repository path is missing: {repo_id}")
+            candidate = Path(str(raw_repo_path))
+            repository_path = (candidate if candidate.is_absolute() else root / candidate).resolve()
+            repository = git_repository_root(repository_path)
+            if repository is None or repository.resolve() != repository_path:
+                raise StateError(f"Spec repository binding is not a Git root: {repo_id}")
+            scopes = repositories.setdefault(repository, set())
+            scopes.add(repository)
+            for file_name in unit.get("files", []):
+                if not is_non_empty_string(file_name):
+                    raise StateError(f"Spec execution unit has an invalid file path: {repo_id}")
+                relative_path = Path(str(file_name))
+                if relative_path.is_absolute() or ".." in relative_path.parts:
+                    raise StateError(f"Spec execution unit path escapes repository {repo_id}: {file_name}")
+                resolved_file = (repository / relative_path).resolve()
+                if not is_path_within(resolved_file, repository):
+                    raise StateError(f"Spec execution unit path escapes repository {repo_id}: {file_name}")
+                file_repository = git_repository_root(resolved_file)
+                if file_repository is None or file_repository.resolve() != repository:
+                    raise StateError(
+                        f"Spec execution unit path belongs to another Git repository: {repo_id}:{file_name}"
+                    )
+        return [
+            (repository, [repository])
+            for repository in sorted(repositories, key=lambda item: item.as_posix())
+        ]
+
     scope_candidates = [root]
     if task:
         repo_paths = task.get("repo_paths")
@@ -1465,28 +1847,51 @@ def implementation_fingerprint(root: Path, task_id: str) -> str:
         ).encode("utf-8")
     )
     digest.update(b"\0")
+    if task and isinstance(task.get("spec_source"), dict):
+        digest.update(b"canonical-spec\0")
+        digest.update(
+            json.dumps(
+                {
+                    "source": task.get("spec_source"),
+                    "selected_tasks": task.get("selected_spec_tasks"),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
+        digest.update(b"\0")
     update_git_worktree_fingerprint(digest, root, task, plan)
-    file_names = sorted(
-        {
-            str(file_name)
-            for unit in plan.get("units", [])
-            if isinstance(unit, dict)
-            for file_name in unit.get("files", [])
-            if is_non_empty_string(file_name)
-        }
-    )
-    for file_name in file_names:
+    repo_paths = task.get("repo_paths") if task else None
+    file_entries: set[tuple[str, str | None]] = {
+        (str(file_name), str(unit.get("repo_id")) if unit.get("repo_id") else None)
+        for unit in plan.get("units", [])
+        if isinstance(unit, dict)
+        for file_name in unit.get("files", [])
+        if is_non_empty_string(file_name)
+    }
+    for file_name, repo_id in sorted(file_entries, key=lambda item: (item[0], item[1] or "")):
         candidate = Path(file_name)
         was_absolute = candidate.is_absolute()
+        base = root
+        if (
+            task
+            and isinstance(task.get("spec_source"), dict)
+            and isinstance(repo_paths, dict)
+            and repo_id
+            and is_non_empty_string(repo_paths.get(repo_id))
+        ):
+            raw_base = Path(str(repo_paths[repo_id]))
+            base = raw_base if raw_base.is_absolute() else root / raw_base
         if not was_absolute:
-            candidate = root / candidate
+            candidate = base / candidate
         resolved = candidate.resolve()
         if not was_absolute:
             try:
-                resolved.relative_to(root.resolve())
+                resolved.relative_to(base.resolve())
             except ValueError as error:
-                raise StateError(f"Execution plan file escapes project root: {file_name}") from error
-        digest.update(file_name.encode("utf-8"))
+                raise StateError(f"Execution plan file escapes repository: {file_name}") from error
+        digest.update(f"{repo_id or ''}:{file_name}".encode("utf-8"))
         digest.update(b"\0")
         try:
             digest.update(resolved.read_bytes())
@@ -1513,8 +1918,80 @@ def evidence_fingerprints(root: Path, task_id: str) -> dict[str, str]:
     }
 
 
+def validate_spec_implementation_results(root: Path, task_id: str, task: dict) -> None:
+    if not isinstance(task.get("spec_source"), dict):
+        return
+    plan = latest_execution_plan(root, task_id)
+    if plan is None or not is_valid_spec_execution_plan(root, task, plan):
+        raise StateError("Canonical Spec implementation has no valid source-traceable plan.")
+    unit_by_id = {
+        str(unit["id"]): unit for unit in plan.get("units", []) if isinstance(unit, dict)
+    }
+    records = execution_records(root, task_id)
+    latest_plan_index = max(
+        (index for index, record in enumerate(records) if record.get("type") == "plan"),
+        default=-1,
+    )
+    lifecycle_by_unit: dict[str, list[dict]] = {unit_id: [] for unit_id in unit_by_id}
+    for record in records[latest_plan_index + 1 :]:
+        unit_id = str(record.get("unit_id") or "")
+        if record.get("type") in {"dispatch", "result"} and unit_id in unit_by_id:
+            lifecycle_by_unit[unit_id].append(record)
+    missing_dispatches = sorted(
+        unit_id
+        for unit_id, lifecycle in lifecycle_by_unit.items()
+        if not any(record.get("type") == "dispatch" for record in lifecycle)
+    )
+    if missing_dispatches:
+        raise StateError(
+            "Canonical Spec implementation is missing dispatch records for units: "
+            + ", ".join(missing_dispatches)
+        )
+    missing_results = sorted(
+        unit_id
+        for unit_id, lifecycle in lifecycle_by_unit.items()
+        if not lifecycle or lifecycle[-1].get("type") != "result"
+    )
+    if missing_results:
+        raise StateError(
+            "Canonical Spec implementation is missing result records for units: "
+            + ", ".join(missing_results)
+        )
+    for unit_id, unit in unit_by_id.items():
+        lifecycle = lifecycle_by_unit[unit_id]
+        if len(lifecycle) < 2 or lifecycle[-2].get("type") != "dispatch":
+            raise StateError(
+                f"Canonical Spec result {unit_id} has no matching preceding dispatch record."
+            )
+        dispatch = lifecycle[-2]
+        if (
+            dispatch.get("repo_id") != unit.get("repo_id")
+            or dispatch.get("source_task_id") != unit.get("source_task_id")
+        ):
+            raise StateError(
+                f"Canonical Spec dispatch {unit_id} must preserve repository/source-task ownership."
+            )
+        result = lifecycle[-1]
+        if (
+            result.get("repo_id") != unit.get("repo_id")
+            or result.get("source_task_id") != unit.get("source_task_id")
+            or result.get("status") != "completed"
+            or not isinstance(result.get("changed_files"), list)
+            or not set(result.get("changed_files", [])).issubset(set(unit.get("files", [])))
+            or not is_non_empty_string(result.get("summary"))
+            or result.get("issues") != []
+            or result.get("needs_attention") != []
+        ):
+            raise StateError(
+                f"Canonical Spec result {unit_id} must be completed without unresolved issues, "
+                "preserve repository/source-task ownership, and remain within the Unit file scope."
+            )
+
+
 def validate_review_readiness(root: Path, task_id: str, task: dict) -> None:
-    if task.get("workflow_mode_legacy") is True:
+    validate_spec_implementation_results(root, task_id, task)
+    is_spec_task = isinstance(task.get("spec_source"), dict)
+    if task.get("workflow_mode_legacy") is True and not is_spec_task:
         return
     expected = implementation_fingerprint(root, task_id)
     latest_by_dimension: dict[str, dict] = {}
@@ -1524,7 +2001,10 @@ def validate_review_readiness(root: Path, task_id: str, task: dict) -> None:
             and record.get("implementation_fingerprint") == expected
             and is_non_empty_string(record.get("dimension"))
         ):
-            latest_by_dimension[str(record["dimension"])] = record
+            dimension = str(record["dimension"])
+            source_task_id = str(record.get("source_task_id") or "")
+            record_key = f"{dimension}\0{source_task_id}" if is_spec_task else dimension
+            latest_by_dimension[record_key] = record
     if not latest_by_dimension:
         raise StateError(
             "REVIEW cannot advance to VERIFICATION without a review record for the current implementation fingerprint."
@@ -1543,6 +2023,42 @@ def validate_review_readiness(root: Path, task_id: str, task: dict) -> None:
                 "Each review finding must include a non-empty file and issue, a positive integer "
                 "line, and severity error, warning, or info."
             )
+    if is_spec_task:
+        plan = latest_execution_plan(root, task_id) or {}
+        task_repositories = {
+            str(unit.get("source_task_id")): str(unit.get("repo_id"))
+            for unit in plan.get("units", [])
+            if isinstance(unit, dict)
+            and is_non_empty_string(unit.get("source_task_id"))
+            and is_non_empty_string(unit.get("repo_id"))
+        }
+        reviewed_dimensions: dict[str, set[str]] = {
+            source_task_id: set() for source_task_id in task_repositories
+        }
+        for record in latest_by_dimension.values():
+            source_task_id = str(record.get("source_task_id") or "")
+            repo_id = str(record.get("repo_id") or "")
+            if source_task_id not in task_repositories or repo_id != task_repositories[source_task_id]:
+                raise StateError(
+                    "Canonical Spec review evidence must preserve repository/source-task ownership."
+                )
+            for finding in record["findings"]:
+                finding_path = Path(str(finding["file"]))
+                if finding_path.is_absolute() or ".." in finding_path.parts:
+                    raise StateError(
+                        "Canonical Spec review findings must use safe repository-relative paths."
+                    )
+            reviewed_dimensions[source_task_id].add(str(record["dimension"]))
+        missing_review_tasks = sorted(
+            source_task_id
+            for source_task_id, dimensions in reviewed_dimensions.items()
+            if not dimensions
+        )
+        if missing_review_tasks:
+            raise StateError(
+                "Canonical Spec review evidence does not cover selected source tasks: "
+                + ", ".join(missing_review_tasks)
+            )
     has_failed_dimension = False
     for record in latest_by_dimension.values():
         findings = record.get("findings")
@@ -1558,16 +2074,29 @@ def validate_review_readiness(root: Path, task_id: str, task: dict) -> None:
         raise StateError(
             "REVIEW cannot advance to VERIFICATION while a current review dimension is not passed or has error findings."
         )
-    if task.get("workflow_mode") == "strict" and len(latest_by_dimension) < 2:
-        raise StateError(
-            "Strict workflow requires at least two passed review dimensions for the current implementation fingerprint."
-        )
+    if task.get("workflow_mode") == "strict":
+        if is_spec_task:
+            missing_strict_dimensions = sorted(
+                source_task_id
+                for source_task_id, dimensions in reviewed_dimensions.items()
+                if len(dimensions) < 2
+            )
+            if missing_strict_dimensions:
+                raise StateError(
+                    "Strict Canonical Spec review requires at least two passed dimensions for "
+                    "every selected source task: " + ", ".join(missing_strict_dimensions)
+                )
+        elif len(latest_by_dimension) < 2:
+            raise StateError(
+                "Strict workflow requires at least two passed review dimensions for the current implementation fingerprint."
+            )
 
 
 def validate_verification_readiness(root: Path, task_id: str, task: dict) -> None:
     fingerprints = evidence_fingerprints(root, task_id)
+    is_spec_task = isinstance(task.get("spec_source"), dict)
     if (
-        task.get("workflow_mode_legacy") is not True
+        (task.get("workflow_mode_legacy") is not True or is_spec_task)
         and task.get("workflow_mode_legacy_review_bypass_fingerprint")
         != fingerprints["implementation_fingerprint"]
     ):
@@ -1582,6 +2111,8 @@ def validate_verification_readiness(root: Path, task_id: str, task: dict) -> Non
             and is_non_empty_string(record.get("check"))
         ):
             check = str(record["check"])
+            if is_spec_task:
+                check = f"{check}\0{record.get('source_task_id') or ''}"
             previous = latest_by_check.get(check)
             if (
                 record.get("applicable") is False
@@ -1594,7 +2125,7 @@ def validate_verification_readiness(root: Path, task_id: str, task: dict) -> Non
         raise StateError(
             "VERIFICATION cannot advance to MEMORY without verification evidence for the current implementation and config fingerprints."
         )
-    if task.get("workflow_mode_legacy") is not True:
+    if task.get("workflow_mode_legacy") is not True or is_spec_task:
         for record in latest_by_check.values():
             check_type = str(record.get("check_type") or "")
             if (
@@ -1614,6 +2145,25 @@ def validate_verification_readiness(root: Path, task_id: str, task: dict) -> Non
                 raise StateError(
                     "Verification evidence marked not applicable must include a non-empty not_applicable_reason."
                 )
+    if is_spec_task:
+        plan = latest_execution_plan(root, task_id) or {}
+        task_repositories = {
+            str(unit.get("source_task_id")): str(unit.get("repo_id"))
+            for unit in plan.get("units", [])
+            if isinstance(unit, dict)
+            and is_non_empty_string(unit.get("source_task_id"))
+            and is_non_empty_string(unit.get("repo_id"))
+        }
+        for record in latest_by_check.values():
+            source_task_id = str(record.get("source_task_id") or "")
+            if (
+                source_task_id not in task_repositories
+                or record.get("repo_id") != task_repositories[source_task_id]
+            ):
+                raise StateError(
+                    "Canonical Spec verification evidence must preserve "
+                    "repository/source-task ownership."
+                )
     applicable_records = [
         record for record in latest_by_check.values() if record.get("applicable") is not False
     ]
@@ -1626,26 +2176,109 @@ def validate_verification_readiness(root: Path, task_id: str, task: dict) -> Non
             "VERIFICATION cannot advance to MEMORY while current verification evidence contains failures."
         )
     if task.get("workflow_mode") == "strict":
-        latest_by_type: dict[str, dict] = {}
-        for record in latest_by_check.values():
-            check_type = str(record.get("check_type") or "")
-            if check_type in STRICT_VERIFICATION_CHECK_TYPES:
-                latest_by_type[check_type] = record
-        missing_types = sorted(STRICT_VERIFICATION_CHECK_TYPES - latest_by_type.keys())
-        if missing_types:
-            raise StateError(
-                "Strict workflow requires current verification evidence for every check type: "
-                + ", ".join(missing_types)
-                + "."
-            )
-        for check_type, record in latest_by_type.items():
-            if record.get("applicable") is False and not is_non_empty_string(
-                record.get("not_applicable_reason")
-            ):
+        if is_spec_task:
+            check_types_by_repository: dict[str, set[str]] = {
+                repo_id: set() for repo_id in set(task_repositories.values())
+            }
+            for record in latest_by_check.values():
+                repo_id = str(record.get("repo_id") or "")
+                check_type = str(record.get("check_type") or "")
+                if repo_id in check_types_by_repository and check_type in STRICT_VERIFICATION_CHECK_TYPES:
+                    check_types_by_repository[repo_id].add(check_type)
+            missing_by_repository = {
+                repo_id: sorted(STRICT_VERIFICATION_CHECK_TYPES - check_types)
+                for repo_id, check_types in check_types_by_repository.items()
+                if check_types != STRICT_VERIFICATION_CHECK_TYPES
+            }
+            if missing_by_repository:
                 raise StateError(
-                    "Strict workflow requires a non-empty not_applicable_reason when "
-                    f"{check_type} is marked not applicable."
+                    "Strict Canonical Spec verification requires every repository to cover "
+                    "lint, typecheck, test, and build: "
+                    + "; ".join(
+                        f"{repo_id} missing {', '.join(check_types)}"
+                        for repo_id, check_types in sorted(missing_by_repository.items())
+                    )
                 )
+        else:
+            latest_by_type: dict[str, dict] = {}
+            for record in latest_by_check.values():
+                check_type = str(record.get("check_type") or "")
+                if check_type in STRICT_VERIFICATION_CHECK_TYPES:
+                    latest_by_type[check_type] = record
+            missing_types = sorted(STRICT_VERIFICATION_CHECK_TYPES - latest_by_type.keys())
+            if missing_types:
+                raise StateError(
+                    "Strict workflow requires current verification evidence for every check type: "
+                    + ", ".join(missing_types)
+                    + "."
+                )
+            for check_type, record in latest_by_type.items():
+                if record.get("applicable") is False and not is_non_empty_string(
+                    record.get("not_applicable_reason")
+                ):
+                    raise StateError(
+                        "Strict workflow requires a non-empty not_applicable_reason when "
+                        f"{check_type} is marked not applicable."
+                    )
+    if is_spec_task:
+        inspect_task_spec(root, task)
+        plan = latest_execution_plan(root, task_id)
+        required_test_commands = {
+            (
+                str(unit.get("source_task_id")),
+                str(unit.get("repo_id")),
+                str(command),
+            )
+            for unit in (plan or {}).get("units", [])
+            if isinstance(unit, dict)
+            for command in unit.get("test_commands", [])
+            if is_non_empty_string(command)
+        }
+        executed_commands = {
+            (
+                str(record.get("source_task_id")),
+                str(record.get("repo_id")),
+                str(record.get("command")),
+            )
+            for record in applicable_records
+            if is_non_empty_string(record.get("command"))
+        }
+        missing_commands = sorted(required_test_commands - executed_commands)
+        if missing_commands:
+            raise StateError(
+                "Canonical Spec verification is missing source test commands: "
+                + ", ".join(
+                    f"{source_task_id}@{repo_id}: {command}"
+                    for source_task_id, repo_id, command in missing_commands
+                )
+            )
+        covered_verification_tasks = {
+            str(record.get("source_task_id")) for record in applicable_records
+        }
+        missing_verification_tasks = sorted(
+            set(task_repositories) - covered_verification_tasks
+        )
+        if missing_verification_tasks:
+            raise StateError(
+                "Canonical Spec verification evidence does not cover selected source tasks: "
+                + ", ".join(missing_verification_tasks)
+            )
+        pending_integration = [
+            record
+            for record in task.get("spec_dependency_evidence", [])
+            if isinstance(record, dict)
+            and record.get("dependency_type") == "integration"
+            and record.get("status") != "satisfied"
+        ]
+        if pending_integration:
+            edges = ", ".join(
+                f"{record.get('source_task_id')}->{record.get('task_id')}"
+                for record in pending_integration
+            )
+            raise StateError(
+                "VERIFICATION cannot advance to MEMORY while Canonical Spec integration "
+                f"dependencies are pending: {edges}."
+            )
 
 
 def validate_read_only_completion(root: Path, task_id: str) -> None:
@@ -1864,8 +2497,126 @@ def validate_analysis_readiness(root: Path, task_id: str) -> None:
             except OSError:
                 reasons.append("dev-spec skeleton template cannot be read")
 
-    if not has_valid_execution_plan(root, task_id):
+    plan_is_valid = has_valid_execution_plan(root, task_id)
+    if not plan_is_valid:
         reasons.append("execution.jsonl has no valid plan record")
+    if task and isinstance(task.get("spec_source"), dict):
+        try:
+            inspection, selection = inspect_task_spec(root, task)
+            required_markers = [
+                str(task["spec_source"].get("path") or ""),
+                str(task["spec_source"].get("spec_id") or ""),
+                str(task["spec_source"].get("sha256") or ""),
+                *[str(task_id) for task_id in selection["selected_task_ids"]],
+                *[str(repo_id) for repo_id in selection["selected_repo_ids"]],
+                *[
+                    f"{repo_id}={inspection['baseline_status'].get(repo_id)}"
+                    for repo_id in selection["selected_repo_ids"]
+                ],
+            ]
+            missing_markers = [
+                marker
+                for marker in required_markers
+                if marker and not contains_spec_marker(dev_spec_content, marker)
+            ]
+            revision = task["spec_source"].get("revision")
+            if (
+                type(revision) is not int
+                or re.search(
+                    rf"\brevision\s*[:：=]\s*{revision}(?!\d)",
+                    dev_spec_content,
+                    re.IGNORECASE,
+                )
+                is None
+            ):
+                missing_markers.append(f"revision={revision}")
+            if missing_markers:
+                reasons.append(
+                    "dev-spec.md is missing Canonical Spec traceability markers: "
+                    + ", ".join(missing_markers)
+                )
+            selected_repo_ids = set(selection["selected_repo_ids"])
+            bindings = task.get("spec_repositories")
+            bound_repo_ids = {
+                str(binding.get("repo_id"))
+                for binding in bindings or []
+                if isinstance(binding, dict)
+            }
+            if bound_repo_ids != selected_repo_ids:
+                reasons.append("spec_repositories do not cover selected Canonical Spec tasks")
+            if inspection.get("unresolved_repositories"):
+                reasons.append(
+                    "Canonical Spec repository bindings are unresolved: "
+                    + ", ".join(inspection["unresolved_repositories"])
+                )
+            unavailable_repositories = [
+                repo_id
+                for repo_id in selection["selected_repo_ids"]
+                if inspection["baseline_status"].get(repo_id) == "baseline-unavailable"
+            ]
+            if unavailable_repositories:
+                reasons.append(
+                    "Canonical Spec baselines are unavailable: "
+                    + ", ".join(unavailable_repositories)
+                )
+            if plan_is_valid:
+                plan = latest_execution_plan(root, task_id)
+                if plan is None:
+                    reasons.append("Canonical Spec execution plan cannot be loaded")
+                else:
+                    task_repository_scopes(root, task, plan)
+                    derived_markers = [
+                        *[
+                            str(unit.get("id") or "")
+                            for unit in plan.get("units", [])
+                            if isinstance(unit, dict)
+                        ],
+                        *[
+                            str(step_id)
+                            for unit in plan.get("units", [])
+                            if isinstance(unit, dict)
+                            for step_id in unit.get("source_step_ids", [])
+                        ],
+                        *[
+                            f"{record.get('source_task_id')}->{record.get('task_id')}"
+                            for record in task.get("spec_dependency_evidence", [])
+                            if isinstance(record, dict)
+                            and record.get("dependency_type") == "integration"
+                            and record.get("status") == "pending"
+                        ],
+                        *[
+                            str(record.get("required_evidence") or "")
+                            for record in task.get("spec_dependency_evidence", [])
+                            if isinstance(record, dict)
+                            and record.get("dependency_type") == "integration"
+                            and record.get("status") == "pending"
+                        ],
+                    ]
+                    missing_derived_markers = [
+                        marker
+                        for marker in derived_markers
+                        if marker and not contains_spec_marker(dev_spec_content, marker)
+                    ]
+                    if missing_derived_markers:
+                        reasons.append(
+                            "dev-spec.md is missing Canonical Spec Unit/dependency markers: "
+                            + ", ".join(dict.fromkeys(missing_derived_markers))
+                        )
+                    if test_strategy.is_file():
+                        test_strategy_content = test_strategy.read_text(encoding="utf-8")
+                        if test_strategy_content.strip():
+                            missing_test_markers = missing_spec_test_strategy_markers(
+                                selection, plan, test_strategy_content
+                            )
+                            if missing_test_markers:
+                                reasons.append(
+                                    "test-strategy.md is missing Canonical Spec markers: "
+                                    + ", ".join(missing_test_markers)
+                                )
+        except StateError as exc:
+            reasons.append(str(exc))
+        except OSError:
+            reasons.append("test-strategy.md cannot be read")
     if is_read_only_task:
         if test_strategy.exists():
             reasons.append("read-only task must not create test-strategy.md")
@@ -1919,6 +2670,28 @@ def get_pending_init_version(root: Path) -> str | None:
     if project_init and project_init.get("pending_init_since"):
         return str(project_init["pending_init_since"])
     return None
+
+
+def spec_task_summary(task: dict | None) -> dict | None:
+    if not task or not isinstance(task.get("spec_source"), dict):
+        return None
+    dependencies = task.get("spec_dependency_evidence")
+    pending_dependencies = [
+        {
+            "source_task_id": record.get("source_task_id"),
+            "task_id": record.get("task_id"),
+            "dependency_type": record.get("dependency_type"),
+            "required_evidence": record.get("required_evidence"),
+        }
+        for record in dependencies or []
+        if isinstance(record, dict) and record.get("status") == "pending"
+    ]
+    return {
+        "source": task["spec_source"],
+        "selected_spec_tasks": task.get("selected_spec_tasks", []),
+        "repositories": task.get("spec_repositories", []),
+        "pending_dependencies": pending_dependencies,
+    }
 
 
 def transition_requires_confirmation(
@@ -2039,6 +2812,7 @@ def snapshot_state(
         "session_workflow_mode": session_workflow_mode,
         "configured_workflow_mode": configured_workflow_mode,
         "concrete_workflow_mode": concrete_workflow_mode,
+        "spec_summary": spec_task_summary(task),
         # Compatibility output aliases for pre-0.9 clients.
         "project_confirm_mode": project_approval_mode,
         "session_confirm_mode": session_approval_mode,
@@ -2245,6 +3019,7 @@ def list_tasks(root: Path, agent: str | None = None) -> list[dict]:
                 "action": action,
                 "previous_agent": last_agent if action == "takeover" else None,
                 "latest_handoff": latest_handoff_record(root, entry.name),
+                "spec_summary": spec_task_summary(task),
             }
         )
     return items
@@ -2507,6 +3282,7 @@ def create_task(
     agent: str,
     set_current: bool = True,
     session_file: str | Path | None = None,
+    task_fields: dict | None = None,
 ) -> dict:
     assert_safe_task_id(task_id)
     if set_current:
@@ -2529,10 +3305,135 @@ def create_task(
         "closed_reason": None,
         "repos": [],
     }
+    if task_fields:
+        task.update(task_fields)
     write_task(root, task_id, task)
     if set_current:
         return set_current_task(root, task_id, agent, session_file)
     return {"task_id": task_id, "task": task}
+
+
+def ensure_path_inside_root(root: Path, path: Path, label: str) -> Path:
+    resolved = path.resolve()
+    try:
+        resolved.relative_to(root.resolve())
+    except ValueError as exc:
+        raise StateError(f"{label} must be inside the Easy Coding project root.") from exc
+    return resolved
+
+
+def create_task_from_spec(
+    root: Path,
+    spec_path: str,
+    spec_task_ids: list[str],
+    task_id: str,
+    task_type: str,
+    title: str,
+    repo_paths: dict[str, str],
+    dependency_evidence: dict[str, str],
+    agent: str,
+    set_current: bool = True,
+    session_file: str | Path | None = None,
+) -> dict:
+    raw_spec_path = Path(spec_path)
+    resolved_spec_path = ensure_path_inside_root(
+        root,
+        raw_spec_path if raw_spec_path.is_absolute() else root / raw_spec_path,
+        "Canonical Spec path",
+    )
+    try:
+        inspection = inspect_spec(
+            resolved_spec_path,
+            root,
+            repo_paths,
+            spec_task_ids,
+        )
+        selection = select_tasks(inspection, spec_task_ids, dependency_evidence)
+    except EasyDevSpecError as exc:
+        raise StateError(f"Cannot create task from Canonical Spec: {exc}") from exc
+
+    selected_repo_ids = set(selection["selected_repo_ids"])
+    bindings = [
+        binding
+        for binding in inspection["repository_bindings"]
+        if binding.get("repo_id") in selected_repo_ids
+    ]
+    if len(bindings) != len(selected_repo_ids):
+        raise StateError("Canonical Spec repository bindings do not cover every selected task.")
+    stored_repo_paths = {
+        str(binding["repo_id"]): str(binding["path"])
+        for binding in bindings
+    }
+    source_path = resolved_spec_path.relative_to(root.resolve()).as_posix()
+    fields = {
+        "repos": list(selection["selected_repo_ids"]),
+        "repo_paths": stored_repo_paths,
+        "spec_source": {
+            "schema": inspection["schema"],
+            "spec_id": inspection["spec_id"],
+            "revision": inspection["revision"],
+            "path": source_path,
+            "sha256": inspection["source_sha256"],
+        },
+        "selected_spec_tasks": selection["selected_task_ids"],
+        "spec_repositories": bindings,
+        "spec_dependency_evidence": selection["dependency_records"],
+    }
+    return create_task(
+        root,
+        task_id,
+        task_type,
+        title,
+        agent,
+        set_current,
+        session_file,
+        fields,
+    )
+
+
+def satisfy_spec_dependency(
+    root: Path,
+    dependency_task_id: str,
+    evidence: str,
+    agent: str,
+    source_task_id: str | None = None,
+    task_id: str | None = None,
+    session_file: str | Path | None = None,
+) -> dict:
+    session, resolved_task_id, task = resolve_current_task(root, task_id, session_file)
+    if task.get("status") in TERMINAL_STATUSES or task.get("status") == "MEMORY":
+        raise StateError("Spec dependency evidence cannot change after MEMORY begins.")
+    if not is_non_empty_string(evidence):
+        raise StateError("Spec dependency evidence must be non-empty.")
+    inspect_task_spec(root, task)
+    records = task.get("spec_dependency_evidence")
+    if not isinstance(records, list):
+        raise StateError("Current task is not backed by Canonical Spec dependency metadata.")
+    matches = [
+        record
+        for record in records
+        if isinstance(record, dict)
+        and record.get("task_id") == dependency_task_id
+        and (source_task_id is None or record.get("source_task_id") == source_task_id)
+    ]
+    if not matches:
+        raise StateError("Canonical Spec dependency edge was not found.")
+    if source_task_id is None and len(matches) > 1:
+        raise StateError(
+            "Canonical Spec dependency is ambiguous; pass --source-task to identify the edge."
+        )
+    record = matches[0]
+    if record.get("dependency_type") == "contract":
+        raise StateError("Contract dependencies are satisfied by the frozen READY Spec.")
+    record["status"] = "satisfied"
+    record["evidence"] = evidence.strip()
+    record["satisfied_at"] = now_iso()
+    record["satisfied_by"] = agent
+    task["last_agent"] = agent
+    write_task(root, resolved_task_id, task)
+    snapshot = snapshot_state(root, session_file, session)
+    snapshot["action"] = "satisfy-spec-dependency"
+    return snapshot
 
 
 def append_stage_history(task: dict, stage: str, agent: str) -> None:
@@ -3180,6 +4081,19 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--session-file", help="Session file path injected by the hook.")
 
 
+def parse_mapping_args(values: list[str], label: str) -> dict[str, str]:
+    mappings: dict[str, str] = {}
+    for value in values:
+        key, separator, mapped_value = value.partition("=")
+        if not separator or not key.strip() or not mapped_value.strip():
+            raise StateError(f"{label} must use KEY=VALUE syntax: {value!r}")
+        key = key.strip()
+        if key in mappings:
+            raise StateError(f"{label} contains a duplicate key: {key}")
+        mappings[key] = mapped_value.strip()
+    return mappings
+
+
 def main() -> int:
     configure_stdio()
     common = argparse.ArgumentParser(add_help=False)
@@ -3193,12 +4107,31 @@ def main() -> int:
     list_tasks_parser = subcommands.add_parser("list-tasks", parents=[common])
     list_tasks_parser.add_argument("--agent")
 
+    inspect_spec_parser = subcommands.add_parser("inspect-dev-spec", parents=[common])
+    inspect_spec_parser.add_argument("--spec", required=True)
+    inspect_spec_parser.add_argument("--repo-path", action="append", default=[])
+
+    select_spec_scope = subcommands.add_parser("select-dev-spec-scope", parents=[common])
+    select_spec_scope.add_argument("--spec", required=True)
+    select_spec_scope.add_argument("--spec-task", required=True, action="append")
+
     create = subcommands.add_parser("create-task", parents=[common])
     create.add_argument("--task-id", required=True)
     create.add_argument("--type", required=True)
     create.add_argument("--title", required=True)
     create.add_argument("--agent", required=True)
     create.add_argument("--no-set-current", action="store_true")
+
+    create_from_spec = subcommands.add_parser("create-task-from-spec", parents=[common])
+    create_from_spec.add_argument("--spec", required=True)
+    create_from_spec.add_argument("--spec-task", required=True, action="append")
+    create_from_spec.add_argument("--task-id", required=True)
+    create_from_spec.add_argument("--type", required=True)
+    create_from_spec.add_argument("--title", required=True)
+    create_from_spec.add_argument("--repo-path", required=True, action="append")
+    create_from_spec.add_argument("--dependency-evidence", action="append", default=[])
+    create_from_spec.add_argument("--agent", required=True)
+    create_from_spec.add_argument("--no-set-current", action="store_true")
 
     set_current = subcommands.add_parser("set-current", parents=[common])
     set_current.add_argument("--task-id", required=True)
@@ -3339,6 +4272,13 @@ def main() -> int:
     repo_path.add_argument("--agent")
     repo_path.add_argument("--task-id")
 
+    satisfy_dependency = subcommands.add_parser("satisfy-spec-dependency", parents=[common])
+    satisfy_dependency.add_argument("--spec-task", required=True)
+    satisfy_dependency.add_argument("--source-task")
+    satisfy_dependency.add_argument("--evidence", required=True)
+    satisfy_dependency.add_argument("--agent", required=True)
+    satisfy_dependency.add_argument("--task-id")
+
     args = parser.parse_args()
     try:
         root = resolve_root(getattr(args, "cwd", None))
@@ -3353,7 +4293,12 @@ def main() -> int:
             raise StateError(
                 "project-init-complete requires --session-file from the current hook context."
             )
-        if session_file is None and command not in {"list-tasks", "memory-new-id"}:
+        if session_file is None and command not in {
+            "inspect-dev-spec",
+            "select-dev-spec-scope",
+            "list-tasks",
+            "memory-new-id",
+        }:
             if session_agent == "unknown":
                 raise StateError(
                     "Cannot resolve the logical session. Pass --session-file or --agent."
@@ -3361,6 +4306,26 @@ def main() -> int:
             _, session_file = ensure_hook_session(root, {}, session_agent)
         if command == "snapshot":
             emit(snapshot_state(root, session_file))
+        elif command == "inspect-dev-spec":
+            spec_path = Path(args.spec)
+            emit(
+                inspection_summary(
+                    inspect_spec(
+                        spec_path if spec_path.is_absolute() else root / spec_path,
+                        root,
+                        parse_mapping_args(args.repo_path, "--repo-path"),
+                    )
+                )
+            )
+        elif command == "select-dev-spec-scope":
+            spec_path = Path(args.spec)
+            emit(
+                select_consumption_scopes(
+                    spec_path if spec_path.is_absolute() else root / spec_path,
+                    root,
+                    args.spec_task,
+                )
+            )
         elif command == "list-tasks":
             emit({"tasks": list_tasks(root, visible_agent)})
         elif command == "create-task":
@@ -3372,6 +4337,30 @@ def main() -> int:
                         args.task_id,
                         args.type,
                         args.title,
+                        agent,
+                        not args.no_set_current,
+                        session_file,
+                    ),
+                    agent,
+                    session_file,
+                )
+            )
+        elif command == "create-task-from-spec":
+            emit(
+                attach_status_context(
+                    root,
+                    create_task_from_spec(
+                        root,
+                        args.spec,
+                        args.spec_task,
+                        args.task_id,
+                        args.type,
+                        args.title,
+                        parse_mapping_args(args.repo_path, "--repo-path"),
+                        parse_mapping_args(
+                            args.dependency_evidence,
+                            "--dependency-evidence",
+                        ),
                         agent,
                         not args.no_set_current,
                         session_file,
@@ -3664,8 +4653,25 @@ def main() -> int:
                     session_file,
                 )
             )
+        elif command == "satisfy-spec-dependency":
+            emit(
+                attach_status_context(
+                    root,
+                    satisfy_spec_dependency(
+                        root,
+                        args.spec_task,
+                        args.evidence,
+                        agent,
+                        args.source_task,
+                        args.task_id,
+                        session_file,
+                    ),
+                    agent,
+                    session_file,
+                )
+            )
         return 0
-    except StateError as error:
+    except (StateError, EasyDevSpecError) as error:
         print(json.dumps({"error": str(error)}, ensure_ascii=False), file=sys.stderr)
         return 1
 

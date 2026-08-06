@@ -21,6 +21,24 @@ Communicate with the user in the user's language.
 4. Inspect concrete code paths and tests. Expand context only when evidence reveals another
    dependency or risk.
 
+For a task with `task.json.spec_source`, re-run `inspect-dev-spec` against the stored source and
+every stored `task.repo_paths` repository binding. The schema, spec ID, revision, and SHA-256
+must still match. Then call the read-only selector for the exact stored selection:
+
+```bash
+{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py inspect-dev-spec \
+  --spec <stored-source> --repo-path <repo-id>=<stored-path> [--repo-path <repo-id>=<stored-path>]...
+
+{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py select-dev-spec-scope \
+  --spec <stored-source> --spec-task <selected-task-id> [--spec-task <selected-task-id>]...
+```
+
+Load only the returned per-repository consumption closures: manifest/global context, selected
+task and repository sections, related contracts, direct dependency summaries, selected
+changes/steps/tests, and relevant integration rows. Never replace the selector with a whole-file
+read. `scope-drifted` requires current-code conflict analysis before confirmation;
+`baseline-unavailable` or unresolved repository identity remains blocked in ANALYSIS.
+
 ## Analysis artifacts
 
 Copy `.easy-coding/templates/dev-spec-skeleton.md` first, then replace every `[[EC_TODO:...]]`.
@@ -43,10 +61,32 @@ Execution plan records use:
     "acceptance_criteria": ["observable result"],
     "test_points": ["targeted check"],
     "contracts": ["input/output/invariant or none"],
-    "risks": ["known risk or none"]
+    "risks": ["known risk or none"],
+    "repo_id": "R1",
+    "source_task_id": "R1-T1",
+    "source_step_ids": ["S1"],
+    "symbols": ["Class#method"],
+    "test_commands": ["exact source test command", "optional local command"]
   }]
 }
 ```
+
+The five source fields are mandatory only for Canonical-backed code units. Default to one unit
+per selected Spec task. A split may cover only one `repo_id` and one `source_task_id`, and all
+units together must cover every source step exactly once. Map selected hard dependencies into
+`depends_on`, contract dependencies into `contracts`, and dependency levels into
+`parallel_groups`.
+
+Canonical-backed `dev-spec.md`, `execution.jsonl`, and `test-strategy.md` are runtime-derived
+evidence, not a second maintained Spec. Record the source path/ID/revision/SHA, selected tasks
+and repositories, baseline/conflict result, Unit mapping, source test mapping, and pending
+integration edges.
+
+Every source test command remains mandatory. Additional commands from the current repository are
+allowed only when `test-strategy.md` records why the Canonical command alone is insufficient.
+For every selected source test, `test-strategy.md` must spell out its Test ID, source task ID,
+owning Unit ID, repository-relative test file, and exact Canonical command; the state gate checks
+these markers mechanically.
 
 Prefer one coherent unit over artificial file-level splitting. Use parallel only for truly
 independent write scopes. Better unit contracts reduce later REVIEW rework.
@@ -120,3 +160,5 @@ controls waiting; it never changes the selected execution depth.
 - No code task with an empty change scope.
 - No unit without acceptance criteria, test points, contracts, and risks.
 - No transition without a valid workflow proposal.
+- No Canonical-backed transition with changed source SHA, unresolved repository identity,
+  incomplete selected-task coverage, or an open Unit/Step/File/Symbol/Test traceability gap.

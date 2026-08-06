@@ -14,6 +14,13 @@ Every new code task enters REVIEW. Read-only tasks do not. Obtain the current fi
 Review the final diff against `dev-spec.md`, RULES, unit acceptance criteria, tests, contracts,
 and obvious security risks. Every finding cites `file:line`.
 
+For Canonical-backed tasks, group evidence by `repo_id` and `source_task_id`. Every selected
+Spec task needs an implementation result and source test evidence; file references remain
+repo-relative within the owning repository. Missing or expanded source change/step coverage is
+a blocking correctness finding. Every Canonical review record includes its `repo_id` and
+`source_task_id`; emit at least one current-fingerprint record per selected task and required
+review dimension. A global record without source ownership cannot satisfy the gate.
+
 ## Depth by workflow mode
 
 - `fast`: main Agent performs one final-diff self-review across correctness, scope, tests, and
@@ -67,6 +74,8 @@ Fast and Standard normally use `combined`; Strict uses at least two distinct dim
   "reviewer": "main-or-independent-agent",
   "implementation_fingerprint": "<state-api value>",
   "timestamp": "<ISO-8601>",
+  "repo_id": "<canonical repo-id; omit for non-Canonical tasks>",
+  "source_task_id": "<canonical task-id; omit for non-Canonical tasks>",
   "findings": []
 }
 ```

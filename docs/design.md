@@ -77,7 +77,7 @@ easy-coding-harness 的核心设计原则是**不绑定任何特定 Agent 平台
 
 **交接机制**：
 - `task.json.last_agent` 记录最后处理者，接手 Agent 能区分"交接过来的任务"和"自己上次中断的任务"
-- `last_agent` 使用平台 Agent 身份；Codex 协作树中的 `/root` 与 `/root/...` 会规范化为 `codex`，避免同一 Codex 会话被误判为跨 Agent 交接
+- `last_agent` 使用平台 Agent 身份；Codex 根身份 `root`、`/root` 及其协作子路径会规范化为 `codex`，避免同一 Codex 会话被误判为跨 Agent 交接
 - `execution.jsonl` 的 `handoff` 记录提供高密度的上下文摘要（方案形态、关键决策、用户强调点）
 - 每个需要确认的边界都提供显式交接入口，handoff 保留当前 `pending_transition`；自动边直接由状态 API 推进
 - ec-workflow 统一承接所有恢复场景——跨会话中断和跨 Agent 交接走同一条路径
@@ -520,7 +520,7 @@ Claude Code 同样将 session 初始化限定在 `SessionStart`；Qoder 没有�
 #### 11.2 交接机制
 
 - `task.json.last_agent` 记录最后处理者，接手 Agent 能识别"这是交接过来的任务"
-- 状态 API 在写入和比较 `last_agent` 时统一 Agent 身份；Codex 的 `/root` 协作路径与平台身份 `codex` 等价，存量任务无需迁移
+- 状态 API 在写入和比较 `last_agent` 时统一 Agent 身份；Codex 的 `root`、`/root` 及其协作子路径与平台身份 `codex` 等价，存量任务无需迁移
 - execution.jsonl 的 `handoff` 记录提供快速上下文摘要
 - 每个存在 `pending_transition` 的阶段边界都提供显式交接入口
 - ec-workflow 统一承接所有恢复场景

@@ -52,7 +52,36 @@ plan decision; Auto continues immediately. Both remove later waiting, not qualit
    - Present with `status != "COMPLETE"`: invoke `{{skill_trigger}}ec-init`, then stop.
    - `[easy-coding:upgrade-init-pending:X]`: recommend `{{skill_trigger}}ec-init` for vX
      adaptation, but allow the user to continue; this reminder is not a workflow block.
-3. Match the user's intent against `current_task` and the active task list before resuming.
+3. When the user explicitly references a Dev-Spec, run the read-only `inspect-dev-spec` command
+   before ordinary task creation. For `protocol=canonical-v1`, show every task ID, repository,
+   title, dependency, and baseline status; never select all tasks by default. After the user
+   chooses one or more tasks and resolves repository paths or omitted hard-dependency evidence,
+   call `create-task-from-spec` once for the complete selection. A document without a Canonical
+   manifest remains a legacy ANALYSIS input for an ordinary task. A malformed, DRAFT, or otherwise
+   non-READY Canonical Spec stays blocked and must never be downgraded to the legacy route. Never
+   edit the source Spec.
+
+   ```bash
+   {{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py inspect-dev-spec \
+     --spec <path> [--repo-path <repo-id>=<path>]...
+
+   {{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py select-dev-spec-scope \
+     --spec <path> --spec-task <task-id> [--spec-task <task-id>]...
+
+   {{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py create-task-from-spec \
+     --spec <path> --spec-task <task-id> [--spec-task <task-id>]... \
+     --task-id <harness-task-id> --type <type> --title <title> \
+     --repo-path <repo-id>=<path> [--dependency-evidence <dependency-id>=<evidence>]... \
+     --agent <agent-id> --session-file <P>
+   ```
+
+   `select-dev-spec-scope` is read-only and may run only after explicit task selection. Its
+   per-repository payload is the authoritative ANALYSIS context; do not load unselected task
+   bodies from the source document.
+
+   When multiple selected tasks depend on the same target, disambiguate creation evidence with
+   `<source-task-id>-><dependency-task-id>=<evidence>`.
+4. Match the user's intent against `current_task` and the active task list before resuming.
    If the user names or clearly matches another task, confirm the switch and call
    `claim-task --task-id <id> --agent <agent-id> --session-file <P>`. Do not execute task A
    under task B's request.
@@ -64,10 +93,10 @@ plan decision; Auto continues immediately. Both remove later waiting, not qualit
      to the requested deliverable. Feature, bugfix, refactor, performance, and workflow changes
      are code tasks. Use `doc`, `analysis`, or `report` only when the user explicitly requested
      a no-code deliverable; never downgrade a code request to the read-only completion path.
-4. Resume the matched/current task, then load only state-relevant assets. Do not read five full
+5. Resume the matched/current task, then load only state-relevant assets. Do not read five full
    memories at every startup; ANALYSIS searches memory metadata and opens relevant entries on
    demand.
-5. If another Agent last owned the task, summarize the stored handoff before continuing.
+6. If another Agent last owned the task, summarize the stored handoff before continuing.
 
 ## Stage dispatch
 
