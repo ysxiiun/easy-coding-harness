@@ -6,6 +6,21 @@
 - `y`：常规功能升级
 - `z`：日常 bug 修复
 
+## 0.10.0-beta.1
+
+- 新增默认关闭的 Java TDD 模式，支持项目级 CLI 配置与 session 覆盖；覆盖率阈值默认
+  90、可配置 1..100，并在 ANALYSIS → IMPLEMENT 与任务一起冻结。
+- 新增 `ec-config` 统一管理 Approval、Workflow、TDD 与阈值；`ec-task-management` 收口为
+  纯任务生命周期面板。TDD 开启时状态栏在 Workflow 后显示独立 `TDD` 标识，关闭时格式
+  与原有执行深度完全不变。
+- TDD 开启后要求 Java RED/GREEN/REFACTOR（纯重构为 characterization GREEN → GREEN）、
+  独立 TDD review，以及 JaCoCo 修改生产代码可执行行差异覆盖率；本地与 GitLab TEST
+  stage 复用 `.easy-coding/tools/easy_coding_java_coverage.py` 门禁，验收必须同时保留本地
+  结果与成功 GitLab pipeline/job 证据。
+- 配置 schema 升至 4；旧项目、session 与在途 task 迁移后保持 TDD 关闭。TDD 关闭时不
+  扫描 CI/JaCoCo、不生成 TDD artifact、不运行额外命令，也不提高 Fast/Standard/Strict
+  的既有测试与验收深度。
+
 ## 0.10.0-beta.0
 
 - 接入 `easy-dev-spec/v1` Canonical Spec：同步最终 producer 协议实现并新增只读

@@ -24,17 +24,23 @@ the stage graph. Pre-0.9 in-flight tasks may carry `workflow_mode_legacy:true` f
 review-evidence compatibility. Only `workflow_mode_legacy_direct_edge:true`, created from old
 lite semantics or an already-persisted edge, permits one IMPLEMENT -> VERIFICATION transition.
 
-## Two independent controls
+## Independent controls
 
 - `approval_mode = approve|guard|confirm|auto` controls whether a legal transition waits for a
   user. `confirm` waits only at ANALYSIS -> IMPLEMENT; after that, green REVIEW, VERIFICATION,
   MEMORY, and COMPLETE transitions advance automatically.
 - `workflow_mode = adaptive|fast|standard|strict` controls execution cost and assurance depth.
+- `tdd_enabled` independently activates Java TDD and changed-line coverage. It defaults off;
+  `tdd_coverage_threshold` defaults to 90 and accepts integers from 1 to 100.
 
 Resolution order for each configured value is session override, then project config, then
 defaults (`guard`, `adaptive`). ANALYSIS resolves `adaptive` to a concrete mode, presents the
 selection and reasons, allows the user to change it within the risk floor, and freezes it when
 ANALYSIS -> IMPLEMENT is applied.
+
+TDD resolves with the same session-over-project precedence and freezes its enabled flag and
+threshold on ANALYSIS -> IMPLEMENT. When off, it must add no CI scan, artifacts, commands,
+coverage work, or stronger acceptance. Use `ec-config` for all mode configuration.
 
 `confirm` and `auto` do not hide the proposal: show it in the plan. Confirm waits for that one
 plan decision; Auto continues immediately. Both remove later waiting, not quality gates.

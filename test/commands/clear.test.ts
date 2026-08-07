@@ -405,6 +405,13 @@ describe("clear command", () => {
 
   it("removes manifest empty dirs deepest-first after a fresh Codex clear", async () => {
     await init({ agent: "codex", yes: true });
+    const coverageTool = path.join(
+      tempDir,
+      ".easy-coding",
+      "tools",
+      "easy_coding_java_coverage.py",
+    );
+    expect(await pathExists(coverageTool)).toBe(true);
 
     await clear({ yes: true });
 
@@ -412,6 +419,7 @@ describe("clear command", () => {
     expect(await pathExists(path.join(tempDir, ".codex", "hooks"))).toBe(false);
     expect(await pathExists(path.join(tempDir, ".codex", "agents"))).toBe(false);
     expect(await pathExists(path.join(tempDir, ".codex", "hooks.json"))).toBe(false);
+    expect(await pathExists(coverageTool)).toBe(false);
   });
 
   it("prunes manifest hook registrations by hook_path when a command was wrapped", async () => {

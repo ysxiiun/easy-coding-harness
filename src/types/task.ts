@@ -55,6 +55,8 @@ export interface SessionFile {
   created_at: string;
   approval_mode?: ApprovalMode;
   workflow_mode?: ConfiguredWorkflowMode;
+  tdd_enabled?: boolean;
+  tdd_coverage_threshold?: number;
   /** Pre-0.9 session compatibility; migrated on first write. */
   confirm_mode?: ApprovalMode | "lite";
   workflow_mode_legacy_confirm_override?: boolean;
@@ -122,6 +124,11 @@ export interface TaskJson {
   workflow_mode_legacy?: boolean;
   workflow_mode_legacy_direct_edge?: boolean;
   workflow_mode_legacy_review_bypass_fingerprint?: string;
+  tdd_enabled?: boolean;
+  tdd_coverage_threshold?: number;
+  tdd_confirmed_at?: string;
+  tdd_confirmed_by?: string;
+  tdd_baselines?: Record<string, string>;
   memory_progress?: MemoryProgress;
   confirmed_by_user?: boolean;
   test_strategy_confirmed?: boolean;
@@ -205,7 +212,7 @@ export type ExecutionRecord =
   | {
       type: "verify";
       check: string;
-      check_type: "lint" | "typecheck" | "test" | "build";
+      check_type: "lint" | "typecheck" | "test" | "build" | "coverage";
       command?: string;
       passed: boolean;
       applicable?: boolean;
@@ -216,5 +223,21 @@ export type ExecutionRecord =
       repo_id?: string;
       source_task_id?: string;
       failures?: string[];
+      coverage_scope?: "local" | "gitlab";
+      ci?: {
+        provider: "gitlab";
+        pipeline_url: string;
+        job_name: string;
+        status: "success";
+      };
+      coverage?: {
+        baseline_sha: string;
+        covered_lines: number;
+        total_lines: number;
+        percentage: number;
+        threshold: number;
+        report_paths: string[];
+        report_sha256: string;
+      };
     }
   | { type: "handoff"; from: string; stage: Stage; summary: string; timestamp: string };

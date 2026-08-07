@@ -9,6 +9,16 @@ Use only after ANALYSIS has frozen `task.json.workflow_mode` to `fast`, `standar
 `strict`. Read `dev-spec.md`, the latest `plan` record in `execution.jsonl`, relevant RULES
 and ABSTRACT sections, and `test-strategy.md` for code tasks.
 
+If frozen `task.tdd_enabled` is not `true`, preserve the existing shift-left behavior exactly;
+do not load the Java coverage tool, require RED/GREEN/REFACTOR, inspect CI, or run extra test
+commands. TDD is an independent opt-in mode, not an implicit consequence of strict workflow.
+
+When frozen TDD is enabled, every feature/bug unit must capture a meaningful failing unit test
+before production code (RED), the smallest passing implementation (GREEN), and a green refactor.
+Pure refactors instead capture a passing characterization test before the change and rerun it
+afterward. Never fake RED evidence. Keep tests deterministic, boundary-focused, and minimally
+mocked, and design changed production code toward 100% unit coverage.
+
 Communicate with the user in the user's language.
 
 ## Non-negotiable gates
@@ -59,6 +69,7 @@ Sub-agents never dispatch other sub-agents or read `.easy-coding` workflow asset
 # Task Card
 ## Identity       Easy Coding implementation unit
 ## Workflow Mode  {fast|standard|strict}
+## TDD            {off | on, frozen changed-line threshold N%}
 ## Task           {unit description}
 ## Source Spec    {spec_id@revision + sha256 | NONE}
 ## Source Task    {source_task_id | NONE}

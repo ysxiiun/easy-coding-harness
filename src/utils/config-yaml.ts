@@ -5,7 +5,8 @@ import type { AgentPlatform } from "../types/platform.js";
 import type { SupermoduleConfig } from "../types/supermodule.js";
 import { writeTextFile } from "./file-writer.js";
 
-export const CONFIG_SCHEMA_VERSION = 3;
+export const CONFIG_SCHEMA_VERSION = 4;
+export const DEFAULT_TDD_COVERAGE_THRESHOLD = 90;
 export const APPROVAL_MODES = ["approve", "guard", "confirm", "auto"] as const;
 export const CONFIGURED_WORKFLOW_MODES = ["adaptive", "fast", "standard", "strict"] as const;
 export const CONCRETE_WORKFLOW_MODES = ["fast", "standard", "strict"] as const;
@@ -33,6 +34,8 @@ export interface EasyCodingConfig {
   behavior: {
     approval_mode: ApprovalMode;
     workflow_mode: ConfiguredWorkflowMode;
+    tdd_enabled: boolean;
+    tdd_coverage_threshold: number;
   };
   supermodule?: SupermoduleConfig;
   [key: string]: unknown;
@@ -64,6 +67,8 @@ export function createDefaultConfig(params: {
     behavior: {
       approval_mode: "guard",
       workflow_mode: "adaptive",
+      tdd_enabled: false,
+      tdd_coverage_threshold: DEFAULT_TDD_COVERAGE_THRESHOLD,
     },
   };
   if (params.supermodule) {
@@ -142,9 +147,15 @@ export function isConfiguredWorkflowMode(value: unknown): value is ConfiguredWor
   );
 }
 
+export function isTddCoverageThreshold(value: unknown): value is number {
+  return Number.isInteger(value) && Number(value) >= 1 && Number(value) <= 100;
+}
+
 export function resolveLegacyBehavior(config: EasyCodingConfig): {
   approvalMode: ApprovalMode;
   workflowMode: ConfiguredWorkflowMode;
+  tddEnabled: boolean;
+  tddCoverageThreshold: number;
 } {
   const behavior = (config.behavior ?? {}) as unknown as Record<string, unknown>;
   const legacyLite = behavior.confirm_mode === "lite";
@@ -162,16 +173,28 @@ export function resolveLegacyBehavior(config: EasyCodingConfig): {
     : legacyLite
       ? "fast"
       : "adaptive";
-  return { approvalMode, workflowMode };
+  const supportsTdd = Number(config.version) >= CONFIG_SCHEMA_VERSION;
+  const tddEnabled = supportsTdd && behavior.tdd_enabled === true;
+  const tddCoverageThreshold =
+    supportsTdd && isTddCoverageThreshold(behavior.tdd_coverage_threshold)
+      ? behavior.tdd_coverage_threshold
+      : DEFAULT_TDD_COVERAGE_THRESHOLD;
+  return { approvalMode, workflowMode, tddEnabled, tddCoverageThreshold };
 }
 
 export async function setBehaviorModes(
   filePath: string,
   approvalMode: ApprovalMode,
   workflowMode: ConfiguredWorkflowMode,
+  tddEnabled?: boolean,
+  tddCoverageThreshold?: number,
 ): Promise<EasyCodingConfig> {
+  if (tddCoverageThreshold !== undefined && !isTddCoverageThreshold(tddCoverageThreshold)) {
+    throw new Error("TDD coverage threshold must be an integer from 1 to 100.");
+  }
   return updateConfigYaml(filePath, (config) => {
     const legacyBehavior = (config.behavior ?? {}) as unknown as Record<string, unknown>;
+    const resolvedBehavior = resolveLegacyBehavior(config);
     const behavior = Object.fromEntries(
       Object.entries(legacyBehavior).filter(
         ([key]) =>
@@ -179,11 +202,15 @@ export async function setBehaviorModes(
           key !== "auto_mode" &&
           key !== "confirm_mode" &&
           key !== "approval_mode" &&
-          key !== "workflow_mode",
+          key !== "workflow_mode" &&
+          key !== "tdd_enabled" &&
+          key !== "tdd_coverage_threshold",
       ),
     );
     behavior.approval_mode = approvalMode;
     behavior.workflow_mode = workflowMode;
+    behavior.tdd_enabled = tddEnabled ?? resolvedBehavior.tddEnabled;
+    behavior.tdd_coverage_threshold = tddCoverageThreshold ?? resolvedBehavior.tddCoverageThreshold;
     config.behavior = behavior as EasyCodingConfig["behavior"];
     config.version = CONFIG_SCHEMA_VERSION;
   });
@@ -191,8 +218,9 @@ export async function setBehaviorModes(
 
 export async function migrateBehaviorConfig(filePath: string): Promise<EasyCodingConfig> {
   const config = await readConfigYaml(filePath);
-  const { approvalMode, workflowMode } = resolveLegacyBehavior(config);
-  return setBehaviorModes(filePath, approvalMode, workflowMode);
+  const { approvalMode, workflowMode, tddEnabled, tddCoverageThreshold } =
+    resolveLegacyBehavior(config);
+  return setBehaviorModes(filePath, approvalMode, workflowMode, tddEnabled, tddCoverageThreshold);
 }
 
 /** @deprecated Use setBehaviorModes. Kept for API compatibility during the 0.9 beta. */
@@ -201,11 +229,13 @@ export async function setConfirmMode(
   mode: LegacyConfirmMode,
 ): Promise<EasyCodingConfig> {
   const config = await readConfigYaml(filePath);
-  const { workflowMode } = resolveLegacyBehavior(config);
+  const { workflowMode, tddEnabled, tddCoverageThreshold } = resolveLegacyBehavior(config);
   return setBehaviorModes(
     filePath,
     mode === "lite" ? "guard" : mode,
     mode === "lite" ? "fast" : workflowMode,
+    tddEnabled,
+    tddCoverageThreshold,
   );
 }
 

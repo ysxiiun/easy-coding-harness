@@ -8,6 +8,7 @@ import {
   SESSIONS_DIR,
   SPEC_DIR,
   TEMPLATES_DIR,
+  TOOLS_DIR,
 } from "../constants/paths.js";
 import { VERSION } from "../constants/version.js";
 import type { AgentPlatform } from "../types/platform.js";
@@ -53,7 +54,15 @@ export async function writeRuntimeScaffold(
   await ensureDir(path.join(easyCodingDir, SPEC_DIR, DEV_SPEC_DIR));
   await writeMemoryScaffold(easyCodingDir);
   await writeTemplatesScaffold(easyCodingDir);
+  await writeToolsScaffold(easyCodingDir);
   return projectId;
+}
+
+async function writeToolsScaffold(easyCodingDir: string): Promise<void> {
+  const toolsDir = path.join(easyCodingDir, TOOLS_DIR);
+  await ensureDir(toolsDir);
+  const src = getTemplatePath("runtime", "tools", "easy_coding_java_coverage.py");
+  await writeTextFile(path.join(toolsDir, "easy_coding_java_coverage.py"), await readTextFile(src));
 }
 
 async function writeTemplatesScaffold(easyCodingDir: string): Promise<void> {

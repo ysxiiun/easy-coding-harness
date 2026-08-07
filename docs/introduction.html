@@ -440,7 +440,7 @@
         <p class="tagline">给 AI 编程套上一套工作流规范——让它有章可循，而不是全凭 agent 当时的发挥。</p>
         <div class="chip-row">
           <span class="chip">固定阶段状态机</span>
-          <span class="chip">Approval + Adaptive Workflow 双模式</span>
+          <span class="chip">Approval + Workflow + 可选 Java TDD</span>
           <span class="chip">子代理隔离上下文</span>
           <span class="chip">项目记忆分层</span>
           <span class="chip">一份模板 · 三平台</span>
@@ -448,7 +448,7 @@
         </div>
         <div class="meta">
           <span>来源：<code>docs/introduction.md</code></span>
-          <span>版本：<code>0.10.0-beta.0</code></span>
+          <span>版本：<code>0.10.0-beta.1</code></span>
           <span>适配：Claude Code · Codex · Qoder</span>
         </div>
       </header>
@@ -499,7 +499,7 @@
             <div class="idea-card">
               <div class="num">2</div>
               <h3>人机共创，关键节点设硬门控</h3>
-              <p><code>approval_mode</code> 控制状态边是否等待，<code>workflow_mode</code> 控制状态内执行深度。Confirm 只在 ANALYSIS 后确认一次，随后在质量门禁通过后自动推进；Adaptive 在 ANALYSIS 后冻结为 Fast、Standard 或 Strict。所有新代码任务都保留 REVIEW 与 VERIFICATION 门控；Fast 执行最小充分检查，Standard 检查受影响范围，Strict 执行项目适用的完整 lint/typecheck/test/build。</p>
+              <p><code>approval_mode</code> 控制状态边是否等待，<code>workflow_mode</code> 控制状态内执行深度。Confirm 只在 ANALYSIS 后确认一次，随后在质量门禁通过后自动推进；Adaptive 在 ANALYSIS 后冻结为 Fast、Standard 或 Strict。Java TDD 默认关闭，关闭时不增加 CI、JaCoCo 或额外测试成本；开启时冻结可配置阈值（默认 90%），用同一差异覆盖工具执行本地与 GitLab TEST-stage 门禁。所有新代码任务都保留 REVIEW 与 VERIFICATION 门控。</p>
             </div>
             <div class="idea-card">
               <div class="num">3</div>
@@ -650,7 +650,7 @@ easy-coding init --agent=claude-code,codex,qoder  # 指定多个平台</code></p
                 <tr><td><code>easy-coding add-agent</code></td><td>给已接入项目追加某个平台支持</td></tr>
                 <tr><td><code>easy-coding upgrade</code></td><td>CLI 升级后同步项目内生成文件，用户资产保留</td></tr>
                 <tr><td><code>easy-coding update</code></td><td>更新全局 CLI 到最新发布版</td></tr>
-                <tr><td><code>easy-coding config</code></td><td>交互修改项目级确认模式</td></tr>
+                <tr><td><code>easy-coding config</code></td><td>交互修改 Approval、Workflow、Java TDD 与覆盖率阈值</td></tr>
                 <tr><td><code>easy-coding status</code></td><td>查看已安装平台、harness 版本、确认模式与当前任务状态</td></tr>
                 <tr><td><code>easy-coding clear</code></td><td>移除 harness 安装物，保留 tasks、spec、memory 等用户资产</td></tr>
               </tbody>

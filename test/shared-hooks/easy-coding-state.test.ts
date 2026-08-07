@@ -1314,6 +1314,144 @@ describe("easy_coding_state.py ANALYSIS template gate", () => {
     expect(accepted.status).toBe(0);
   });
 
+  it("freezes effective TDD settings atomically on ANALYSIS to IMPLEMENT", async () => {
+    const taskId = "08-06-freeze-tdd";
+    await writeSessionFixture(taskId, { tdd_enabled: true, tdd_coverage_threshold: 95 });
+    await writeTaskFixture(taskId, "ANALYSIS", "codex");
+    await writeAnalysisArtifacts(taskId);
+    const taskDir = path.join(tempDir, ".easy-coding", "tasks", taskId);
+    await mkdir(path.join(tempDir, "src"), { recursive: true });
+    await writeFile(path.join(tempDir, "src", "example.java"), "class Example {}\n", "utf8");
+    execFileSync("git", ["init", "-q"], { cwd: tempDir });
+    execFileSync("git", ["config", "user.email", "fixture@example.com"], { cwd: tempDir });
+    execFileSync("git", ["config", "user.name", "Fixture"], { cwd: tempDir });
+    execFileSync("git", ["add", "src/example.java"], { cwd: tempDir });
+    execFileSync("git", ["commit", "-qm", "baseline"], { cwd: tempDir });
+    const baseline = execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd: tempDir,
+      encoding: "utf8",
+    }).trim();
+    await writeFile(
+      path.join(tempDir, ".easy-coding", "config.yaml"),
+      [
+        "version: 4",
+        "behavior:",
+        "  approval_mode: guard",
+        "  workflow_mode: adaptive",
+        "  tdd_enabled: false",
+        "  tdd_coverage_threshold: 90",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    await writeFile(
+      path.join(taskDir, "execution.jsonl"),
+      `${JSON.stringify({
+        type: "plan",
+        strategy: "single",
+        units: [
+          {
+            id: "U1",
+            title: "freeze TDD",
+            type: "backend",
+            files: ["src/example.java"],
+            depends_on: [],
+            acceptance_criteria: ["observable"],
+            test_points: ["regression"],
+            contracts: ["none"],
+            risks: ["none"],
+          },
+        ],
+      })}\n`,
+      "utf8",
+    );
+    await writeFile(
+      path.join(taskDir, "test-strategy.md"),
+      `# TDD\n\nJUnit and JaCoCo XML; immutable Git baseline ${baseline}; GitLab TEST gate; threshold 95%.\n`,
+      "utf8",
+    );
+    await appendFile(
+      path.join(taskDir, "dev-spec.md"),
+      `\n### TDD Mode\nEnabled; immutable Git baseline ${baseline}; threshold 95%.\n`,
+      "utf8",
+    );
+
+    execFileSync(
+      "python3",
+      [
+        stateApiPath(),
+        "request-transition",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--stage",
+        "IMPLEMENT",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    execFileSync(
+      "python3",
+      [
+        stateApiPath(),
+        "confirm-transition",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--stage",
+        "IMPLEMENT",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+
+    const task = JSON.parse(await readFile(path.join(taskDir, "task.json"), "utf8"));
+    expect(task).toMatchObject({
+      status: "IMPLEMENT",
+      tdd_enabled: true,
+      tdd_coverage_threshold: 95,
+      tdd_confirmed_by: "codex",
+      tdd_baselines: { project: baseline },
+    });
+  });
+
+  it("rejects TDD-only analysis artifacts when the effective TDD mode is off", async () => {
+    const taskId = "08-07-tdd-off-artifacts";
+    await writeSessionFixture(taskId);
+    await writeTaskFixture(taskId, "ANALYSIS", "codex");
+    await writeAnalysisArtifacts(taskId);
+    const taskDir = path.join(tempDir, ".easy-coding", "tasks", taskId);
+    await appendFile(
+      path.join(taskDir, "dev-spec.md"),
+      "\n### TDD Mode\nDisabled but planned anyway.\n",
+      "utf8",
+    );
+    await appendFile(
+      path.join(taskDir, "test-strategy.md"),
+      "\nRun easy_coding_java_coverage.py with RED -> GREEN -> REFACTOR.\n",
+      "utf8",
+    );
+
+    const rejected = spawnSync(
+      "python3",
+      [
+        stateApiPath(),
+        "request-transition",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--stage",
+        "IMPLEMENT",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+
+    expect(rejected.status).toBe(1);
+    expect(rejected.stderr).toContain("must omit the TDD Mode section");
+    expect(rejected.stderr).toContain("contains TDD-only planning");
+  });
+
   it("rejects an empty dev-spec and an invalid latest plan record", async () => {
     await writeSessionFixture("07-11-analysis-invalid");
     await writeTaskFixture("07-11-analysis-invalid", "ANALYSIS", "codex");
@@ -1638,6 +1776,67 @@ describe("easy_coding_state.py ANALYSIS template gate", () => {
     );
     expect(parallelNoCode.status).toBe(1);
     expect(parallelNoCode.stderr).toContain("execution.jsonl has no valid plan record");
+  });
+
+  it("freezes Java-only TDD off for a read-only task even when the session enables it", async () => {
+    const taskId = "08-07-read-only-tdd-off";
+    await writeSessionFixture(taskId, { tdd_enabled: true, tdd_coverage_threshold: 95 });
+    await writeTaskFixture(taskId, "ANALYSIS", "codex", { type: "report" });
+    await writeAnalysisArtifacts(taskId);
+    const taskDir = path.join(tempDir, ".easy-coding", "tasks", taskId);
+    await rm(path.join(taskDir, "test-strategy.md"), { force: true });
+    await writeFile(
+      path.join(taskDir, "execution.jsonl"),
+      `${JSON.stringify({
+        type: "plan",
+        strategy: "single",
+        units: [
+          {
+            id: "U1",
+            title: "Produce the report",
+            type: "analysis",
+            files: [],
+            depends_on: [],
+            rules_sections: [],
+            abstract_modules: [],
+          },
+        ],
+      })}\n`,
+      "utf8",
+    );
+
+    execFileSync(
+      "python3",
+      [
+        stateApiPath(),
+        "request-transition",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--stage",
+        "IMPLEMENT",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    execFileSync(
+      "python3",
+      [
+        stateApiPath(),
+        "confirm-transition",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--stage",
+        "IMPLEMENT",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+
+    const task = JSON.parse(await readFile(path.join(taskDir, "task.json"), "utf8"));
+    expect(task).toMatchObject({ status: "IMPLEMENT", tdd_enabled: false });
+    expect(task).not.toHaveProperty("tdd_baselines");
   });
 
   it("allows a read-only task to leave the change-scope table empty", async () => {
@@ -2383,6 +2582,110 @@ describe("easy_coding_state.py automatic and optional transitions", () => {
       );
     },
   );
+
+  it("shows TDD only when enabled and honors a frozen task over later session changes", async () => {
+    await writeConfirmModeConfig("guard");
+    await writeSessionFixture(null);
+
+    const enabled = JSON.parse(
+      execFileSync(
+        "python3",
+        [
+          stateApiPath(),
+          "set-tdd",
+          "--session-file",
+          ".easy-coding/sessions/test.json",
+          "--enabled",
+          "true",
+          "--threshold",
+          "95",
+          "--agent",
+          "codex",
+        ],
+        { cwd: tempDir, encoding: "utf8" },
+      ),
+    ) as Record<string, unknown>;
+
+    expect(enabled.effective_tdd_enabled).toBe(true);
+    expect(enabled.effective_tdd_coverage_threshold).toBe(95);
+    expect(enabled.status_line).toContain("**Workflow: Adaptive** · **TDD** · Ready");
+
+    await writeTaskFixture("tdd-frozen", "IMPLEMENT", "codex", {
+      tdd_enabled: true,
+      tdd_coverage_threshold: 95,
+    });
+    await writeSessionFixture("tdd-frozen", { tdd_enabled: false, tdd_coverage_threshold: 80 });
+    const frozen = JSON.parse(
+      execFileSync(
+        "python3",
+        [
+          stateApiPath(),
+          "snapshot",
+          "--session-file",
+          ".easy-coding/sessions/test.json",
+          "--agent",
+          "codex",
+        ],
+        { cwd: tempDir, encoding: "utf8" },
+      ),
+    ) as Record<string, unknown>;
+
+    expect(frozen.effective_tdd_enabled).toBe(false);
+    expect(frozen.displayed_tdd_enabled).toBe(true);
+    expect(frozen.displayed_tdd_coverage_threshold).toBe(95);
+
+    const disabled = JSON.parse(
+      execFileSync(
+        "python3",
+        [
+          stateApiPath(),
+          "clear-current",
+          "--session-file",
+          ".easy-coding/sessions/test.json",
+          "--agent",
+          "codex",
+        ],
+        { cwd: tempDir, encoding: "utf8" },
+      ),
+    ) as Record<string, unknown>;
+    expect(disabled.status_line).not.toContain("**TDD**");
+  });
+
+  it("ignores pre-schema-4 custom TDD keys so legacy projects remain default-off", async () => {
+    await mkdir(path.join(tempDir, ".easy-coding"), { recursive: true });
+    await writeFile(
+      path.join(tempDir, ".easy-coding", "config.yaml"),
+      [
+        "version: 3",
+        "behavior:",
+        "  approval_mode: guard",
+        "  workflow_mode: adaptive",
+        "  tdd_enabled: true",
+        "  tdd_coverage_threshold: 99",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    await writeSessionFixture(null);
+
+    const snapshot = JSON.parse(
+      execFileSync(
+        "python3",
+        [
+          stateApiPath(),
+          "snapshot",
+          "--session-file",
+          ".easy-coding/sessions/test.json",
+          "--agent",
+          "codex",
+        ],
+        { cwd: tempDir, encoding: "utf8" },
+      ),
+    ) as Record<string, unknown>;
+
+    expect(snapshot.project_tdd_enabled).toBe(false);
+    expect(snapshot.project_tdd_coverage_threshold).toBe(90);
+  });
 
   it("maps the legacy set-confirm-mode lite alias to guard plus fast", async () => {
     await writeConfirmModeConfig("approve");
@@ -4632,7 +4935,11 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
     const taskId = "07-27-fingerprint-gates";
     await writeConfirmModeConfig("guard");
     await writeSessionFixture(taskId);
-    await writeTaskFixture(taskId, "REVIEW", "codex", { workflow_mode: "fast" });
+    await writeTaskFixture(taskId, "REVIEW", "codex", {
+      workflow_mode: "fast",
+      tdd_enabled: false,
+      tdd_coverage_threshold: 90,
+    });
     await mkdir(path.join(tempDir, "src"), { recursive: true });
     await writeFile(path.join(tempDir, "src", "example.ts"), "export const value = 1;\n", "utf8");
     const executionPath = path.join(
@@ -4691,6 +4998,26 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
         { cwd: tempDir, encoding: "utf8" },
       ),
     ) as { implementation_fingerprint: string; config_fingerprint: string };
+    await appendFile(
+      path.join(tempDir, ".easy-coding", "config.yaml"),
+      "  tdd_enabled: true\n  tdd_coverage_threshold: 99\n",
+      "utf8",
+    );
+    const afterProjectTddChange = JSON.parse(
+      execFileSync(
+        "python3",
+        [
+          stateApiPath(),
+          "evidence-fingerprints",
+          "--session-file",
+          ".easy-coding/sessions/test.json",
+          "--agent",
+          "codex",
+        ],
+        { cwd: tempDir, encoding: "utf8" },
+      ),
+    ) as { implementation_fingerprint: string; config_fingerprint: string };
+    expect(afterProjectTddChange).toEqual(fingerprints);
     await appendFile(
       executionPath,
       `${JSON.stringify({
@@ -4803,6 +5130,51 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
         implementation_fingerprint: fingerprints.implementation_fingerprint,
         config_fingerprint: fingerprints.config_fingerprint,
         timestamp: "2026-07-27T00:00:00Z",
+      })}\n`,
+      "utf8",
+    );
+    await appendFile(
+      executionPath,
+      `${JSON.stringify({
+        type: "verify",
+        check: "unexpected-coverage",
+        check_type: "coverage",
+        command:
+          "python3 .easy-coding/tools/easy_coding_java_coverage.py check --base HEAD --threshold 90",
+        passed: true,
+        implementation_fingerprint: fingerprints.implementation_fingerprint,
+        config_fingerprint: fingerprints.config_fingerprint,
+        timestamp: "2026-07-27T00:00:30Z",
+      })}\n`,
+      "utf8",
+    );
+    const disabledCoverage = spawnSync(
+      "python3",
+      [
+        stateApiPath(),
+        "request-transition",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--stage",
+        "MEMORY",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    expect(disabledCoverage.status).toBe(1);
+    expect(disabledCoverage.stderr).toContain("not allowed when the frozen TDD mode is off");
+    await appendFile(
+      executionPath,
+      `${JSON.stringify({
+        type: "verify",
+        check: "unexpected-coverage",
+        check_type: "test",
+        command: "npm test -- targeted",
+        passed: true,
+        implementation_fingerprint: fingerprints.implementation_fingerprint,
+        config_fingerprint: fingerprints.config_fingerprint,
+        timestamp: "2026-07-27T00:00:45Z",
       })}\n`,
       "utf8",
     );
@@ -5221,6 +5593,314 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
     expect(afterChange.implementation_fingerprint).not.toBe(
       beforeChange.implementation_fingerprint,
     );
+  });
+
+  it("requires TDD review and changed-line coverage only for a frozen TDD task", async () => {
+    const taskId = "08-06-tdd-verification";
+    await writeConfirmModeConfig("guard");
+    await writeSessionFixture(taskId);
+    await writeTaskFixture(taskId, "VERIFICATION", "codex", {
+      workflow_mode: "fast",
+      tdd_enabled: true,
+      tdd_coverage_threshold: 95,
+      tdd_baselines: { project: "0".repeat(40) },
+    });
+    await mkdir(path.join(tempDir, "src"), { recursive: true });
+    await writeFile(path.join(tempDir, "src", "Example.java"), "class Example {}\n", "utf8");
+    const executionPath = path.join(
+      tempDir,
+      ".easy-coding",
+      "tasks",
+      taskId,
+      "execution.jsonl",
+    );
+    await writeFile(
+      executionPath,
+      `${JSON.stringify({
+        type: "plan",
+        strategy: "single",
+        units: [
+          {
+            id: "U1",
+            title: "TDD verification",
+            type: "backend",
+            files: ["src/Example.java"],
+            depends_on: [],
+          },
+        ],
+      })}\n`,
+      "utf8",
+    );
+    const fingerprints = JSON.parse(
+      execFileSync(
+        "python3",
+        [
+          stateApiPath(),
+          "evidence-fingerprints",
+          "--session-file",
+          ".easy-coding/sessions/test.json",
+          "--agent",
+          "codex",
+        ],
+        { cwd: tempDir, encoding: "utf8" },
+      ),
+    ) as { implementation_fingerprint: string; config_fingerprint: string };
+    for (const dimension of ["combined", "tdd"]) {
+      await appendFile(
+        executionPath,
+        `${JSON.stringify({
+          type: "review",
+          dimension,
+          passed: true,
+          reviewer: "codex",
+          implementation_fingerprint: fingerprints.implementation_fingerprint,
+          timestamp: "2026-08-06T00:00:00Z",
+          findings: [],
+        })}\n`,
+        "utf8",
+      );
+    }
+    await appendFile(
+      executionPath,
+      `${JSON.stringify({
+        type: "verify",
+        check: "unit-test",
+        check_type: "test",
+        command: "mvn test",
+        passed: true,
+        implementation_fingerprint: fingerprints.implementation_fingerprint,
+        config_fingerprint: fingerprints.config_fingerprint,
+        timestamp: "2026-08-06T00:01:00Z",
+      })}\n`,
+      "utf8",
+    );
+
+    const missingCoverage = spawnSync(
+      "python3",
+      [
+        stateApiPath(),
+        "request-transition",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--stage",
+        "MEMORY",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    expect(missingCoverage.status).toBe(1);
+    expect(missingCoverage.stderr).toContain("requires changed-production-line JaCoCo coverage");
+
+    await appendFile(
+      executionPath,
+      `${JSON.stringify({
+        type: "verify",
+        check: "changed-line-coverage",
+        check_type: "coverage",
+        coverage_scope: "local",
+        command:
+          "python3 .easy-coding/tools/easy_coding_java_coverage.py check --base 1111111111111111111111111111111111111111 --threshold 95",
+        passed: true,
+        implementation_fingerprint: fingerprints.implementation_fingerprint,
+        config_fingerprint: fingerprints.config_fingerprint,
+        timestamp: "2026-08-06T00:01:30Z",
+        coverage: {
+          baseline_sha: "1".repeat(40),
+          covered_lines: 20,
+          total_lines: 20,
+          percentage: 100,
+          threshold: 95,
+          report_paths: ["target/site/jacoco/jacoco.xml"],
+          report_sha256: "a".repeat(64),
+        },
+      })}\n`,
+      "utf8",
+    );
+    const wrongBaseline = spawnSync(
+      "python3",
+      [
+        stateApiPath(),
+        "request-transition",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--stage",
+        "MEMORY",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    expect(wrongBaseline.status).toBe(1);
+    expect(wrongBaseline.stderr).toContain("frozen threshold, reports, and report fingerprint");
+
+    await appendFile(
+      executionPath,
+      `${JSON.stringify({
+        type: "verify",
+        check: "changed-line-coverage",
+        check_type: "coverage",
+        coverage_scope: "local",
+        command:
+          "python3 .easy-coding/tools/easy_coding_java_coverage.py check --base HEAD --threshold 95",
+        passed: true,
+        implementation_fingerprint: fingerprints.implementation_fingerprint,
+        config_fingerprint: fingerprints.config_fingerprint,
+        timestamp: "2026-08-06T00:01:45Z",
+        coverage: {
+          baseline_sha: "0".repeat(40),
+          covered_lines: 20,
+          total_lines: 20,
+          percentage: 100,
+          threshold: 95,
+          report_paths: ["target/site/jacoco/jacoco.xml"],
+          report_sha256: "a".repeat(64),
+        },
+      })}\n`,
+      "utf8",
+    );
+    const mutableCommand = spawnSync(
+      "python3",
+      [
+        stateApiPath(),
+        "request-transition",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--stage",
+        "MEMORY",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    expect(mutableCommand.status).toBe(1);
+    expect(mutableCommand.stderr).toContain("exact gate command");
+
+    await appendFile(
+      executionPath,
+      `${JSON.stringify({
+        type: "verify",
+        check: "changed-line-coverage",
+        check_type: "coverage",
+        coverage_scope: "local",
+        command:
+          "python3 .easy-coding/tools/easy_coding_java_coverage.py check --base 0000000000000000000000000000000000000000 --threshold 95",
+        passed: true,
+        implementation_fingerprint: fingerprints.implementation_fingerprint,
+        config_fingerprint: fingerprints.config_fingerprint,
+        timestamp: "2026-08-06T00:02:00Z",
+        coverage: {
+          baseline_sha: "0".repeat(40),
+          covered_lines: 20,
+          total_lines: 20,
+          percentage: 100,
+          threshold: 95,
+          report_paths: ["target/site/jacoco/jacoco.xml"],
+          report_sha256: "a".repeat(64),
+        },
+      })}\n`,
+      "utf8",
+    );
+    const missingGitlab = spawnSync(
+      "python3",
+      [
+        stateApiPath(),
+        "request-transition",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--stage",
+        "MEMORY",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    expect(missingGitlab.status).toBe(1);
+    expect(missingGitlab.stderr).toContain("project:gitlab");
+
+    const gitlabCoverage = {
+      baseline_sha: "0".repeat(40),
+      covered_lines: 20,
+      total_lines: 20,
+      percentage: 100,
+      threshold: 95,
+      report_paths: ["target/site/jacoco/jacoco.xml"],
+      report_sha256: "b".repeat(64),
+    };
+    await appendFile(
+      executionPath,
+      `${JSON.stringify({
+        type: "verify",
+        check: "changed-line-coverage",
+        check_type: "coverage",
+        coverage_scope: "gitlab",
+        command:
+          "python3 .easy-coding/tools/easy_coding_java_coverage.py check --base 0000000000000000000000000000000000000000 --threshold 95",
+        passed: true,
+        implementation_fingerprint: fingerprints.implementation_fingerprint,
+        config_fingerprint: fingerprints.config_fingerprint,
+        timestamp: "2026-08-06T00:03:00Z",
+        coverage: gitlabCoverage,
+      })}\n`,
+      "utf8",
+    );
+    const missingPipelineIdentity = spawnSync(
+      "python3",
+      [
+        stateApiPath(),
+        "request-transition",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--stage",
+        "MEMORY",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    expect(missingPipelineIdentity.status).toBe(1);
+    expect(missingPipelineIdentity.stderr).toContain("successful pipeline URL and job name");
+
+    await appendFile(
+      executionPath,
+      `${JSON.stringify({
+        type: "verify",
+        check: "changed-line-coverage",
+        check_type: "coverage",
+        coverage_scope: "gitlab",
+        command:
+          "python3 .easy-coding/tools/easy_coding_java_coverage.py check --base 0000000000000000000000000000000000000000 --threshold 95",
+        passed: true,
+        implementation_fingerprint: fingerprints.implementation_fingerprint,
+        config_fingerprint: fingerprints.config_fingerprint,
+        timestamp: "2026-08-06T00:04:00Z",
+        ci: {
+          provider: "gitlab",
+          pipeline_url: "https://gitlab.example/pipelines/42",
+          job_name: "tdd-changed-line-coverage",
+          status: "success",
+        },
+        coverage: gitlabCoverage,
+      })}\n`,
+      "utf8",
+    );
+    const requested = JSON.parse(
+      execFileSync(
+        "python3",
+        [
+          stateApiPath(),
+          "request-transition",
+          "--session-file",
+          ".easy-coding/sessions/test.json",
+          "--stage",
+          "MEMORY",
+          "--agent",
+          "codex",
+        ],
+        { cwd: tempDir, encoding: "utf8" },
+      ),
+    ) as { pending_transition: { from: string; to: string } };
+    expect(requested.pending_transition).toMatchObject({ from: "VERIFICATION", to: "MEMORY" });
   });
 
   it("requires every latest review dimension to pass and preserves two-dimensional strict review", async () => {

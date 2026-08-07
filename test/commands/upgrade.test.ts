@@ -499,7 +499,7 @@ describe("upgrade command", () => {
     expect(await readFile(memoryPath, "utf8")).toBe("memory must stay byte-identical\n");
   });
 
-  it("migrates legacy confirmation fields to schema 3 and removes the old keys", async () => {
+  it("migrates legacy confirmation fields to schema 4 with default-off TDD", async () => {
     await init({ agent: "codex" });
     const configPath = path.join(tempDir, ".easy-coding", "config.yaml");
     const legacyConfig = (await readFile(configPath, "utf8"))
@@ -514,9 +514,11 @@ describe("upgrade command", () => {
     await upgrade({ yes: true });
 
     const migrated = await readFile(configPath, "utf8");
-    expect(migrated).toContain("version: 3");
+    expect(migrated).toContain("version: 4");
     expect(migrated).toContain("approval_mode: auto");
     expect(migrated).toContain("workflow_mode: adaptive");
+    expect(migrated).toContain("tdd_enabled: false");
+    expect(migrated).toContain("tdd_coverage_threshold: 90");
     expect(migrated).not.toContain("strict_confirm");
     expect(migrated).not.toContain("auto_mode");
   });

@@ -179,6 +179,10 @@ Agent 会创建任务并进入 INIT；INIT 工作完成后自动进入 ANALYSIS�
 任务都进入 REVIEW；任何模式都不会跳过方案、审查、验证或记忆检查点。Confirm 只在
 ANALYSIS → IMPLEMENT 等待一次，之后的自动推进仍必须先通过对应检查点。
 
+Java TDD 默认关闭，关闭时状态栏和测试深度保持不变。开启后状态栏在 Workflow 后显示
+`· **TDD**`，ANALYSIS → IMPLEMENT 冻结覆盖率阈值（默认 90，可配置 1..100），并要求
+RED/GREEN/REFACTOR、TDD review、本地 JaCoCo 差异覆盖率及 GitLab TEST-stage 同源门禁。
+
 #### 2. 需求分析（ANALYSIS）
 
 Agent 进入 ANALYSIS 后严格按以下顺序工作：
@@ -279,17 +283,24 @@ Agent 会通过一次一个问题的方式帮你梳理需求、提出方案、�
 
 ## 任务管理
 
-### 查看和创建任务、配置当前 session
+### 查看和创建任务
 
 ```
 /ec-task-management     （Claude Code / Qoder）
 $ec-task-management     （Codex）
 ```
 
-展示所有任务列表（活跃/已完成/已关闭），或创建新任务。每次唤起都会同时展示项目
-项目/会话的审批模式、配置工作流模式和任务冻结模式，即使任务列表为空也不会省略；可
-通过对话分别设置 `approve/guard/confirm/auto` 与
-`adaptive/fast/standard/strict` 覆盖，或恢复项目默认值。
+展示所有任务列表（活跃/已完成/已关闭），或创建、选择、恢复、交接任务。
+
+### 配置项目或当前 session
+
+```
+/ec-config     （Claude Code / Qoder）
+$ec-config     （Codex）
+```
+
+裸唤起只读展示项目/session/生效/任务冻结的 Approval、Workflow、TDD 与阈值。显式选择后
+可设置或清除 session 覆盖；项目级配置使用 `easy-coding config`。
 
 ### 当前会话不使用 Harness
 
@@ -408,7 +419,7 @@ easy-coding upgrade
 
 ### easy-coding config
 
-交互修改当前项目的审批模式与工作流模式：
+交互修改当前项目的审批模式、工作流模式、Java TDD 与覆盖率阈值：
 
 ```bash
 easy-coding config
@@ -439,7 +450,8 @@ easy-coding status
 | `ec-reviewing` | 代码审查 | ec-workflow 自动派发 |
 | `ec-verification` | 验证闸门 | ec-workflow 自动派发 |
 | `ec-memory` | 记忆归档 | ec-workflow 自动派发 |
-| `ec-task-management` | 任务与 session 面板 | 查看/创建任务，查看或修改当前会话确认模式 |
+| `ec-task-management` | 任务面板 | 查看/创建/选择/恢复/交接任务 |
+| `ec-config` | 模式配置面板 | 查看或修改 Approval、Workflow、TDD 与阈值 |
 | `ec-task-close` | 中断任务 | 取消当前任务 |
 | `ec-no-harness` | 当前 session 旁路 Harness | 临时使用原生 Agent 能力 |
 | `ec-git` | Git 纪律 | 涉及 git 操作时自动激活 |

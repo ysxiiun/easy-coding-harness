@@ -25,6 +25,27 @@ Read-only tasks never enter this stage. Obtain fresh fingerprints before running
 - `standard`: run impacted lint/typecheck/test scopes and every must-test item.
 - `strict`: run the project's full applicable lint, typecheck, test, and build gates.
 
+These rules remain unchanged when frozen TDD is off: do not discover JaCoCo reports, run the
+coverage tool, inspect GitLab, or add a coverage record.
+
+When frozen TDD is on, first run the planned Java unit command and generate JaCoCo XML, then run
+the same deterministic gate intended for GitLab:
+
+```bash
+python3 .easy-coding/tools/easy_coding_java_coverage.py check \
+  --base <task.tdd_baselines[repo-id-or-project]> \
+  --threshold <task.tdd_coverage_threshold> [--report <jacoco.xml>]...
+```
+
+The tool measures covered added/modified production Java executable lines only. Deleted,
+comment, blank, import, and test-source lines are excluded by diff/JaCoCo intersection. Missing
+or ambiguous source files and reports older than their modified source fail; zero modified
+executable lines is explicit N/A. Always regenerate JaCoCo XML after the final source change.
+Record CI as pending until the remote pipeline actually passes; local green is not remote green.
+Never substitute `HEAD`, a mutable ref, project defaults, or current session settings for the
+task-frozen baseline SHA and threshold. GitLab must invoke the tool with the same two frozen
+values; a session override therefore requires the CI command/variable for this task to match it.
+
 The main Agent may run commands inline. Dispatch verifier sub-agents only when checks are
 independent and parallel execution materially saves time or isolates specialist environments.
 Platform spawn rule: {{platform_spawn_instruction}}
@@ -48,7 +69,7 @@ Append one record per executed check:
 }
 ```
 
-`check_type` is one of `lint`, `typecheck`, `test`, or `build`. In `strict`, append current
+`check_type` is one of `lint`, `typecheck`, `test`, `build`, or (TDD only) `coverage`. In `strict`, append current
 evidence for all four types. When a type genuinely does not apply, record `applicable: false`
 and a non-empty `not_applicable_reason`; it does not count as the required applicable executed
 check, and must not be represented by an invented successful command.
@@ -57,6 +78,29 @@ Record failures in `failures[]`. If any current-fingerprint record fails, return
 do not append a later synthetic pass without rerunning the failed command.
 
 ## Coverage and acceptance
+
+For TDD coverage, copy the tool output into `coverage`: `baseline_sha`, `covered_lines`,
+`total_lines`, `percentage`, frozen `threshold`, `report_paths`, and `report_sha256`. Set
+`applicable:false` plus the tool's reason only for zero executable modified lines. A percentage
+below the frozen threshold fails even when ordinary tests pass.
+
+Append two coverage records per repository (and per Canonical source task): one with
+`coverage_scope:"local"`, and one with `coverage_scope:"gitlab"`. The GitLab record may be
+appended only after the remote job succeeds and must also include:
+
+```json
+{
+  "ci": {
+    "provider": "gitlab",
+    "pipeline_url": "https://gitlab.example/.../pipelines/123",
+    "job_name": "changed-line-coverage",
+    "status": "success"
+  }
+}
+```
+
+Both records must preserve the same task-frozen baseline and threshold. A local-only result,
+pending/failed pipeline, missing job identity, or synthetic remote pass cannot satisfy MEMORY.
 
 - Every must-test item has an executed check.
 - Bug fixes include a regression test when project infrastructure exists.

@@ -93,6 +93,36 @@ independent write scopes. Better unit contracts reduce later REVIEW rework.
 
 Code tasks require `test-strategy.md`; explicit `doc`, `analysis`, and `report` tasks do not.
 
+## Optional Java TDD analysis
+
+Read `effective_tdd_enabled` and `effective_tdd_coverage_threshold` from the state snapshot.
+When TDD is disabled, stop here: do not inspect GitLab CI or JaCoCo, do not add TDD fields or
+extra tests, and do not strengthen the selected Workflow Mode's ordinary acceptance depth.
+
+When TDD is enabled for a Java code task, make `test-strategy.md` record:
+
+- detected Java/JUnit build system, exact unit-test command, production/test source roots, and
+  JaCoCo XML paths;
+- immutable Git baseline SHA and the configured changed-production-line threshold; design tests
+  toward 100% while treating the threshold as the mechanical minimum;
+- feature/bug RED -> GREEN -> REFACTOR evidence, or for pure refactors a pre-change
+  characterization GREEN -> post-change GREEN sequence without inventing a RED failure;
+- `.gitlab-ci.yml` and included configuration, the TEST-stage job, JUnit/JaCoCo artifacts, and an
+  equivalent changed-line gate. Reuse a gate only when its threshold is at least the configured
+  value; otherwise include the CI change in the confirmed implementation scope.
+
+The state API mechanically freezes current Git `HEAD` per repository into `task.tdd_baselines`
+when ANALYSIS advances to IMPLEMENT. Plan both local and GitLab commands with that exact SHA and
+the frozen threshold; never use a mutable `HEAD` fallback at verification time. Non-Canonical TDD
+is limited to one Git repository; multi-repository TDD must use Canonical repository bindings.
+
+Also append a `### TDD Mode` section to `dev-spec.md` with enabled state, frozen threshold,
+baseline, local gate, GitLab TEST gate, and lifecycle evidence. Do not add this section when TDD
+is disabled.
+
+If the task is not a Java project, explain that Java-only TDD cannot be activated and obtain a
+mode decision before advancing. The CLI never installs JaCoCo or edits CI automatically.
+
 ## Workflow mode calculation
 
 Resolve configured mode from the state snapshot:

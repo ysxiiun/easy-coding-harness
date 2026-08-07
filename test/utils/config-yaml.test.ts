@@ -39,6 +39,8 @@ beforeEach(async () => {
       "behavior:",
       "  strict_confirm: true",
       "  auto_mode: false",
+      "  tdd_enabled: true # pre-schema-4 custom key must not opt in",
+      "  tdd_coverage_threshold: 99",
       "",
     ].join("\n"),
     "utf8",
@@ -50,36 +52,48 @@ afterEach(async () => {
 });
 
 describe("config-yaml", () => {
-  it("creates schema 3 configs with guard approval and adaptive workflow defaults", () => {
+  it("creates schema 4 configs with default-off TDD and a 90 percent threshold", () => {
     const config = createDefaultConfig({
       projectName: "demo",
       harnessVersion: "1.0.0",
       agents: ["claude-code"],
     });
-    expect(config.version).toBe(3);
+    expect(config.version).toBe(4);
     expect(config.behavior).toEqual({
       approval_mode: "guard",
       workflow_mode: "adaptive",
+      tdd_enabled: false,
+      tdd_coverage_threshold: 90,
     });
   });
 
   it("migrates legacy confirmation booleans and removes them", async () => {
     await migrateBehaviorConfig(configPath);
     const content = await readFile(configPath, "utf8");
-    expect(content).toContain("version: 3");
+    expect(content).toContain("version: 4");
     expect(content).toContain("approval_mode: approve");
     expect(content).toContain("workflow_mode: adaptive");
+    expect(content).toContain("tdd_enabled: false");
+    expect(content).toContain("tdd_coverage_threshold: 90");
     expect(content).not.toContain("strict_confirm");
     expect(content).not.toContain("auto_mode");
   });
 
   it("writes explicit behavior modes without restoring legacy keys", async () => {
-    await setBehaviorModes(configPath, "confirm", "fast");
+    await setBehaviorModes(configPath, "confirm", "fast", true, 95);
     const content = await readFile(configPath, "utf8");
     expect(content).toContain("approval_mode: confirm");
     expect(content).toContain("workflow_mode: fast");
+    expect(content).toContain("tdd_enabled: true");
+    expect(content).toContain("tdd_coverage_threshold: 95");
     expect(content).not.toContain("strict_confirm");
     expect(content).not.toContain("auto_mode");
+  });
+
+  it.each([0, 101, 90.5])("rejects invalid TDD coverage threshold %s", async (threshold) => {
+    await expect(setBehaviorModes(configPath, "guard", "adaptive", true, threshold)).rejects.toThrow(
+      "integer from 1 to 100",
+    );
   });
 
   it("keeps an existing workflow mode when the deprecated approval setter is used", async () => {

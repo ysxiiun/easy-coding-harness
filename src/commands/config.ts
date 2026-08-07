@@ -1,5 +1,5 @@
 import path from "node:path";
-import { cancel, confirm, outro, select } from "@clack/prompts";
+import { cancel, confirm, outro, select, text } from "@clack/prompts";
 import chalk from "chalk";
 import { CONFIG_FILE, EASY_CODING_DIR } from "../constants/paths.js";
 import { VERSION } from "../constants/version.js";
@@ -8,6 +8,7 @@ import { compareVersions } from "../utils/compare-versions.js";
 import {
   type ApprovalMode,
   type ConfiguredWorkflowMode,
+  isTddCoverageThreshold,
   readConfigYaml,
   resolveLegacyBehavior,
   setBehaviorModes,
@@ -103,8 +104,38 @@ export async function config(): Promise<void> {
     return;
   }
 
+  const tddEnabled = await select<boolean>({
+    message: `Enable Java TDD for this project (current: ${current.tddEnabled ? "enabled" : "disabled"})`,
+    initialValue: current.tddEnabled,
+    options: [
+      { value: false, label: "disabled — preserve current test depth (default)" },
+      { value: true, label: "enabled — require TDD evidence and changed-line coverage" },
+    ],
+  });
+  if (typeof tddEnabled === "symbol") {
+    cancel("Configuration cancelled.");
+    return;
+  }
+
+  let tddCoverageThreshold = current.tddCoverageThreshold;
+  if (tddEnabled) {
+    const thresholdInput = await text({
+      message: "Minimum changed-production-line coverage percentage",
+      initialValue: String(current.tddCoverageThreshold),
+      validate(value) {
+        const parsed = Number(value);
+        return isTddCoverageThreshold(parsed) ? undefined : "Enter an integer from 1 to 100.";
+      },
+    });
+    if (typeof thresholdInput === "symbol") {
+      cancel("Configuration cancelled.");
+      return;
+    }
+    tddCoverageThreshold = Number(thresholdInput);
+  }
+
   const shouldSave = await confirm({
-    message: `Set behavior.approval_mode to ${approvalMode} and behavior.workflow_mode to ${workflowMode}?`,
+    message: `Set approval=${approvalMode}, workflow=${workflowMode}, TDD=${tddEnabled ? `enabled (${tddCoverageThreshold}%)` : "disabled"}?`,
     initialValue: true,
   });
   if (typeof shouldSave === "symbol" || !shouldSave) {
@@ -112,6 +143,10 @@ export async function config(): Promise<void> {
     return;
   }
 
-  await setBehaviorModes(configPath, approvalMode, workflowMode);
-  outro(chalk.green(`Project modes updated: approval=${approvalMode}, workflow=${workflowMode}.`));
+  await setBehaviorModes(configPath, approvalMode, workflowMode, tddEnabled, tddCoverageThreshold);
+  outro(
+    chalk.green(
+      `Project modes updated: approval=${approvalMode}, workflow=${workflowMode}, TDD=${tddEnabled ? `${tddCoverageThreshold}%` : "off"}.`,
+    ),
+  );
 }

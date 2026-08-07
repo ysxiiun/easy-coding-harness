@@ -21,6 +21,12 @@ a blocking correctness finding. Every Canonical review record includes its `repo
 `source_task_id`; emit at least one current-fingerprint record per selected task and required
 review dimension. A global record without source ownership cannot satisfy the gate.
 
+When frozen TDD is enabled, add a passed review dimension named exactly `tdd` for each source
+task. Review whether RED/GREEN/REFACTOR (or characterization GREEN for pure refactors) is genuine,
+tests exercise changed behavior and boundaries, mocks do not merely mirror implementation, and
+the local/CI changed-line coverage gates share the frozen threshold. When TDD is off, do not add
+this dimension or raise the ordinary review depth.
+
 ## Depth by workflow mode
 
 - `fast`: main Agent performs one final-diff self-review across correctness, scope, tests, and

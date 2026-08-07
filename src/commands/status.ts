@@ -55,14 +55,24 @@ export async function status(): Promise<void> {
   const projectWorkflowMode = isConfiguredWorkflowMode(config.behavior?.workflow_mode)
     ? config.behavior.workflow_mode
     : migratedBehavior.workflowMode;
+  const projectTddEnabled = migratedBehavior.tddEnabled;
+  const projectTddCoverageThreshold = migratedBehavior.tddCoverageThreshold;
   console.log(`  approval_mode: ${projectApprovalMode}`);
   console.log(`  workflow_mode: ${projectWorkflowMode}`);
+  console.log(`  tdd_enabled: ${projectTddEnabled}`);
+  console.log(`  tdd_coverage_threshold: ${projectTddCoverageThreshold}`);
   console.log("");
   console.log(chalk.bold("Sessions"));
   console.log(`  project_approval_mode: ${projectApprovalMode}`);
   console.log(`  project_workflow_mode: ${projectWorkflowMode}`);
+  console.log(`  project_tdd_enabled: ${projectTddEnabled}`);
+  console.log(`  project_tdd_coverage_threshold: ${projectTddCoverageThreshold}`);
   console.log(`  effective_approval_mode: ${projectApprovalMode} (without a session override)`);
   console.log(`  configured_workflow_mode: ${projectWorkflowMode} (without a session override)`);
+  console.log(`  effective_tdd_enabled: ${projectTddEnabled} (without a session override)`);
+  console.log(
+    `  effective_tdd_coverage_threshold: ${projectTddCoverageThreshold} (without a session override)`,
+  );
   if (sessions.length === 0) {
     console.log("  no session files");
   }
@@ -76,13 +86,21 @@ export async function status(): Promise<void> {
     const sessionWorkflowMode =
       session.workflow_mode ??
       (legacySessionMode === "lite" ? "fast" : hasLegacySessionMode ? "adaptive" : undefined);
+    const sessionTddEnabled = session.tdd_enabled;
+    const sessionTddCoverageThreshold = session.tdd_coverage_threshold;
     console.log(`  - ${key}`);
     console.log(`    agent: ${session.agent ?? "legacy/unknown"}`);
     console.log(`    source: ${session.session_source ?? "legacy"}`);
     console.log(`    approval_mode: ${sessionApprovalMode ?? "project default"}`);
     console.log(`    workflow_mode: ${sessionWorkflowMode ?? "project default"}`);
+    console.log(`    tdd_enabled: ${sessionTddEnabled ?? "project default"}`);
+    console.log(`    tdd_coverage_threshold: ${sessionTddCoverageThreshold ?? "project default"}`);
     console.log(`    effective_approval_mode: ${sessionApprovalMode ?? projectApprovalMode}`);
     console.log(`    configured_workflow_mode: ${sessionWorkflowMode ?? projectWorkflowMode}`);
+    console.log(`    effective_tdd_enabled: ${sessionTddEnabled ?? projectTddEnabled}`);
+    console.log(
+      `    effective_tdd_coverage_threshold: ${sessionTddCoverageThreshold ?? projectTddCoverageThreshold}`,
+    );
     console.log(
       `    harness: ${session.harness_disabled ? "disabled for this session" : "enabled"}`,
     );
@@ -97,6 +115,10 @@ export async function status(): Promise<void> {
       console.log(`    current_stage: ${task.status}`);
       console.log(
         `    task_workflow_mode: ${task.workflow_mode ?? task.workflow_mode_proposal?.selected_mode ?? "not resolved"}`,
+      );
+      console.log(`    task_tdd_enabled: ${task.tdd_enabled ?? "not frozen"}`);
+      console.log(
+        `    task_tdd_coverage_threshold: ${task.tdd_coverage_threshold ?? "not frozen"}`,
       );
       console.log(`    last_agent: ${task.last_agent}`);
     } else {

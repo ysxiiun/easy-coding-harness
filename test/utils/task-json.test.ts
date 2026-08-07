@@ -387,6 +387,7 @@ describe("task-json", () => {
         workflow_mode: "strict",
         workflow_mode_confirmed_at: "2026-07-27T00:00:00Z",
         workflow_mode_confirmed_by: "codex",
+        tdd_baselines: { project: "stale-custom-value" },
       }),
       "utf8",
     );
@@ -403,7 +404,7 @@ describe("task-json", () => {
     );
 
     expect(await migrateLegacyWorkflowState(tempDir)).toEqual({
-      tasksUpdated: 0,
+      tasksUpdated: 1,
       sessionsUpdated: 1,
     });
 
@@ -411,6 +412,12 @@ describe("task-json", () => {
     expect(task.workflow_mode).toBe("strict");
     expect(task.workflow_mode_confirmed_by).toBe("codex");
     expect(task).not.toHaveProperty("workflow_mode_legacy");
+    expect(task).not.toHaveProperty("tdd_baselines");
+    expect(task).toMatchObject({
+      tdd_enabled: false,
+      tdd_coverage_threshold: 90,
+      tdd_confirmed_by: "upgrade-migration",
+    });
 
     const session = JSON.parse(await readFile(sessionPath, "utf8"));
     expect(session).toMatchObject({

@@ -134,8 +134,8 @@ export async function upgrade(opts: UpgradeOptions): Promise<void> {
       : []),
     "Will overwrite managed skills, hooks, agents, templates, and generated main-constraint regions.",
     "Will update project-init task to recommend ec-init re-run for version adaptation.",
-    "Will migrate legacy confirmation settings to behavior.approval_mode and behavior.workflow_mode.",
-    "Will migrate legacy workflow stage metadata; memory content, spec, and project knowledge files remain untouched.",
+    "Will migrate behavior config to Approval, Workflow, and default-off Java TDD schema 4 fields.",
+    "Will migrate legacy workflow/TDD task metadata; memory content, spec, and project knowledge files remain untouched.",
   ].join("\n");
 
   if (opts.dryRun) {

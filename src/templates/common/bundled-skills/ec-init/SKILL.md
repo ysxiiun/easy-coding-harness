@@ -85,6 +85,9 @@ initialization standard. Check each item:
   and non-empty?
 - **Project profile**: `project.yaml` exists with `mode` and `test` fields (ec-init owns it;
   `config.yaml` is CLI-owned — not ec-init's concern)?
+- **TDD runtime contract**: CLI-owned `config.yaml` has schema 4 TDD defaults and
+  `.easy-coding/tools/easy_coding_java_coverage.py` exists? Missing fields or tool mean
+  `easy-coding upgrade` is required; ec-init must not repair them directly.
 - **Platform hook config freshness**: for each installed platform in `.easy-coding/config.yaml`,
   read the platform hook config and verify managed Easy Coding hook commands use the portable
   relative hook launcher bound to this project root's `project.id`. If `project.id` is missing,
@@ -154,6 +157,9 @@ agent must be able to see what was generated and on what evidence.
    tests live, naming conventions, coverage expectations, which classes of code this project
    tests vs skips. Also fill `project.yaml` `test.framework` and `test.command` with commands
    you verified exist (read package.json scripts or equivalent — do not guess).
+   If effective TDD is disabled, do not inspect JaCoCo or GitLab and do not add TDD-specific
+   requirements. If it is enabled for Java, additionally document JUnit/JaCoCo commands,
+   production/test source roots, XML report paths, and the existing GitLab TEST-stage gate.
 5. **Memory migration probe** — Check for old-format memory files:
    - `.easy-coding/memory/long/MEMORY.md` exists but lacks `memory_schema: 2` frontmatter
    - `.easy-coding/memory/long/BUSINESS.md` or `TECHNICAL.md` missing

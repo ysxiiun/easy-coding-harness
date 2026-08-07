@@ -53,8 +53,15 @@ advances every legal edge after mechanical gates.
 Workflow mode is independently configured as adaptive/fast/standard/strict; ANALYSIS freezes
 adaptive to a concrete mode, and every new code task still enters REVIEW. REVIEW evidence is
 bound to the final implementation fingerprint, VERIFICATION evidence is bound to implementation
-and config fingerprints, and MEMORY keeps the conditional long-memory threshold gate. The active task
-pointer lives in `sessions/{agent}-{session-id}.json` (with an agent-prefixed PPID fallback only
+and config fingerprints, and MEMORY keeps the conditional long-memory threshold gate.
+
+Java TDD is a third independent, default-off control managed by `ec-config`. Session overrides
+project configuration; ANALYSIS freezes enabled state and the 1..100 changed-line threshold
+(default 90) on entry to IMPLEMENT. Disabled TDD changes no ordinary workflow test depth. Enabled
+TDD adds lifecycle evidence, a TDD review dimension, and the same JaCoCo diff gate locally and in
+GitLab TEST-stage CI.
+
+The active task pointer lives in `sessions/{agent}-{session-id}.json` (with an agent-prefixed PPID fallback only
 when a hook payload has no logical session ID);
 when the task reaches `COMPLETE` or `CLOSED`, the state API clears `current_task` so the
 session returns to Ready. Each task's stage persists in its `task.json`. Hooks inject the

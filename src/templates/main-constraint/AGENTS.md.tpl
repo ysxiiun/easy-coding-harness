@@ -13,8 +13,10 @@ then a blank line. Do not render the machine breadcrumbs to the user.
 
 `{approval-mode}` is the effective approval mode and `{workflow-mode}` is the configured or
 task-frozen execution mode; session overrides take precedence over project settings.
+When effective/frozen TDD is enabled, insert `· **TDD**` immediately after Workflow. When it is
+disabled, omit the TDD segment entirely and preserve the existing status-line format.
 
-- Ready: > **Easy Coding** · **Approval: {approval-mode}** · **Workflow: {workflow-mode}** · Ready · Use `ec-workflow` to start or resume a task, `ec-brainstorming` to brainstorm, or `ec-task-management` to manage tasks or session settings
+- Ready: > **Easy Coding** · **Approval: {approval-mode}** · **Workflow: {workflow-mode}** · Ready · Use `ec-workflow` to start or resume a task, `ec-brainstorming` to brainstorm, `ec-task-management` to manage tasks, or `ec-config` to inspect or change modes
 - Waiting init: > **Easy Coding** · **Approval: {approval-mode}** · **Workflow: {workflow-mode}** · Waiting init · Use `ec-init` to initialize
 - Active task: > **Easy Coding** · **Approval: {approval-mode}** · **Workflow: {workflow-mode}** · `{current-task}` · `{workflow-state}`
 - Handoff: > **Easy Coding** · **Approval: {approval-mode}** · **Workflow: {workflow-mode}** · `{current-task}` · `{workflow-state}` · Handoff -> `{source-agent}`
@@ -31,7 +33,7 @@ Trigger Easy Coding skills with your platform prefix — Codex: `$ec-*`, Qoder: 
 - `ec-brainstorming` — design exploration before building (hard design gate)
 - `ec-analysis` `ec-implementing` `ec-reviewing` `ec-verification` — workflow stages
 - `ec-memory` — short/long memory archive
-- `ec-task-management` — task/session panel and approval/workflow mode settings · `ec-task-close` — interrupt a task
+- `ec-task-management` — task lifecycle panel · `ec-config` — Approval/Workflow/TDD settings · `ec-task-close` — interrupt a task
 - `ec-no-harness` — bypass only Easy Coding for the current session
 - `ec-git` — git discipline · `ec-meta` — understand/customize the harness
 
@@ -45,6 +47,11 @@ First run `ec-init`; daily work goes through `ec-workflow`.
   Confirm approval waits only at ANALYSIS -> IMPLEMENT, then advances green later stages
   automatically. Every new code task runs REVIEW; no mode changes scope, delivery form, or
   evidence gates.
+- TDD is session override > project `behavior.tdd_enabled` > `false`; its changed-line threshold
+  is session override > project `behavior.tdd_coverage_threshold` > `90`. ANALYSIS -> IMPLEMENT
+  freezes both. Disabled TDD adds no CI scan, JaCoCo work, commands, artifacts, or stronger gates.
+  Enabled TDD applies only to Java code tasks and requires lifecycle, review, local coverage, and
+  GitLab TEST-stage gate evidence.
 - Confirmation-required edges use `pending_transition`; automatic edges use the restricted
   `auto-transition` API. A read-only task creates no test-strategy.md, never enters REVIEW,
   VERIFICATION, or MEMORY, and writes no task memory.
@@ -84,7 +91,7 @@ First run `ec-init`; daily work goes through `ec-workflow`.
 
 - Workflow state operations go through `{{platform_config_dir}}/hooks/easy_coding_state.py`;
   do not hand-edit session files, `current_task`, task `status`, `stage_history`,
-  `pending_transition`, workflow mode proposal/freeze fields, `memory_progress`, or `last_agent`.
+  `pending_transition`, workflow/TDD proposal or freeze fields, `memory_progress`, or `last_agent`.
 - The hook injects `[easy-coding:session-file:P]`; pass that path to the state script with
   `--session-file <P>` when changing the current task or stage.
 - Workflow session files live at `{{workflow_state_path}}`; the CLI only installs files and

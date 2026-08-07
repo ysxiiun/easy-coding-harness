@@ -8,6 +8,7 @@ import {
   INSTALL_MANIFEST_FILE,
   SESSIONS_DIR,
   TEMPLATES_DIR,
+  TOOLS_DIR,
 } from "../constants/paths.js";
 import {
   AGENT_PLATFORMS,
@@ -550,6 +551,7 @@ function addRuntimeClearEntries(plan: ClearPlan, cwd: string): void {
       path.join(cwd, EASY_CODING_DIR, CONFIG_FILE),
       path.join(cwd, EASY_CODING_DIR, SESSIONS_DIR),
       path.join(cwd, EASY_CODING_DIR, TEMPLATES_DIR),
+      path.join(cwd, EASY_CODING_DIR, TOOLS_DIR),
       path.join(cwd, EASY_CODING_DIR, INSTALL_MANIFEST_FILE),
     ]),
   ];

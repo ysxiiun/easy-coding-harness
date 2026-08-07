@@ -182,12 +182,20 @@ describe("configureClaude", () => {
       path.join(tempDir, ".claude", "skills", "ec-task-management", "SKILL.md"),
       "utf8",
     );
-    expect(taskManagementSkill).toContain("project_approval_mode");
-    expect(taskManagementSkill).toContain("configured_workflow_mode");
-    expect(taskManagementSkill).toContain("set-approval-mode");
-    expect(taskManagementSkill).toContain("set-workflow-mode");
-    expect(taskManagementSkill).toContain("raise-workflow-mode");
+    expect(taskManagementSkill).toContain("Mode inspection and configuration belongs to `ec-config`");
+    expect(taskManagementSkill).not.toContain("set-approval-mode");
     expect(taskManagementSkill).not.toContain("{{");
+    const configSkill = await readFile(
+      path.join(tempDir, ".claude", "skills", "ec-config", "SKILL.md"),
+      "utf8",
+    );
+    expect(configSkill).toContain("project_tdd_enabled");
+    expect(configSkill).toContain("set-tdd");
+    expect(configSkill).toContain("clear-tdd");
+    expect(configSkill).not.toContain("{{");
+    expect(
+      await pathExists(path.join(tempDir, ".easy-coding", "tools", "easy_coding_java_coverage.py")),
+    ).toBe(true);
 
     const gitSkill = await readFile(
       path.join(tempDir, ".claude", "skills", "ec-git", "SKILL.md"),
@@ -408,7 +416,7 @@ describe("configureClaude", () => {
     });
 
     expect(stdout).toContain(
-      "> **Easy Coding** · **Approval: Guard** · **Workflow: Adaptive** · Ready · Use `ec-workflow` to start or resume a task, `ec-brainstorming` to brainstorm, or `ec-task-management` to manage tasks or session settings",
+      "> **Easy Coding** · **Approval: Guard** · **Workflow: Adaptive** · Ready · Use `ec-workflow` to start or resume a task, `ec-brainstorming` to brainstorm, `ec-task-management` to manage tasks, or `ec-config` to inspect or change modes",
     );
     expect(stdout).toContain("[workflow-state:idle]");
   });
@@ -425,7 +433,7 @@ describe("configureClaude", () => {
     });
 
     expect(stdout).toContain(
-      "> **Easy Coding** · **Approval: Guard** · **Workflow: Adaptive** · Ready · Use `ec-workflow` to start or resume a task, `ec-brainstorming` to brainstorm, or `ec-task-management` to manage tasks or session settings",
+      "> **Easy Coding** · **Approval: Guard** · **Workflow: Adaptive** · Ready · Use `ec-workflow` to start or resume a task, `ec-brainstorming` to brainstorm, `ec-task-management` to manage tasks, or `ec-config` to inspect or change modes",
     );
     expect(stdout).not.toContain("tasks`");
     expect(stdout).toContain("[workflow-state:idle]");

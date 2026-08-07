@@ -14,11 +14,13 @@ async function writeConfig(
   harnessVersion: string,
   approvalMode = "guard",
   workflowMode = "adaptive",
+  tddEnabled = false,
+  tddThreshold = 90,
 ): Promise<void> {
   await writeFile(
     path.join(tempDir, ".easy-coding", "config.yaml"),
     [
-      "version: 3",
+      "version: 4",
       `harness_version: ${harnessVersion}`,
       "agents:",
       "  - codex",
@@ -28,6 +30,8 @@ async function writeConfig(
       "behavior:",
       `  approval_mode: ${approvalMode}`,
       `  workflow_mode: ${workflowMode}`,
+      `  tdd_enabled: ${tddEnabled}`,
+      `  tdd_coverage_threshold: ${tddThreshold}`,
       "",
     ].join("\n"),
     "utf8",
@@ -78,6 +82,27 @@ describe("status command", () => {
     expect(output()).toContain("approval_mode: guard");
     expect(output()).toContain("workflow_mode: fast");
     expect(output()).toContain("configured_workflow_mode: fast");
+    expect(output()).toContain("effective_tdd_enabled: false");
+    expect(output()).toContain("effective_tdd_coverage_threshold: 90");
+  });
+
+  it("reports session TDD overrides and frozen task defaults independently", async () => {
+    await writeConfig(VERSION, "guard", "adaptive", false, 90);
+    await writeSessionFile(
+      tempDir,
+      {
+        ...createSessionFile(),
+        agent: "codex",
+        tdd_enabled: true,
+        tdd_coverage_threshold: 95,
+      },
+      "tdd-session",
+    );
+
+    await status();
+
+    expect(output()).toContain("effective_tdd_enabled: true");
+    expect(output()).toContain("effective_tdd_coverage_threshold: 95");
   });
 
   it("reports a legacy non-lite session as an adaptive override", async () => {

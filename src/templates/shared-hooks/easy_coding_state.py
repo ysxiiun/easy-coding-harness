@@ -5,6 +5,7 @@ import json
 import os
 import re
 import secrets
+import shlex
 import subprocess
 import time
 import uuid
@@ -24,7 +25,8 @@ from easy_dev_spec import (
 TERMINAL_STATUSES = {"COMPLETE", "CLOSED"}
 HELP_SUFFIX = (
     "Use `ec-workflow` to start or resume a task, "
-    "`ec-brainstorming` to brainstorm, or `ec-task-management` to manage tasks or session settings"
+    "`ec-brainstorming` to brainstorm, `ec-task-management` to manage tasks, "
+    "or `ec-config` to inspect or change modes"
 )
 READY_LINE = f"Ready · {HELP_SUFFIX}"
 WAITING_INIT_LINE = "Waiting init · Use `ec-init` to initialize"
@@ -78,6 +80,8 @@ STRICT_WORKFLOW_RISK_PATTERN = re.compile(
 )
 DEFAULT_APPROVAL_MODE = "guard"
 DEFAULT_WORKFLOW_MODE = "adaptive"
+DEFAULT_TDD_ENABLED = False
+DEFAULT_TDD_COVERAGE_THRESHOLD = 90
 CRITICAL_CONFIRM_TRANSITIONS = {
     ("ANALYSIS", "IMPLEMENT"),
     ("VERIFICATION", "MEMORY"),
@@ -310,16 +314,45 @@ def read_memory_config(root: Path) -> dict[str, int]:
     return config
 
 
-def read_project_behavior(root: Path) -> tuple[str, str]:
+def parse_tdd_threshold(value: object, source: str) -> int:
+    if isinstance(value, bool):
+        raise StateError(f"Invalid {source}: expected an integer from 1 to 100.")
+    try:
+        threshold = int(str(value))
+    except (TypeError, ValueError) as error:
+        raise StateError(f"Invalid {source}: expected an integer from 1 to 100.") from error
+    if threshold < 1 or threshold > 100:
+        raise StateError(f"Invalid {source}: expected an integer from 1 to 100.")
+    return threshold
+
+
+def parse_yaml_bool(value: str | None, source: str) -> bool:
+    if value is None:
+        return DEFAULT_TDD_ENABLED
+    normalized = value.lower()
+    if normalized in {"true", "yes", "on"}:
+        return True
+    if normalized in {"false", "no", "off"}:
+        return False
+    raise StateError(f"Invalid {source}: expected true or false.")
+
+
+def read_project_behavior(root: Path) -> tuple[str, str, bool, int]:
     path = root / ".easy-coding" / "config.yaml"
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except OSError:
-        return DEFAULT_APPROVAL_MODE, DEFAULT_WORKFLOW_MODE
+        return (
+            DEFAULT_APPROVAL_MODE,
+            DEFAULT_WORKFLOW_MODE,
+            DEFAULT_TDD_ENABLED,
+            DEFAULT_TDD_COVERAGE_THRESHOLD,
+        )
 
     in_behavior = False
     behavior_indent = 0
     behavior: dict[str, str] = {}
+    schema_version = 0
     for raw_line in lines:
         without_comment = raw_line.split("#", 1)[0].rstrip()
         stripped = without_comment.strip()
@@ -332,6 +365,12 @@ def read_project_behavior(root: Path) -> tuple[str, str]:
             continue
         if in_behavior and indent <= behavior_indent:
             in_behavior = False
+        if not in_behavior and indent == 0 and stripped.startswith("version:"):
+            try:
+                schema_version = int(stripped.split(":", 1)[1].strip().strip("'\""))
+            except ValueError:
+                schema_version = 0
+            continue
         if not in_behavior or ":" not in stripped:
             continue
         key, value = stripped.split(":", 1)
@@ -359,16 +398,27 @@ def read_project_behavior(root: Path) -> tuple[str, str]:
             "Invalid behavior.workflow_mode in .easy-coding/config.yaml: "
             "expected adaptive, fast, standard, or strict."
         )
-    return approval_mode, workflow_mode
+    if schema_version >= 4:
+        tdd_enabled = parse_yaml_bool(behavior.get("tdd_enabled"), "behavior.tdd_enabled")
+        tdd_threshold = parse_tdd_threshold(
+            behavior.get("tdd_coverage_threshold", DEFAULT_TDD_COVERAGE_THRESHOLD),
+            "behavior.tdd_coverage_threshold",
+        )
+    else:
+        tdd_enabled = DEFAULT_TDD_ENABLED
+        tdd_threshold = DEFAULT_TDD_COVERAGE_THRESHOLD
+    return approval_mode, workflow_mode, tdd_enabled, tdd_threshold
 
 
 def resolve_behavior(
     root: Path, session: dict
-) -> tuple[str, str | None, str, str, str | None, str]:
-    project_approval, project_workflow = read_project_behavior(root)
+) -> tuple[str, str | None, str, str, str | None, str, bool, bool | None, bool, int, int | None, int]:
+    project_approval, project_workflow, project_tdd, project_threshold = read_project_behavior(root)
     legacy = session.get("confirm_mode")
     session_approval = session.get("approval_mode")
     session_workflow = session.get("workflow_mode")
+    session_tdd = session.get("tdd_enabled")
+    session_threshold = session.get("tdd_coverage_threshold")
     if session_approval is None:
         if legacy == "lite":
             session_approval = "guard"
@@ -387,6 +437,12 @@ def resolve_behavior(
         raise StateError(
             "Invalid session workflow_mode: expected adaptive, fast, standard, or strict."
         )
+    if session_tdd is not None and not isinstance(session_tdd, bool):
+        raise StateError("Invalid session tdd_enabled: expected true or false.")
+    if session_threshold is not None:
+        session_threshold = parse_tdd_threshold(
+            session_threshold, "session tdd_coverage_threshold"
+        )
     return (
         project_approval,
         str(session_approval) if session_approval else None,
@@ -394,6 +450,12 @@ def resolve_behavior(
         project_workflow,
         str(session_workflow) if session_workflow else None,
         str(session_workflow or project_workflow),
+        project_tdd,
+        session_tdd,
+        session_tdd if session_tdd is not None else project_tdd,
+        project_threshold,
+        session_threshold,
+        session_threshold if session_threshold is not None else project_threshold,
     )
 
 
@@ -1624,6 +1686,77 @@ def task_repository_roots(root: Path, task: dict | None, plan: dict) -> list[Pat
     ]
 
 
+def tdd_repositories(root: Path, task: dict, plan: dict) -> dict[str, Path]:
+    if isinstance(task.get("spec_source"), dict):
+        repo_paths = task.get("repo_paths")
+        if not isinstance(repo_paths, dict):
+            raise StateError("TDD Canonical task is missing repository bindings.")
+        repositories: dict[str, Path] = {}
+        for unit in plan.get("units", []):
+            if not isinstance(unit, dict) or not is_non_empty_string(unit.get("repo_id")):
+                raise StateError("TDD Canonical unit is missing repo_id.")
+            repo_id = str(unit["repo_id"])
+            raw_path = repo_paths.get(repo_id)
+            if not is_non_empty_string(raw_path):
+                raise StateError(f"TDD repository path is missing: {repo_id}")
+            candidate = Path(str(raw_path))
+            resolved = (candidate if candidate.is_absolute() else root / candidate).resolve()
+            repository = git_repository_root(resolved)
+            if repository is None or repository.resolve() != resolved:
+                raise StateError(f"TDD repository binding is not a Git root: {repo_id}")
+            repositories[repo_id] = repository
+        return repositories
+
+    repositories = task_repository_roots(root, task, plan)
+    if len(repositories) != 1:
+        raise StateError(
+            "Non-Canonical TDD requires exactly one Git repository; use a Canonical Spec for multi-repository work."
+        )
+    return {"project": repositories[0]}
+
+
+def git_head_sha(repository: Path) -> str:
+    result = run_git(repository, "rev-parse", "--verify", "HEAD")
+    sha = result.stdout.decode("ascii", errors="ignore").strip() if result else ""
+    if (
+        result is None
+        or result.returncode != 0
+        or re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", sha) is None
+    ):
+        raise StateError(f"Cannot freeze TDD Git baseline for {repository.name}.")
+    return sha
+
+
+def tdd_baseline_marker_reasons(
+    dev_spec_content: str, strategy_content: str, baselines: dict[str, str]
+) -> list[str]:
+    reasons: list[str] = []
+    canonical = set(baselines) != {"project"}
+    for repo_id, baseline in sorted(baselines.items()):
+        for artifact_name, content in (
+            ("dev-spec.md", dev_spec_content),
+            ("test-strategy.md", strategy_content),
+        ):
+            if baseline not in content:
+                reasons.append(
+                    f"{artifact_name} must record the immutable TDD baseline SHA for {repo_id}: {baseline}"
+                )
+            if canonical and repo_id not in content:
+                reasons.append(
+                    f"{artifact_name} must map the TDD baseline to repository {repo_id}"
+                )
+    return reasons
+
+
+def contains_tdd_threshold(content: str, threshold: int) -> bool:
+    return re.search(
+        rf"(?<!\d){threshold}\s*%|--threshold(?:\s+|=){threshold}(?!\d)|"
+        rf"tdd_coverage_threshold\s*[:=]\s*{threshold}(?!\d)",
+        content,
+        re.IGNORECASE,
+    ) is not None
+
+
 def repository_scope_pathspecs(repository: Path, scopes: list[Path]) -> list[str]:
     return [
         f":(literal){scope.relative_to(repository).as_posix()}"
@@ -1837,6 +1970,18 @@ def implementation_fingerprint(root: Path, task_id: str) -> str:
     digest.update(b"workflow-mode\0")
     digest.update(workflow_mode.encode("utf-8"))
     digest.update(b"\0")
+    if task and task.get("tdd_enabled") is True:
+        digest.update(b"tdd\0enabled\0")
+        digest.update(str(task.get("tdd_coverage_threshold") or "").encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(
+            json.dumps(
+                task.get("tdd_baselines") or {},
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
+        digest.update(b"\0")
     digest.update(b"execution-plan\0")
     digest.update(
         json.dumps(
@@ -1901,21 +2046,91 @@ def implementation_fingerprint(root: Path, task_id: str) -> str:
     return digest.hexdigest()
 
 
-def behavior_config_fingerprint(root: Path) -> str:
+def config_without_frozen_tdd_settings(payload: bytes) -> bytes:
+    """任务冻结 TDD 契约后，从证据指纹中排除仅影响未来任务的实时 TDD 配置。"""
+    try:
+        lines = payload.decode("utf-8").splitlines(keepends=True)
+    except UnicodeDecodeError:
+        return payload
+    filtered: list[str] = []
+    in_behavior = False
+    behavior_indent = 0
+    behavior_key_indent: int | None = None
+    for line in lines:
+        clean = line.split("#", 1)[0].rstrip()
+        stripped = clean.strip()
+        indent = len(clean) - len(clean.lstrip(" "))
+        if stripped == "behavior:":
+            in_behavior = True
+            behavior_indent = indent
+            behavior_key_indent = None
+            filtered.append(line)
+            continue
+        if in_behavior and stripped and indent <= behavior_indent:
+            in_behavior = False
+        if in_behavior and stripped:
+            if behavior_key_indent is None:
+                behavior_key_indent = indent
+            key = stripped.split(":", 1)[0]
+            if (
+                indent == behavior_key_indent
+                and key in {"tdd_enabled", "tdd_coverage_threshold"}
+            ):
+                continue
+        filtered.append(line)
+    return "".join(filtered).encode("utf-8")
+
+
+def behavior_config_fingerprint(root: Path, task: dict | None = None) -> str:
     path = root / ".easy-coding" / "config.yaml"
     digest = hashlib.sha256()
     try:
-        digest.update(path.read_bytes())
+        payload = path.read_bytes()
+        if task and isinstance(task.get("tdd_enabled"), bool):
+            payload = config_without_frozen_tdd_settings(payload)
+        digest.update(payload)
     except OSError:
         digest.update(b"<missing-config>")
     return digest.hexdigest()
 
 
 def evidence_fingerprints(root: Path, task_id: str) -> dict[str, str]:
+    task = load_task(root, task_id)
     return {
         "implementation_fingerprint": implementation_fingerprint(root, task_id),
-        "config_fingerprint": behavior_config_fingerprint(root),
+        "config_fingerprint": behavior_config_fingerprint(root, task),
     }
+
+
+def command_option_value(command: str, option: str) -> str | None:
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return None
+    for index, token in enumerate(tokens):
+        if token == option and index + 1 < len(tokens):
+            return tokens[index + 1]
+        prefix = f"{option}="
+        if token.startswith(prefix):
+            return token[len(prefix) :]
+    return None
+
+
+def coverage_command_matches_frozen_contract(
+    command: object, baseline: str, threshold: int
+) -> bool:
+    if not is_non_empty_string(command):
+        return False
+    try:
+        tokens = shlex.split(str(command))
+    except ValueError:
+        return False
+    return (
+        any(Path(token).name == "easy_coding_java_coverage.py" for token in tokens)
+        and "check" in tokens
+        and command_option_value(str(command), "--base") == baseline
+        and command_option_value(str(command), "--threshold") == str(threshold)
+    )
 
 
 def validate_spec_implementation_results(root: Path, task_id: str, task: dict) -> None:
@@ -2074,6 +2289,25 @@ def validate_review_readiness(root: Path, task_id: str, task: dict) -> None:
         raise StateError(
             "REVIEW cannot advance to VERIFICATION while a current review dimension is not passed or has error findings."
         )
+    if task.get("tdd_enabled") is True:
+        if is_spec_task:
+            missing_tdd_reviews = sorted(
+                source_task_id
+                for source_task_id, dimensions in reviewed_dimensions.items()
+                if "tdd" not in {dimension.lower() for dimension in dimensions}
+            )
+            if missing_tdd_reviews:
+                raise StateError(
+                    "TDD tasks require a passed TDD review dimension for every selected source task: "
+                    + ", ".join(missing_tdd_reviews)
+                )
+        elif not any(
+            str(record.get("dimension") or "").lower() == "tdd"
+            for record in latest_by_dimension.values()
+        ):
+            raise StateError(
+                "TDD tasks require a passed TDD review dimension for test quality, boundaries, and mocking."
+            )
     if task.get("workflow_mode") == "strict":
         if is_spec_task:
             missing_strict_dimensions = sorted(
@@ -2111,6 +2345,8 @@ def validate_verification_readiness(root: Path, task_id: str, task: dict) -> Non
             and is_non_empty_string(record.get("check"))
         ):
             check = str(record["check"])
+            if task.get("tdd_enabled") is True and record.get("check_type") == "coverage":
+                check = f"{check}\0{record.get('coverage_scope') or ''}"
             if is_spec_task:
                 check = f"{check}\0{record.get('source_task_id') or ''}"
             previous = latest_by_check.get(check)
@@ -2129,7 +2365,7 @@ def validate_verification_readiness(root: Path, task_id: str, task: dict) -> Non
         for record in latest_by_check.values():
             check_type = str(record.get("check_type") or "")
             if (
-                check_type not in STRICT_VERIFICATION_CHECK_TYPES
+                check_type not in STRICT_VERIFICATION_CHECK_TYPES | {"coverage"}
                 or not is_non_empty_string(record.get("timestamp"))
                 or (
                     record.get("applicable") is not False
@@ -2175,6 +2411,139 @@ def validate_verification_readiness(root: Path, task_id: str, task: dict) -> Non
         raise StateError(
             "VERIFICATION cannot advance to MEMORY while current verification evidence contains failures."
         )
+    if task.get("tdd_enabled") is not True and any(
+        record.get("check_type") == "coverage" for record in latest_by_check.values()
+    ):
+        raise StateError(
+            "Coverage verification evidence is not allowed when the frozen TDD mode is off."
+        )
+    if task.get("tdd_enabled") is True:
+        coverage_records = [
+            record
+            for record in latest_by_check.values()
+            if record.get("check_type") == "coverage"
+        ]
+        if not coverage_records:
+            raise StateError(
+                "TDD verification requires changed-production-line JaCoCo coverage evidence."
+            )
+        if is_spec_task:
+            covered_source_tasks = {
+                str(record.get("source_task_id") or "") for record in coverage_records
+            }
+            missing_coverage_tasks = sorted(
+                set(task_repositories) - covered_source_tasks
+            )
+            if missing_coverage_tasks:
+                raise StateError(
+                    "TDD Canonical verification requires separate coverage evidence for every selected source task: "
+                    + ", ".join(missing_coverage_tasks)
+                )
+        coverage_scopes_by_owner: dict[str, set[str]] = {}
+        for record in coverage_records:
+            scope = str(record.get("coverage_scope") or "")
+            if scope not in {"local", "gitlab"}:
+                raise StateError(
+                    "TDD coverage evidence must identify coverage_scope as local or gitlab."
+                )
+            owner = (
+                str(record.get("source_task_id") or "")
+                if is_spec_task
+                else "project"
+            )
+            coverage_scopes_by_owner.setdefault(owner, set()).add(scope)
+        expected_threshold = task.get("tdd_coverage_threshold")
+        expected_baselines = task.get("tdd_baselines")
+        if (
+            type(expected_threshold) is not int
+            or expected_threshold < 1
+            or expected_threshold > 100
+        ):
+            raise StateError("TDD task is missing a valid frozen coverage threshold.")
+        if not isinstance(expected_baselines, dict) or not expected_baselines:
+            raise StateError("TDD task is missing frozen Git baselines.")
+        for record in coverage_records:
+            coverage = record.get("coverage")
+            if not isinstance(coverage, dict):
+                raise StateError("TDD coverage evidence must include the coverage result object.")
+            if record.get("coverage_scope") == "gitlab":
+                ci = record.get("ci")
+                if (
+                    not isinstance(ci, dict)
+                    or ci.get("provider") != "gitlab"
+                    or ci.get("status") != "success"
+                    or not is_non_empty_string(ci.get("pipeline_url"))
+                    or not is_non_empty_string(ci.get("job_name"))
+                ):
+                    raise StateError(
+                        "GitLab coverage evidence requires a successful pipeline URL and job name."
+                    )
+            total = coverage.get("total_lines")
+            covered = coverage.get("covered_lines")
+            percentage = coverage.get("percentage")
+            threshold = coverage.get("threshold")
+            baseline_key = str(record.get("repo_id") or "") if is_spec_task else "project"
+            expected_baseline = expected_baselines.get(baseline_key)
+            if (
+                not is_non_empty_string(expected_baseline)
+                or coverage.get("baseline_sha") != expected_baseline
+                or re.fullmatch(
+                    r"[0-9a-f]{40}|[0-9a-f]{64}", str(coverage.get("baseline_sha") or "")
+                )
+                is None
+                or not isinstance(total, int)
+                or not isinstance(covered, int)
+                or not isinstance(percentage, (int, float))
+                or threshold != expected_threshold
+                or not isinstance(coverage.get("report_paths"), list)
+                or not coverage.get("report_paths")
+                or not all(
+                    is_non_empty_string(path) for path in coverage.get("report_paths", [])
+                )
+                or not re.fullmatch(
+                    r"[0-9a-f]{64}", str(coverage.get("report_sha256") or "")
+                )
+                or covered < 0
+                or total < 0
+                or covered > total
+                or percentage < 0
+                or percentage > 100
+                or not coverage_command_matches_frozen_contract(
+                    record.get("command"), str(expected_baseline), int(expected_threshold)
+                )
+            ):
+                raise StateError(
+                    "TDD coverage evidence must preserve the exact gate command, baseline, counts, percentage, frozen threshold, reports, and report fingerprint."
+                )
+            if total == 0:
+                if record.get("applicable") is not False or record.get("passed") is not True:
+                    raise StateError(
+                        "Coverage with no modified executable production Java lines must be explicit N/A."
+                    )
+            elif abs(percentage - round(covered * 100.0 / total, 2)) > 0.01:
+                raise StateError(
+                    "TDD coverage evidence percentage does not match covered/total counts."
+                )
+            elif (
+                record.get("applicable") is False
+                or record.get("passed") is not True
+                or percentage < threshold
+            ):
+                raise StateError(
+                    f"TDD changed-line coverage must meet the frozen {threshold}% threshold."
+                )
+        expected_coverage_owners = set(task_repositories) if is_spec_task else {"project"}
+        missing_scopes = [
+            f"{owner}:{scope}"
+            for owner in sorted(expected_coverage_owners)
+            for scope in ("local", "gitlab")
+            if scope not in coverage_scopes_by_owner.get(owner, set())
+        ]
+        if missing_scopes:
+            raise StateError(
+                "TDD verification requires both local and successful GitLab coverage gates: "
+                + ", ".join(missing_scopes)
+            )
     if task.get("workflow_mode") == "strict":
         if is_spec_task:
             check_types_by_repository: dict[str, set[str]] = {
@@ -2445,7 +2814,9 @@ def validate_mandatory_dev_spec_sections(content: str) -> tuple[list[str], list[
     return missing, empty
 
 
-def validate_analysis_readiness(root: Path, task_id: str) -> None:
+def validate_analysis_readiness(
+    root: Path, task_id: str, session: dict | None = None
+) -> None:
     task_dir = task_json_path(root, task_id).parent
     task = load_task(root, task_id)
     task_type = str(task.get("type") or "").strip().lower() if task else ""
@@ -2454,6 +2825,9 @@ def validate_analysis_readiness(root: Path, task_id: str) -> None:
     skeleton = root / ".easy-coding" / "templates" / "dev-spec-skeleton.md"
     test_strategy = task_dir / "test-strategy.md"
     reasons: list[str] = []
+    behavior = resolve_behavior(root, session or default_session())
+    tdd_enabled = behavior[8]
+    tdd_threshold = behavior[11]
 
     dev_spec_content = ""
     if not dev_spec.exists():
@@ -2500,6 +2874,81 @@ def validate_analysis_readiness(root: Path, task_id: str) -> None:
     plan_is_valid = has_valid_execution_plan(root, task_id)
     if not plan_is_valid:
         reasons.append("execution.jsonl has no valid plan record")
+    if tdd_enabled and not is_read_only_task:
+        plan = latest_execution_plan(root, task_id) or {}
+        if re.search(
+            r"^###\s+TDD Mode\s*$", dev_spec_content, re.MULTILINE | re.IGNORECASE
+        ) is None:
+            reasons.append("dev-spec.md is missing the required TDD Mode section")
+        planned_files = [
+            str(file_name)
+            for unit in plan.get("units", [])
+            if isinstance(unit, dict)
+            for file_name in unit.get("files", [])
+        ]
+        if not any(file_name.endswith(".java") for file_name in planned_files):
+            reasons.append("TDD is enabled but the confirmed implementation scope has no Java source")
+        baselines: dict[str, str] = {}
+        if task:
+            try:
+                repositories = tdd_repositories(root, task, plan)
+                baselines = {
+                    repo_id: git_head_sha(repository)
+                    for repo_id, repository in repositories.items()
+                }
+            except StateError as error:
+                reasons.append(str(error))
+        try:
+            strategy_content = test_strategy.read_text(encoding="utf-8")
+        except OSError:
+            strategy_content = ""
+        required_tdd_markers = ["TDD", "JaCoCo", "baseline", "GitLab"]
+        missing_tdd_markers = [
+            marker for marker in required_tdd_markers if marker.lower() not in strategy_content.lower()
+        ]
+        if missing_tdd_markers:
+            reasons.append(
+                "TDD test strategy is missing: " + ", ".join(missing_tdd_markers)
+            )
+        if not contains_tdd_threshold(strategy_content, tdd_threshold):
+            reasons.append(
+                f"TDD test strategy must state the frozen {tdd_threshold}% coverage threshold"
+            )
+        if not contains_tdd_threshold(dev_spec_content, tdd_threshold):
+            reasons.append(
+                f"TDD dev spec must state the frozen {tdd_threshold}% coverage threshold"
+            )
+        if baselines:
+            reasons.extend(
+                tdd_baseline_marker_reasons(
+                    dev_spec_content, strategy_content, baselines
+                )
+            )
+    elif not is_read_only_task:
+        if re.search(
+            r"^###\s+TDD Mode\s*$", dev_spec_content, re.MULTILINE | re.IGNORECASE
+        ):
+            reasons.append("dev-spec.md must omit the TDD Mode section when TDD is disabled")
+        try:
+            strategy_content = test_strategy.read_text(encoding="utf-8")
+        except OSError:
+            strategy_content = ""
+        forbidden_tdd_markers = [
+            marker
+            for marker in (
+                "easy_coding_java_coverage.py",
+                "coverage_scope",
+                "task.tdd_baselines",
+                "RED -> GREEN -> REFACTOR",
+                "RED/GREEN/REFACTOR",
+            )
+            if marker.lower() in strategy_content.lower()
+        ]
+        if forbidden_tdd_markers:
+            reasons.append(
+                "test-strategy.md contains TDD-only planning while TDD is disabled: "
+                + ", ".join(forbidden_tdd_markers)
+            )
     if task and isinstance(task.get("spec_source"), dict):
         try:
             inspection, selection = inspect_task_spec(root, task)
@@ -2785,6 +3234,12 @@ def snapshot_state(
         project_workflow_mode,
         session_workflow_mode,
         configured_workflow_mode,
+        project_tdd_enabled,
+        session_tdd_enabled,
+        effective_tdd_enabled,
+        project_tdd_coverage_threshold,
+        session_tdd_coverage_threshold,
+        effective_tdd_coverage_threshold,
     ) = resolve_behavior(root, resolved_session)
     concrete_workflow_mode = None
     if task:
@@ -2792,6 +3247,19 @@ def snapshot_state(
         proposal = task.get("workflow_mode_proposal")
         if concrete_workflow_mode is None and isinstance(proposal, dict):
             concrete_workflow_mode = proposal.get("selected_mode")
+    task_tdd_enabled = task.get("tdd_enabled") if task else None
+    task_tdd_coverage_threshold = task.get("tdd_coverage_threshold") if task else None
+    frozen_tdd = bool(
+        task
+        and status not in {"ANALYSIS", "INIT"}
+        and isinstance(task_tdd_enabled, bool)
+    )
+    displayed_tdd_enabled = task_tdd_enabled if frozen_tdd else effective_tdd_enabled
+    displayed_tdd_threshold = (
+        task_tdd_coverage_threshold
+        if frozen_tdd and isinstance(task_tdd_coverage_threshold, int)
+        else effective_tdd_coverage_threshold
+    )
 
     return {
         "session_file": display_path(root, session_path),
@@ -2812,6 +3280,17 @@ def snapshot_state(
         "session_workflow_mode": session_workflow_mode,
         "configured_workflow_mode": configured_workflow_mode,
         "concrete_workflow_mode": concrete_workflow_mode,
+        "project_tdd_enabled": project_tdd_enabled,
+        "session_tdd_enabled": session_tdd_enabled,
+        "effective_tdd_enabled": effective_tdd_enabled,
+        "project_tdd_coverage_threshold": project_tdd_coverage_threshold,
+        "session_tdd_coverage_threshold": session_tdd_coverage_threshold,
+        "effective_tdd_coverage_threshold": effective_tdd_coverage_threshold,
+        "task_tdd_enabled": task_tdd_enabled,
+        "task_tdd_coverage_threshold": task_tdd_coverage_threshold,
+        "task_tdd_baselines": task.get("tdd_baselines") if task else None,
+        "displayed_tdd_enabled": displayed_tdd_enabled,
+        "displayed_tdd_coverage_threshold": displayed_tdd_threshold,
         "spec_summary": spec_task_summary(task),
         # Compatibility output aliases for pre-0.9 clients.
         "project_confirm_mode": project_approval_mode,
@@ -2831,6 +3310,8 @@ def build_status_line(
     approval = str(state["effective_approval_mode"]).capitalize()
     workflow = str(state["concrete_workflow_mode"] or state["configured_workflow_mode"]).capitalize()
     status_brand = f"> **Easy Coding** · **Approval: {approval}** · **Workflow: {workflow}**"
+    if state["displayed_tdd_enabled"] is True:
+        status_brand += " · **TDD**"
     task_id = state["current_task"]
     if task_id:
         status = str(state["status"])
@@ -2874,6 +3355,11 @@ def build_machine_breadcrumbs(
     ]
     if state.get("concrete_workflow_mode"):
         lines.append(f"[easy-coding:workflow-mode:{state['concrete_workflow_mode']}]")
+    if state.get("displayed_tdd_enabled") is True:
+        lines.append("[easy-coding:tdd:enabled]")
+        lines.append(
+            f"[easy-coding:tdd-coverage-threshold:{state['displayed_tdd_coverage_threshold']}]"
+        )
 
     if task_id:
         lines.append(f"[current-task:{task_id}]")
@@ -3178,6 +3664,43 @@ def clear_session_workflow_mode(
     write_session(root, session, session_file)
     snapshot = snapshot_state(root, session_file, session)
     snapshot["action"] = "clear-workflow-mode"
+    return snapshot
+
+
+def set_session_tdd(
+    root: Path,
+    enabled: bool,
+    agent: str,
+    threshold: int | None = None,
+    session_file: str | Path | None = None,
+) -> dict:
+    session = ensure_session(root, session_file)
+    materialize_legacy_session_behavior(session)
+    session["tdd_enabled"] = enabled
+    if threshold is not None:
+        session["tdd_coverage_threshold"] = parse_tdd_threshold(
+            threshold, "session tdd_coverage_threshold"
+        )
+    session["last_agent"] = agent
+    write_session(root, session, session_file)
+    snapshot = snapshot_state(root, session_file, session)
+    snapshot["action"] = "set-tdd"
+    return snapshot
+
+
+def clear_session_tdd(
+    root: Path,
+    agent: str,
+    session_file: str | Path | None = None,
+) -> dict:
+    session = ensure_session(root, session_file)
+    materialize_legacy_session_behavior(session)
+    session.pop("tdd_enabled", None)
+    session.pop("tdd_coverage_threshold", None)
+    session["last_agent"] = agent
+    write_session(root, session, session_file)
+    snapshot = snapshot_state(root, session_file, session)
+    snapshot["action"] = "clear-tdd"
     return snapshot
 
 
@@ -3611,6 +4134,39 @@ def freeze_workflow_mode(
     task["workflow_mode_confirmed_by"] = agent
 
 
+def freeze_tdd_mode(
+    root: Path, session: dict, task_id: str, task: dict, agent: str
+) -> None:
+    behavior = resolve_behavior(root, session)
+    task_type = str(task.get("type") or "").strip().lower()
+    task["tdd_enabled"] = behavior[8] if task_type not in NO_CODE_TASK_TYPES else False
+    task["tdd_coverage_threshold"] = behavior[11]
+    if task["tdd_enabled"] is True:
+        plan = latest_execution_plan(root, task_id)
+        if plan is None:
+            raise StateError("Cannot freeze TDD baseline without a valid execution plan.")
+        baselines = {
+            key: git_head_sha(repository)
+            for key, repository in tdd_repositories(root, task, plan).items()
+        }
+        task_dir = task_json_path(root, task_id).parent
+        try:
+            dev_spec_content = (task_dir / "dev-spec.md").read_text(encoding="utf-8")
+            strategy_content = (task_dir / "test-strategy.md").read_text(encoding="utf-8")
+        except OSError as error:
+            raise StateError("Cannot freeze TDD without readable analysis artifacts.") from error
+        marker_reasons = tdd_baseline_marker_reasons(
+            dev_spec_content, strategy_content, baselines
+        )
+        if marker_reasons:
+            raise StateError("; ".join(marker_reasons))
+        task["tdd_baselines"] = baselines
+    else:
+        task.pop("tdd_baselines", None)
+    task["tdd_confirmed_at"] = now_iso()
+    task["tdd_confirmed_by"] = agent
+
+
 def raise_workflow_mode(
     root: Path,
     mode: str,
@@ -3676,7 +4232,7 @@ def request_transition(
             "use auto-transition instead."
         )
     if previous == "ANALYSIS" and stage == "IMPLEMENT":
-        validate_analysis_readiness(root, resolved_task_id)
+        validate_analysis_readiness(root, resolved_task_id, session)
         if task.get("workflow_mode_legacy") is not True:
             validate_workflow_mode_proposal(
                 root,
@@ -3729,9 +4285,10 @@ def apply_transition(
     if violation:
         raise StateError(violation)
     if previous == "ANALYSIS" and stage == "IMPLEMENT":
-        validate_analysis_readiness(root, resolved_task_id)
+        validate_analysis_readiness(root, resolved_task_id, session)
         if task.get("workflow_mode_legacy") is not True:
             freeze_workflow_mode(root, session, resolved_task_id, task, agent)
+        freeze_tdd_mode(root, session, resolved_task_id, task, agent)
     if previous == "REVIEW" and stage == "VERIFICATION":
         validate_review_readiness(root, resolved_task_id, task)
     if previous == "VERIFICATION" and stage == "MEMORY":
@@ -4156,6 +4713,14 @@ def main() -> int:
     clear_workflow_mode_parser = subcommands.add_parser("clear-workflow-mode", parents=[common])
     clear_workflow_mode_parser.add_argument("--agent", required=True)
 
+    set_tdd_parser = subcommands.add_parser("set-tdd", parents=[common])
+    set_tdd_parser.add_argument("--enabled", required=True, choices=["true", "false"])
+    set_tdd_parser.add_argument("--threshold", type=int)
+    set_tdd_parser.add_argument("--agent", required=True)
+
+    clear_tdd_parser = subcommands.add_parser("clear-tdd", parents=[common])
+    clear_tdd_parser.add_argument("--agent", required=True)
+
     # Compatibility aliases for pre-0.9 callers.
     set_confirm_mode_parser = subcommands.add_parser("set-confirm-mode", parents=[common])
     set_confirm_mode_parser.add_argument(
@@ -4437,6 +5002,30 @@ def main() -> int:
                 attach_status_context(
                     root,
                     clear_session_workflow_mode(root, agent, session_file),
+                    agent,
+                    session_file,
+                )
+            )
+        elif command == "set-tdd":
+            emit(
+                attach_status_context(
+                    root,
+                    set_session_tdd(
+                        root,
+                        args.enabled == "true",
+                        agent,
+                        args.threshold,
+                        session_file,
+                    ),
+                    agent,
+                    session_file,
+                )
+            )
+        elif command == "clear-tdd":
+            emit(
+                attach_status_context(
+                    root,
+                    clear_session_tdd(root, agent, session_file),
                     agent,
                     session_file,
                 )

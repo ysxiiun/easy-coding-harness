@@ -11,6 +11,7 @@ import type { AgentPlatform } from "../types/platform.js";
 import type { Stage, TaskJson, TaskStatus } from "../types/task.js";
 import {
   type ConfiguredWorkflowMode,
+  DEFAULT_TDD_COVERAGE_THRESHOLD,
   readConfigYaml,
   resolveLegacyBehavior,
 } from "./config-yaml.js";
@@ -223,6 +224,17 @@ function migrateTaskWorkflowState(task: Record<string, unknown>): boolean {
     task.workflow_mode_confirmed_at = new Date().toISOString();
     task.workflow_mode_confirmed_by = "upgrade-migration";
     task.workflow_mode_legacy = true;
+    changed = true;
+  }
+  if (isActive && taskType !== "project-init" && typeof task.tdd_enabled !== "boolean") {
+    task.tdd_enabled = false;
+    task.tdd_coverage_threshold = DEFAULT_TDD_COVERAGE_THRESHOLD;
+    task.tdd_confirmed_at = new Date().toISOString();
+    task.tdd_confirmed_by = "upgrade-migration";
+    changed = true;
+  }
+  if (task.tdd_enabled === false && "tdd_baselines" in task) {
+    task.tdd_baselines = undefined;
     changed = true;
   }
 

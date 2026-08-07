@@ -6,6 +6,7 @@ import { VERSION } from "../../src/constants/version.js";
 
 const promptMocks = vi.hoisted(() => ({
   select: vi.fn(),
+  text: vi.fn(),
   confirm: vi.fn(),
   cancel: vi.fn(),
   outro: vi.fn(),
@@ -44,7 +45,7 @@ beforeEach(async () => {
   await writeFile(
     configPath,
     [
-      "version: 3",
+      "version: 4",
       `harness_version: ${VERSION}`,
       "agents:",
       "  - codex",
@@ -54,6 +55,8 @@ beforeEach(async () => {
       "behavior:",
       "  approval_mode: guard",
       "  workflow_mode: adaptive",
+      "  tdd_enabled: false",
+      "  tdd_coverage_threshold: 90",
       "",
     ].join("\n"),
     "utf8",
@@ -67,8 +70,12 @@ afterEach(async () => {
 });
 
 describe("config command", () => {
-  it("interactively updates project approval and workflow modes", async () => {
-    promptMocks.select.mockResolvedValueOnce("confirm").mockResolvedValueOnce("strict");
+  it("interactively updates project modes and the Java TDD threshold", async () => {
+    promptMocks.select
+      .mockResolvedValueOnce("confirm")
+      .mockResolvedValueOnce("strict")
+      .mockResolvedValueOnce(true);
+    promptMocks.text.mockResolvedValueOnce("95");
     promptMocks.confirm.mockResolvedValue(true);
 
     await config();
@@ -76,13 +83,18 @@ describe("config command", () => {
     const content = await readFile(configPath, "utf8");
     expect(content).toContain("approval_mode: confirm");
     expect(content).toContain("workflow_mode: strict");
+    expect(content).toContain("tdd_enabled: true");
+    expect(content).toContain("tdd_coverage_threshold: 95");
     expect(promptMocks.outro).toHaveBeenCalledWith(
-      expect.stringContaining("Project modes updated: approval=confirm, workflow=strict"),
+      expect.stringContaining("Project modes updated: approval=confirm, workflow=strict, TDD=95%"),
     );
   });
 
   it("leaves the config unchanged when confirmation is declined", async () => {
-    promptMocks.select.mockResolvedValueOnce("approve").mockResolvedValueOnce("fast");
+    promptMocks.select
+      .mockResolvedValueOnce("approve")
+      .mockResolvedValueOnce("fast")
+      .mockResolvedValueOnce(false);
     promptMocks.confirm.mockResolvedValue(false);
 
     await config();

@@ -106,10 +106,14 @@ describe("configureCodex", () => {
       path.join(tempDir, ".agents", "skills", "ec-task-management", "SKILL.md"),
       "utf8",
     );
-    expect(taskManagementSkill).toContain("project_approval_mode");
-    expect(taskManagementSkill).toContain("configured_workflow_mode");
-    expect(taskManagementSkill).toContain("set-workflow-mode");
+    expect(taskManagementSkill).toContain("Mode inspection and configuration belongs to `ec-config`");
     expect(taskManagementSkill).not.toContain("{{");
+    const configSkill = await readFile(
+      path.join(tempDir, ".agents", "skills", "ec-config", "SKILL.md"),
+      "utf8",
+    );
+    expect(configSkill).toContain("set-tdd");
+    expect(configSkill).not.toContain("{{");
 
     expect(await pathExists(path.join(tempDir, ".codex", "hooks", "session-start.py"))).toBe(true);
     expect(await pathExists(path.join(tempDir, ".codex", "hooks", "easy_coding_status.py"))).toBe(
@@ -370,10 +374,14 @@ describe("configureQoder", () => {
       path.join(tempDir, ".qoder", "skills", "ec-task-management", "SKILL.md"),
       "utf8",
     );
-    expect(taskManagementSkill).toContain("project_approval_mode");
-    expect(taskManagementSkill).toContain("configured_workflow_mode");
-    expect(taskManagementSkill).toContain("set-workflow-mode");
+    expect(taskManagementSkill).toContain("Mode inspection and configuration belongs to `ec-config`");
     expect(taskManagementSkill).not.toContain("{{");
+    const configSkill = await readFile(
+      path.join(tempDir, ".qoder", "skills", "ec-config", "SKILL.md"),
+      "utf8",
+    );
+    expect(configSkill).toContain("set-tdd");
+    expect(configSkill).not.toContain("{{");
     const gitSkill = await readFile(
       path.join(tempDir, ".qoder", "skills", "ec-git", "SKILL.md"),
       "utf8",
