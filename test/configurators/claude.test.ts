@@ -193,8 +193,18 @@ describe("configureClaude", () => {
     expect(configSkill).toContain("set-tdd");
     expect(configSkill).toContain("clear-tdd");
     expect(configSkill).not.toContain("{{");
+    const tddInitSkill = await readFile(
+      path.join(tempDir, ".claude", "skills", "ec-tdd-init", "SKILL.md"),
+      "utf8",
+    );
+    expect(tddInitSkill).toContain("historical coverage required: no");
+    expect(tddInitSkill).toContain("TDD off -> initialize infrastructure");
+    expect(tddInitSkill).not.toContain("{{");
     expect(
       await pathExists(path.join(tempDir, ".easy-coding", "tools", "easy_coding_java_coverage.py")),
+    ).toBe(true);
+    expect(
+      await pathExists(path.join(tempDir, ".easy-coding", "tools", "easy_coding_tdd_readiness.py")),
     ).toBe(true);
 
     const gitSkill = await readFile(

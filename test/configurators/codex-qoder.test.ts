@@ -114,7 +114,12 @@ describe("configureCodex", () => {
     );
     expect(configSkill).toContain("set-tdd");
     expect(configSkill).not.toContain("{{");
-
+    const tddInitSkill = await readFile(
+      path.join(tempDir, ".agents", "skills", "ec-tdd-init", "SKILL.md"),
+      "utf8",
+    );
+    expect(tddInitSkill).toContain("historical coverage required: no");
+    expect(tddInitSkill).not.toContain("{{");
     expect(await pathExists(path.join(tempDir, ".codex", "hooks", "session-start.py"))).toBe(true);
     expect(await pathExists(path.join(tempDir, ".codex", "hooks", "easy_coding_status.py"))).toBe(
       true,
@@ -382,6 +387,12 @@ describe("configureQoder", () => {
     );
     expect(configSkill).toContain("set-tdd");
     expect(configSkill).not.toContain("{{");
+    const tddInitSkill = await readFile(
+      path.join(tempDir, ".qoder", "skills", "ec-tdd-init", "SKILL.md"),
+      "utf8",
+    );
+    expect(tddInitSkill).toContain("historical coverage required: no");
+    expect(tddInitSkill).not.toContain("{{");
     const gitSkill = await readFile(
       path.join(tempDir, ".qoder", "skills", "ec-git", "SKILL.md"),
       "utf8",

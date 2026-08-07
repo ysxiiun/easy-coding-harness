@@ -96,8 +96,14 @@ Code tasks require `test-strategy.md`; explicit `doc`, `analysis`, and `report` 
 ## Optional Java TDD analysis
 
 Read `effective_tdd_enabled` and `effective_tdd_coverage_threshold` from the state snapshot.
+For a `type=tdd-init` task, treat frozen TDD as off even if the project/session requests it. That
+task is the sole exception allowed to inspect and plan build/CI coverage infrastructure while TDD
+is off. Its scope is infrastructure only: never plan historical business-test backfill or a
+repository-wide coverage target, and explicitly record `coverage scope: changed production lines`.
+
 When TDD is disabled, stop here: do not inspect GitLab CI or JaCoCo, do not add TDD fields or
-extra tests, and do not strengthen the selected Workflow Mode's ordinary acceptance depth.
+extra tests, and do not strengthen the selected Workflow Mode's ordinary acceptance depth. This
+zero-cost rule applies to ordinary tasks, not the explicit `tdd-init` infrastructure task above.
 
 When TDD is enabled for a Java code task, make `test-strategy.md` record:
 
@@ -110,6 +116,8 @@ When TDD is enabled for a Java code task, make `test-strategy.md` record:
 - `.gitlab-ci.yml` and included configuration, the TEST-stage job, JUnit/JaCoCo artifacts, and an
   equivalent changed-line gate. Reuse a gate only when its threshold is at least the configured
   value; otherwise include the CI change in the confirmed implementation scope.
+- current `tdd_readiness_status=ready`; if missing or drifted, stop before IMPLEMENT and route to
+  `ec-tdd-init`. Never plan to initialize CI inside an already-enabled TDD feature task.
 
 The state API mechanically freezes current Git `HEAD` per repository into `task.tdd_baselines`
 when ANALYSIS advances to IMPLEMENT. Plan both local and GitLab commands with that exact SHA and

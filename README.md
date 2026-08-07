@@ -86,7 +86,7 @@ any stage --[user abort via ec-task-close]--> CLOSED
   ANALYSIS → IMPLEMENT 确认一次，随后各阶段在质量门禁通过后自动推进，`auto` 从开始即
   自动推进。
 - 工作流模式优先级为 session 覆盖 > 项目 `behavior.workflow_mode` > `adaptive`。Adaptive 在 ANALYSIS 结束时根据风险解析、展示并冻结为 `fast`、`standard` 或 `strict`，用户可在风险下限之上调整。
-- Java TDD 默认关闭；优先级为 session 覆盖 > 项目配置 > `false/90%`。开启后在 ANALYSIS → IMPLEMENT 冻结开关与阈值，执行 RED/GREEN/REFACTOR（纯重构使用 characterization GREEN → GREEN），并以同一工具执行本地与 GitLab TEST-stage 差异覆盖率门禁。关闭时不扫描 CI/JaCoCo、不增加命令或提高原工作流验收深度。
+- Java TDD 默认关闭；优先级为 session 覆盖 > 项目配置 > `false/90%`。首次开启前必须运行 `ec-tdd-init`，只建设 JUnit/JaCoCo/GitLab 增量覆盖率基础设施，不补存量业务单测；readiness 通过后才允许显式开启。开启后在 ANALYSIS → IMPLEMENT 冻结开关、baseline 与阈值，只验收本任务新增/修改生产代码行，执行 RED/GREEN/REFACTOR（纯重构使用 characterization GREEN → GREEN），并以同一工具执行本地与 GitLab TEST-stage 差异覆盖率门禁。关闭时普通任务不扫描 CI/JaCoCo、不增加命令或提高原工作流验收深度。
 - 所有新代码任务都完整进入 REVIEW；不同工作流模式只调整各状态内部的上下文加载、执行主体、审查独立性、验证范围和记忆深度，不绕过状态或证据门禁。
 - 显式 `doc` / `analysis` / `report` 只读任务不生成 `test-strategy.md`；展示完整报告后按生效模式进入 COMPLETE，不执行 REVIEW、VERIFICATION 或 MEMORY，也不写任务记忆。
 - `VERIFICATION` 是验证硬门控：Fast 运行最小充分检查，Standard 运行受影响范围检查，
@@ -132,7 +132,7 @@ Canonical Spec 是只读设计源；`.easy-coding/tasks/<task-id>/` 下的 `dev-
 | `easy-coding add-agent` | 给已接入项目追加 Claude Code、Codex 或 Qoder 支持；supermodule 父仓可按已初始化子仓分层追加 |
 | `easy-coding upgrade` | CLI 升级后同步项目内生成文件，生成区覆盖，用户资产保留；supermodule 父仓会同步升级已初始化子仓 |
 | `easy-coding update` | 更新全局 CLI 到最新发布版 |
-| `easy-coding config` | 交互修改当前项目的 Approval、Workflow、Java TDD 与覆盖率阈值 |
+| `easy-coding config` | 交互修改当前项目的 Approval、Workflow、Java TDD 与覆盖率阈值；开启 TDD 前要求 readiness |
 | `easy-coding status` | 查看已安装平台、harness 版本、当前任务状态 |
 | `easy-coding clear` | 移除 harness 安装物，保留 tasks、spec、memory、project.yaml 等用户资产；supermodule 父仓支持交互选择、`--submodules` 和 `--no-submodules` |
 
@@ -151,6 +151,7 @@ Canonical Spec 是只读设计源；`.easy-coding/tasks/<task-id>/` 下的 `dev-
 | `ec-memory` | 写短期记忆，并在超过阈值时沉淀长期记忆 |
 | `ec-task-management` | 任务面板：查看、创建、选择、恢复、交接任务 |
 | `ec-config` | 只读查看或显式修改项目/session 的 Approval、Workflow、TDD 与阈值 |
+| `ec-tdd-init` | 在 TDD 关闭态初始化/刷新 Java changed-line coverage 基础设施，不补存量单测 |
 | `ec-task-close` | 用户主动中断任务并关闭 |
 | `ec-no-harness` | 当前会话仅旁路 Easy Coding Harness，使用原生 Agent 能力 |
 | `ec-git` | 约束 git diff、commit、push、跨仓库提交等交付动作 |
@@ -187,8 +188,9 @@ easy-coding upgrade
 `behavior.approval_mode` 与 `behavior.workflow_mode`；旧 `lite` 映射为 `guard + fast`。
 项目级模式用 `easy-coding config` 修改（要求
 项目 Harness 与 CLI 版本完全一致，否则先执行 `easy-coding upgrade` 或更新 CLI）；当前
-session 临时覆盖统一通过 `ec-config` 对话修改。升级到 0.10.0-beta.1 时配置 schema 升至
-4，旧项目、会话和在途任务均迁移为 TDD 关闭；同时部署共享 Java 差异覆盖率工具。
+session 临时覆盖统一通过 `ec-config` 对话修改。升级到 0.10.0-beta.2 时配置 schema 升至
+5；未完成 `ec-tdd-init` readiness 的项目/session TDD 请求迁移为关闭并保留阈值，同时
+部署共享 Java 差异覆盖率与 readiness 工具。已经冻结的活动任务合同不会被静默改写。
 
 若当前会话不希望 Harness 接管，显式调用 `/ec-no-harness`（Codex 使用
 `$ec-no-harness`）。它只旁路 Easy Coding，不关闭其他 hooks，也不忽略其他 skills；

@@ -5,7 +5,7 @@ import type { AgentPlatform } from "../types/platform.js";
 import type { SupermoduleConfig } from "../types/supermodule.js";
 import { writeTextFile } from "./file-writer.js";
 
-export const CONFIG_SCHEMA_VERSION = 4;
+export const CONFIG_SCHEMA_VERSION = 5;
 export const DEFAULT_TDD_COVERAGE_THRESHOLD = 90;
 export const APPROVAL_MODES = ["approve", "guard", "confirm", "auto"] as const;
 export const CONFIGURED_WORKFLOW_MODES = ["adaptive", "fast", "standard", "strict"] as const;
@@ -173,10 +173,11 @@ export function resolveLegacyBehavior(config: EasyCodingConfig): {
     : legacyLite
       ? "fast"
       : "adaptive";
-  const supportsTdd = Number(config.version) >= CONFIG_SCHEMA_VERSION;
-  const tddEnabled = supportsTdd && behavior.tdd_enabled === true;
+  const supportsTddThreshold = Number(config.version) >= 4;
+  const supportsReadyTdd = Number(config.version) >= CONFIG_SCHEMA_VERSION;
+  const tddEnabled = supportsReadyTdd && behavior.tdd_enabled === true;
   const tddCoverageThreshold =
-    supportsTdd && isTddCoverageThreshold(behavior.tdd_coverage_threshold)
+    supportsTddThreshold && isTddCoverageThreshold(behavior.tdd_coverage_threshold)
       ? behavior.tdd_coverage_threshold
       : DEFAULT_TDD_COVERAGE_THRESHOLD;
   return { approvalMode, workflowMode, tddEnabled, tddCoverageThreshold };

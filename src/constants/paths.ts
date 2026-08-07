@@ -13,6 +13,8 @@ export const DEV_SPEC_DIR = "dev";
 
 export const TEMPLATES_DIR = "templates";
 export const TOOLS_DIR = "tools";
+export const TDD_DIR = "tdd";
+export const TDD_READINESS_FILE = "readiness.json";
 
 export const SESSIONS_GITIGNORE_ENTRY = ".easy-coding/sessions/";
 export const HOOK_BYTECODE_GITIGNORE_ENTRY = "__pycache__/";

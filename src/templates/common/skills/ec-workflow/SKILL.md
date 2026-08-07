@@ -39,8 +39,11 @@ selection and reasons, allows the user to change it within the risk floor, and f
 ANALYSIS -> IMPLEMENT is applied.
 
 TDD resolves with the same session-over-project precedence and freezes its enabled flag and
-threshold on ANALYSIS -> IMPLEMENT. When off, it must add no CI scan, artifacts, commands,
-coverage work, or stronger acceptance. Use `ec-config` for all mode configuration.
+threshold on ANALYSIS -> IMPLEMENT. It may be enabled only after `ec-tdd-init` readiness passes;
+there is no enabled-but-pending-initialization state. A dedicated `tdd-init` task always freezes
+TDD off so it can create or repair the required infrastructure without circular gating. When off,
+ordinary tasks add no CI scan, artifacts, commands, coverage work, or stronger acceptance. Use
+`ec-config` for all mode configuration.
 
 `confirm` and `auto` do not hide the proposal: show it in the plan. Confirm waits for that one
 plan decision; Auto continues immediately. Both remove later waiting, not quality gates.
@@ -87,7 +90,10 @@ plan decision; Auto continues immediately. Both remove later waiting, not qualit
 
    When multiple selected tasks depend on the same target, disambiguate creation evidence with
    `<source-task-id>-><dependency-task-id>=<evidence>`.
-4. Match the user's intent against `current_task` and the active task list before resuming.
+4. When the user explicitly invokes `ec-tdd-init`, let that skill own preflight and create a
+   `type=tdd-init` code task only after scope confirmation. Do not reinterpret it as an ordinary
+   TDD-enabled feature task and do not require readiness before creating it.
+5. Match the user's intent against `current_task` and the active task list before resuming.
    If the user names or clearly matches another task, confirm the switch and call
    `claim-task --task-id <id> --agent <agent-id> --session-file <P>`. Do not execute task A
    under task B's request.
@@ -99,10 +105,10 @@ plan decision; Auto continues immediately. Both remove later waiting, not qualit
      to the requested deliverable. Feature, bugfix, refactor, performance, and workflow changes
      are code tasks. Use `doc`, `analysis`, or `report` only when the user explicitly requested
      a no-code deliverable; never downgrade a code request to the read-only completion path.
-5. Resume the matched/current task, then load only state-relevant assets. Do not read five full
+6. Resume the matched/current task, then load only state-relevant assets. Do not read five full
    memories at every startup; ANALYSIS searches memory metadata and opens relevant entries on
    demand.
-6. If another Agent last owned the task, summarize the stored handoff before continuing.
+7. If another Agent last owned the task, summarize the stored handoff before continuing.
 
 ## Stage dispatch
 

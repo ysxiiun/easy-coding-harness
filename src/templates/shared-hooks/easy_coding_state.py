@@ -66,6 +66,7 @@ ALWAYS_AUTO_TRANSITIONS = {
 }
 READ_ONLY_COMPLETION_TRANSITION = ("IMPLEMENT", "COMPLETE")
 NO_CODE_TASK_TYPES = {"analysis", "doc", "report"}
+TDD_INIT_TASK_TYPE = "tdd-init"
 APPROVAL_MODES = {"approve", "guard", "confirm", "auto"}
 CONFIGURED_WORKFLOW_MODES = {"adaptive", "fast", "standard", "strict"}
 WORKFLOW_MODES = {"fast", "standard", "strict"}
@@ -82,6 +83,14 @@ DEFAULT_APPROVAL_MODE = "guard"
 DEFAULT_WORKFLOW_MODE = "adaptive"
 DEFAULT_TDD_ENABLED = False
 DEFAULT_TDD_COVERAGE_THRESHOLD = 90
+TDD_READINESS_SCHEMA = "easy-coding/tdd-readiness-v1"
+TDD_READINESS_SCOPE = "changed-production-lines"
+TDD_READINESS_PATH = Path(".easy-coding/tdd/readiness.json")
+TDD_BASE_VARIABLE = "EASY_CODING_TDD_BASE_SHA"
+TDD_THRESHOLD_VARIABLE = "EASY_CODING_TDD_THRESHOLD"
+COVERAGE_TOOL_PATH = ".easy-coding/tools/easy_coding_java_coverage.py"
+JAVA_BUILD_FILE_NAMES = {"pom.xml", "build.gradle", "build.gradle.kts"}
+GITLAB_CI_ENTRY_FILES = {".gitlab-ci.yml", ".gitlab-ci.yaml"}
 CRITICAL_CONFIRM_TRANSITIONS = {
     ("ANALYSIS", "IMPLEMENT"),
     ("VERIFICATION", "MEMORY"),
@@ -399,7 +408,11 @@ def read_project_behavior(root: Path) -> tuple[str, str, bool, int]:
             "expected adaptive, fast, standard, or strict."
         )
     if schema_version >= 4:
-        tdd_enabled = parse_yaml_bool(behavior.get("tdd_enabled"), "behavior.tdd_enabled")
+        tdd_enabled = (
+            parse_yaml_bool(behavior.get("tdd_enabled"), "behavior.tdd_enabled")
+            if schema_version >= 5
+            else DEFAULT_TDD_ENABLED
+        )
         tdd_threshold = parse_tdd_threshold(
             behavior.get("tdd_coverage_threshold", DEFAULT_TDD_COVERAGE_THRESHOLD),
             "behavior.tdd_coverage_threshold",
@@ -408,6 +421,175 @@ def read_project_behavior(root: Path) -> tuple[str, str, bool, int]:
         tdd_enabled = DEFAULT_TDD_ENABLED
         tdd_threshold = DEFAULT_TDD_COVERAGE_THRESHOLD
     return approval_mode, workflow_mode, tdd_enabled, tdd_threshold
+
+
+def safe_tdd_report_pattern(value: object) -> bool:
+    if not is_non_empty_string(value):
+        return False
+    candidate = Path(str(value))
+    return not candidate.is_absolute() and ".." not in candidate.parts
+
+
+def tdd_gate_uses_task_variables(command: object) -> bool:
+    if not is_non_empty_string(command):
+        return False
+    try:
+        tokens = shlex.split(str(command))
+    except ValueError:
+        return False
+    options: dict[str, str] = {}
+    for index, token in enumerate(tokens[:-1]):
+        if token in {"--base", "--threshold"}:
+            options[token] = tokens[index + 1]
+    return options.get("--base") in {
+        f"${TDD_BASE_VARIABLE}",
+        "$" + "{" + TDD_BASE_VARIABLE + "}",
+    } and options.get("--threshold") in {
+        f"${TDD_THRESHOLD_VARIABLE}",
+        "$" + "{" + TDD_THRESHOLD_VARIABLE + "}",
+    }
+
+
+def tdd_ci_contract_reasons(contents: list[str]) -> list[str]:
+    combined = "\n".join(
+        re.sub(r"\s+#.*$", "", re.sub(r"^\s*#.*$", "", line))
+        for line in "\n".join(contents).splitlines()
+    )
+    lowered = combined.lower()
+    reasons: list[str] = []
+    for marker in (
+        "jacoco",
+        "artifacts",
+        COVERAGE_TOOL_PATH,
+        TDD_BASE_VARIABLE,
+        TDD_THRESHOLD_VARIABLE,
+    ):
+        if marker.lower() not in lowered:
+            reasons.append(f"CI files do not contain required marker: {marker}")
+    if not tdd_gate_uses_task_variables(combined):
+        reasons.append(
+            "CI changed-line gate must use the task baseline and threshold variables"
+        )
+    if re.search(
+        r"(?:^|\n)\s*stage\s*:\s*['\"]?test['\"]?\s*(?:#.*)?(?:\n|$)",
+        combined,
+        re.IGNORECASE,
+    ) is None:
+        reasons.append("CI files do not declare a TEST-stage job")
+    return reasons
+
+
+def tdd_readiness(root: Path) -> dict[str, object]:
+    receipt = root / TDD_READINESS_PATH
+    if not receipt.is_file():
+        return {"status": "needs_init", "reasons": ["TDD readiness receipt is missing"]}
+    try:
+        manifest = json.loads(receipt.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return {"status": "needs_init", "reasons": ["TDD readiness receipt is invalid"]}
+    if not isinstance(manifest, dict):
+        return {
+            "status": "needs_init",
+            "reasons": ["TDD readiness receipt must be a JSON object"],
+        }
+
+    reasons: list[str] = []
+    if manifest.get("schema") != TDD_READINESS_SCHEMA:
+        reasons.append("unsupported readiness schema")
+    if manifest.get("provider") != "gitlab":
+        reasons.append("readiness provider must be gitlab")
+    if manifest.get("coverage_scope") != TDD_READINESS_SCOPE:
+        reasons.append("coverage scope must be changed-production-lines")
+    if manifest.get("historical_coverage_required") is not False:
+        reasons.append("historical coverage must remain disabled")
+    reports = manifest.get("coverage_report_patterns")
+    if not isinstance(reports, list) or not reports or not all(
+        safe_tdd_report_pattern(item) for item in reports
+    ):
+        reasons.append(
+            "coverage_report_patterns must contain safe project-relative report patterns"
+        )
+    gate = manifest.get("changed_line_gate_command")
+    if not is_non_empty_string(gate) or COVERAGE_TOOL_PATH not in str(gate):
+        reasons.append("changed-line coverage gate command is missing")
+    elif not tdd_gate_uses_task_variables(gate):
+        reasons.append(
+            "changed-line coverage gate must use the task baseline and threshold variables"
+        )
+
+    contents: dict[str, list[str]] = {
+        "build_files": [],
+        "ci_files": [],
+        "tool_files": [],
+    }
+    for field in contents:
+        records = manifest.get(field)
+        if not isinstance(records, list) or not records:
+            reasons.append(f"{field} must contain at least one file")
+            continue
+        for record in records:
+            if not isinstance(record, dict):
+                reasons.append(f"{field} contains an invalid record")
+                continue
+            file_name = record.get("path")
+            expected = record.get("sha256")
+            if not is_non_empty_string(file_name) or not re.fullmatch(
+                r"[a-f0-9]{64}", str(expected or "")
+            ):
+                reasons.append(f"{field} contains an invalid path or SHA-256")
+                continue
+            candidate = Path(str(file_name))
+            if candidate.is_absolute():
+                reasons.append(f"readiness file must be project-relative: {file_name}")
+                continue
+            resolved = (root / candidate).resolve()
+            try:
+                resolved.relative_to(root.resolve())
+                payload = resolved.read_bytes()
+                contents[field].append(payload.decode("utf-8"))
+                if hashlib.sha256(payload).hexdigest() != expected:
+                    reasons.append(f"readiness file changed: {file_name}")
+            except (OSError, UnicodeError, ValueError):
+                reasons.append(f"readiness file is missing or unreadable: {file_name}")
+
+    manifest_build_files = manifest.get("build_files")
+    manifest_ci_files = manifest.get("ci_files")
+    manifest_tool_files = manifest.get("tool_files")
+    build_paths = {
+        Path(str(item.get("path", ""))).name
+        for item in manifest_build_files
+        if isinstance(item, dict) and is_non_empty_string(item.get("path"))
+    } if isinstance(manifest_build_files, list) else set()
+    ci_paths = {
+        str(item.get("path", "")).replace("\\", "/")
+        for item in manifest_ci_files
+        if isinstance(item, dict) and is_non_empty_string(item.get("path"))
+    } if isinstance(manifest_ci_files, list) else set()
+    if not build_paths.intersection(JAVA_BUILD_FILE_NAMES):
+        reasons.append("build_files must include a Maven or Gradle Java build file")
+    if not ci_paths.intersection(GITLAB_CI_ENTRY_FILES):
+        reasons.append("ci_files must include the project-root GitLab CI entry file")
+    tool_paths = {
+        str(item.get("path", "")).replace("\\", "/")
+        for item in manifest_tool_files
+        if isinstance(item, dict) and is_non_empty_string(item.get("path"))
+    } if isinstance(manifest_tool_files, list) else set()
+    if COVERAGE_TOOL_PATH not in tool_paths:
+        reasons.append(f"tool_files must include {COVERAGE_TOOL_PATH}")
+    if not any("jacoco" in content.lower() for content in contents["build_files"]):
+        reasons.append("build files do not configure JaCoCo")
+    reasons.extend(tdd_ci_contract_reasons(contents["ci_files"]))
+    return {
+        "status": "ready" if not reasons else "needs_init",
+        "reasons": list(dict.fromkeys(reasons)),
+    }
+
+
+def require_tdd_readiness(root: Path) -> None:
+    readiness = tdd_readiness(root)
+    if readiness["status"] != "ready":
+        reasons = "; ".join(str(reason) for reason in readiness["reasons"])
+        raise StateError(f"TDD cannot be enabled before ec-tdd-init succeeds: {reasons}")
 
 
 def resolve_behavior(
@@ -2411,6 +2593,13 @@ def validate_verification_readiness(root: Path, task_id: str, task: dict) -> Non
         raise StateError(
             "VERIFICATION cannot advance to MEMORY while current verification evidence contains failures."
         )
+    if str(task.get("type") or "").strip().lower() == TDD_INIT_TASK_TYPE:
+        readiness = tdd_readiness(root)
+        if readiness["status"] != "ready":
+            raise StateError(
+                "TDD initialization cannot advance to MEMORY until readiness passes: "
+                + "; ".join(str(reason) for reason in readiness["reasons"])
+            )
     if task.get("tdd_enabled") is not True and any(
         record.get("check_type") == "coverage" for record in latest_by_check.values()
     ):
@@ -2418,6 +2607,7 @@ def validate_verification_readiness(root: Path, task_id: str, task: dict) -> Non
             "Coverage verification evidence is not allowed when the frozen TDD mode is off."
         )
     if task.get("tdd_enabled") is True:
+        require_tdd_readiness(root)
         coverage_records = [
             record
             for record in latest_by_check.values()
@@ -2826,7 +3016,7 @@ def validate_analysis_readiness(
     test_strategy = task_dir / "test-strategy.md"
     reasons: list[str] = []
     behavior = resolve_behavior(root, session or default_session())
-    tdd_enabled = behavior[8]
+    tdd_enabled = behavior[8] if task_type != TDD_INIT_TASK_TYPE else False
     tdd_threshold = behavior[11]
 
     dev_spec_content = ""
@@ -2875,6 +3065,12 @@ def validate_analysis_readiness(
     if not plan_is_valid:
         reasons.append("execution.jsonl has no valid plan record")
     if tdd_enabled and not is_read_only_task:
+        readiness = tdd_readiness(root)
+        if readiness["status"] != "ready":
+            reasons.append(
+                "TDD infrastructure is not ready; run ec-tdd-init first: "
+                + "; ".join(str(reason) for reason in readiness["reasons"])
+            )
         plan = latest_execution_plan(root, task_id) or {}
         if re.search(
             r"^###\s+TDD Mode\s*$", dev_spec_content, re.MULTILINE | re.IGNORECASE
@@ -2924,6 +3120,32 @@ def validate_analysis_readiness(
                     dev_spec_content, strategy_content, baselines
                 )
             )
+    elif task_type == TDD_INIT_TASK_TYPE:
+        try:
+            strategy_content = test_strategy.read_text(encoding="utf-8")
+        except OSError:
+            strategy_content = ""
+        required_init_markers = [
+            "JaCoCo",
+            "GitLab",
+            "changed production lines",
+            "historical coverage required: no",
+            "easy_coding_tdd_readiness.py",
+        ]
+        missing_init_markers = [
+            marker
+            for marker in required_init_markers
+            if marker.lower() not in strategy_content.lower()
+        ]
+        if missing_init_markers:
+            reasons.append(
+                "TDD initialization strategy is missing: "
+                + ", ".join(missing_init_markers)
+            )
+        if re.search(
+            r"^###\s+TDD Mode\s*$", dev_spec_content, re.MULTILINE | re.IGNORECASE
+        ):
+            reasons.append("tdd-init must keep TDD off and omit the TDD Mode section")
     elif not is_read_only_task:
         if re.search(
             r"^###\s+TDD Mode\s*$", dev_spec_content, re.MULTILINE | re.IGNORECASE
@@ -3254,11 +3476,24 @@ def snapshot_state(
         and status not in {"ANALYSIS", "INIT"}
         and isinstance(task_tdd_enabled, bool)
     )
-    displayed_tdd_enabled = task_tdd_enabled if frozen_tdd else effective_tdd_enabled
+    is_tdd_init = bool(
+        task and str(task.get("type") or "").strip().lower() == TDD_INIT_TASK_TYPE
+    )
+    displayed_tdd_enabled = (
+        False if is_tdd_init else task_tdd_enabled if frozen_tdd else effective_tdd_enabled
+    )
     displayed_tdd_threshold = (
         task_tdd_coverage_threshold
         if frozen_tdd and isinstance(task_tdd_coverage_threshold, int)
         else effective_tdd_coverage_threshold
+    )
+    should_check_readiness = bool(
+        effective_tdd_enabled or task_tdd_enabled is True or is_tdd_init
+    )
+    readiness = (
+        tdd_readiness(root)
+        if should_check_readiness
+        else {"status": "not_checked", "reasons": []}
     )
 
     return {
@@ -3291,6 +3526,8 @@ def snapshot_state(
         "task_tdd_baselines": task.get("tdd_baselines") if task else None,
         "displayed_tdd_enabled": displayed_tdd_enabled,
         "displayed_tdd_coverage_threshold": displayed_tdd_threshold,
+        "tdd_readiness_status": readiness["status"],
+        "tdd_readiness_reasons": readiness["reasons"],
         "spec_summary": spec_task_summary(task),
         # Compatibility output aliases for pre-0.9 clients.
         "project_confirm_mode": project_approval_mode,
@@ -3674,6 +3911,8 @@ def set_session_tdd(
     threshold: int | None = None,
     session_file: str | Path | None = None,
 ) -> dict:
+    if enabled:
+        require_tdd_readiness(root)
     session = ensure_session(root, session_file)
     materialize_legacy_session_behavior(session)
     session["tdd_enabled"] = enabled
@@ -4139,9 +4378,14 @@ def freeze_tdd_mode(
 ) -> None:
     behavior = resolve_behavior(root, session)
     task_type = str(task.get("type") or "").strip().lower()
-    task["tdd_enabled"] = behavior[8] if task_type not in NO_CODE_TASK_TYPES else False
+    task["tdd_enabled"] = (
+        behavior[8]
+        if task_type not in NO_CODE_TASK_TYPES | {TDD_INIT_TASK_TYPE}
+        else False
+    )
     task["tdd_coverage_threshold"] = behavior[11]
     if task["tdd_enabled"] is True:
+        require_tdd_readiness(root)
         plan = latest_execution_plan(root, task_id)
         if plan is None:
             raise StateError("Cannot freeze TDD baseline without a valid execution plan.")

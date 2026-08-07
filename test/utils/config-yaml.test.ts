@@ -7,6 +7,8 @@ import {
   createDefaultConfig,
   ensureProjectId,
   migrateBehaviorConfig,
+  readConfigYaml,
+  resolveLegacyBehavior,
   setBehaviorModes,
   setConfirmMode,
   updateHarnessVersion,
@@ -52,13 +54,13 @@ afterEach(async () => {
 });
 
 describe("config-yaml", () => {
-  it("creates schema 4 configs with default-off TDD and a 90 percent threshold", () => {
+  it("creates schema 5 configs with default-off TDD and a 90 percent threshold", () => {
     const config = createDefaultConfig({
       projectName: "demo",
       harnessVersion: "1.0.0",
       agents: ["claude-code"],
     });
-    expect(config.version).toBe(4);
+    expect(config.version).toBe(5);
     expect(config.behavior).toEqual({
       approval_mode: "guard",
       workflow_mode: "adaptive",
@@ -70,13 +72,28 @@ describe("config-yaml", () => {
   it("migrates legacy confirmation booleans and removes them", async () => {
     await migrateBehaviorConfig(configPath);
     const content = await readFile(configPath, "utf8");
-    expect(content).toContain("version: 4");
+    expect(content).toContain("version: 5");
     expect(content).toContain("approval_mode: approve");
     expect(content).toContain("workflow_mode: adaptive");
     expect(content).toContain("tdd_enabled: false");
     expect(content).toContain("tdd_coverage_threshold: 90");
     expect(content).not.toContain("strict_confirm");
     expect(content).not.toContain("auto_mode");
+  });
+
+  it("treats schema 4 TDD as unready while preserving its configured threshold", async () => {
+    const beta1 = (await readFile(configPath, "utf8"))
+      .replace("version: 1", "version: 4")
+      .replace("  strict_confirm: true", "  approval_mode: guard")
+      .replace("  auto_mode: false\n", "")
+      .replace("tdd_enabled: true # pre-schema-4 custom key must not opt in", "tdd_enabled: true")
+      .replace("tdd_coverage_threshold: 99", "tdd_coverage_threshold: 95");
+    await writeFile(configPath, beta1, "utf8");
+
+    expect(resolveLegacyBehavior(await readConfigYaml(configPath))).toMatchObject({
+      tddEnabled: false,
+      tddCoverageThreshold: 95,
+    });
   });
 
   it("writes explicit behavior modes without restoring legacy keys", async () => {

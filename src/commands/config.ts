@@ -14,6 +14,7 @@ import {
   setBehaviorModes,
 } from "../utils/config-yaml.js";
 import { pathExists } from "../utils/file-writer.js";
+import { inspectTddReadiness } from "../utils/tdd-readiness.js";
 
 export async function config(): Promise<void> {
   renderBanner();
@@ -117,6 +118,16 @@ export async function config(): Promise<void> {
     return;
   }
 
+  if (tddEnabled) {
+    const readiness = await inspectTddReadiness(process.cwd());
+    if (readiness.status !== "ready") {
+      cancel(
+        `TDD was not enabled. Run ec-tdd-init first: ${readiness.reasons.join("; ")}. No project modes were changed.`,
+      );
+      return;
+    }
+  }
+
   let tddCoverageThreshold = current.tddCoverageThreshold;
   if (tddEnabled) {
     const thresholdInput = await text({
@@ -141,6 +152,16 @@ export async function config(): Promise<void> {
   if (typeof shouldSave === "symbol" || !shouldSave) {
     cancel("Configuration cancelled.");
     return;
+  }
+
+  if (tddEnabled) {
+    const readiness = await inspectTddReadiness(process.cwd());
+    if (readiness.status !== "ready") {
+      cancel(
+        `TDD was not enabled because readiness changed before save: ${readiness.reasons.join("; ")}. No project modes were changed.`,
+      );
+      return;
+    }
   }
 
   await setBehaviorModes(configPath, approvalMode, workflowMode, tddEnabled, tddCoverageThreshold);

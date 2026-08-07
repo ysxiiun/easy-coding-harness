@@ -209,7 +209,7 @@ INIT ─自动→ ANALYSIS → IMPLEMENT → REVIEW → VERIFICATION → MEMORY 
   `auto` 自动执行全部合法边。所有自动边仍需满足机械质量门禁，CLOSED 始终要求显式
   关闭。
 - **工作流模式**：session 覆盖优先于项目 `behavior.workflow_mode`，缺失时为 `adaptive`。ANALYSIS 保存 configured/selected/minimum/source/reasons 提案，进入 IMPLEMENT 时原子冻结为具体模式。
-- **Java TDD 模式**：session 覆盖优先于项目 `behavior.tdd_enabled`，默认关闭；覆盖率阈值默认 90，可配置 1..100。进入 IMPLEMENT 时原子冻结。关闭时不触发 CI/JaCoCo/TDD artifact 或额外命令；开启时以 100% 为测试设计目标，以配置阈值作为修改代码差异覆盖率最低门禁，并由本地与 GitLab TEST stage 复用同一脚本；VERIFICATION 对每个仓库（Canonical 下每个 source task）同时要求本地证据与带成功 pipeline/job 身份的 GitLab 证据。
+- **Java TDD 模式**：session 覆盖优先于项目 `behavior.tdd_enabled`，默认关闭；覆盖率阈值默认 90，可配置 1..100。开启入口必须先验证 `ec-tdd-init` readiness，不存在“先开启、稍后初始化”。专用 `tdd-init` 代码任务始终冻结 TDD 关闭，只建设 JUnit/JaCoCo/GitLab changed-line coverage 基础设施，不补存量业务单测或要求全量覆盖。后续业务任务进入 IMPLEMENT 时原子冻结 baseline 与阈值，以 100% 为测试设计目标、以配置阈值作为新增/修改生产代码行最低门禁，并由本地与 GitLab TEST stage 复用同一脚本；VERIFICATION 对每个仓库（Canonical 下每个 source task）同时要求本地证据与带成功 pipeline/job 身份的 GitLab 证据。
 - **pending_transition**：仅审批模式要求人工确认时记录；自动边走受限 `auto-transition`。所有新代码主链从 IMPLEMENT 进入 REVIEW。
 - **确认门展示**：存在人工确认边时，Agent 完整展示“确认进入/返回目标阶段”“交接给其他智能体”和 free-form Other。模式选择已包含在 ANALYSIS 方案中，用户可在风险下限之上修改。取消、超时或无法解析时保留 `pending_transition`。
 - **VERIFICATION**：Fast 运行最小充分的定向检查，Standard 运行受影响范围的 lint/typecheck/test，Strict 运行项目适用的完整 lint/typecheck/test/build；所选模式要求的检查必须绑定当前实现与配置指纹并全部通过，"should pass" 不是证据。
@@ -544,7 +544,7 @@ Claude Code 同样将 session 初始化限定在 `SessionStart`；Qoder 没有�
 
 ---
 
-### 13. 任务与模式管理（ec-task-management + ec-config + ec-task-close）
+### 13. 任务与模式管理（ec-task-management + ec-config + ec-tdd-init + ec-task-close）
 
 职责清晰分离：
 
@@ -553,10 +553,11 @@ Claude Code 同样将 session 初始化限定在 `SessionStart`；Qoder 没有�
 | ec-workflow | 阶段流转 + 任务发现/恢复 |
 | ec-task-management | 任务查看、创建、选择、恢复与交接 |
 | ec-config | 只读配置面板 + 项目/session Approval、Workflow、TDD 与阈值配置 |
+| ec-tdd-init | TDD 关闭态下初始化/刷新 Java changed-line coverage 基础设施 |
 | ec-task-close | 任务中断与关闭（确认意图 → 记录原因 → 清理状态） |
 | ec-no-harness | 当前 session 旁路 Easy Coding；保留任务状态与其他 skills/hooks |
 
-`ec-task-management` 只拥有任务生命周期；模式配置从该 skill 迁移到 `ec-config`。`ec-config` 裸唤起只读，展示项目/session/生效值和任务冻结值，只有用户明确选择后才调用状态 API 修改 session，项目配置统一引导至 `easy-coding config`。
+`ec-task-management` 只拥有任务生命周期；模式配置从该 skill 迁移到 `ec-config`。`ec-config` 裸唤起只读，展示项目/session/生效值、任务冻结值与 readiness，只有用户明确选择且 readiness 通过后才调用状态 API 开启 session TDD，项目配置统一引导至 `easy-coding config`。`ec-tdd-init` 使用强制 TDD 关闭的专用代码任务消除 CI 初始化循环依赖，完成后仍由用户显式开启 TDD。
 
 ec-task-close 的关键设计：CLOSED 是终态，**不执行记忆流程**——未完成任务的记忆是脏数据。
 

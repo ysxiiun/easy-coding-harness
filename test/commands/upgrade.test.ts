@@ -499,7 +499,7 @@ describe("upgrade command", () => {
     expect(await readFile(memoryPath, "utf8")).toBe("memory must stay byte-identical\n");
   });
 
-  it("migrates legacy confirmation fields to schema 4 with default-off TDD", async () => {
+  it("migrates legacy confirmation fields to schema 5 with default-off TDD", async () => {
     await init({ agent: "codex" });
     const configPath = path.join(tempDir, ".easy-coding", "config.yaml");
     const legacyConfig = (await readFile(configPath, "utf8"))
@@ -514,13 +514,45 @@ describe("upgrade command", () => {
     await upgrade({ yes: true });
 
     const migrated = await readFile(configPath, "utf8");
-    expect(migrated).toContain("version: 4");
+    expect(migrated).toContain("version: 5");
     expect(migrated).toContain("approval_mode: auto");
     expect(migrated).toContain("workflow_mode: adaptive");
     expect(migrated).toContain("tdd_enabled: false");
     expect(migrated).toContain("tdd_coverage_threshold: 90");
     expect(migrated).not.toContain("strict_confirm");
     expect(migrated).not.toContain("auto_mode");
+  });
+
+  it("disables beta.1 project and session TDD requests when readiness is missing", async () => {
+    await init({ agent: "codex" });
+    const configPath = path.join(tempDir, ".easy-coding", "config.yaml");
+    const beta1 = (await readFile(configPath, "utf8"))
+      .replace("version: 5", "version: 4")
+      .replace(`harness_version: ${VERSION}`, "harness_version: 0.10.0-beta.1")
+      .replace("tdd_enabled: false", "tdd_enabled: true")
+      .replace("tdd_coverage_threshold: 90", "tdd_coverage_threshold: 95");
+    await writeFile(configPath, beta1, "utf8");
+    const sessionPath = path.join(tempDir, ".easy-coding", "sessions", "beta1.json");
+    await mkdir(path.dirname(sessionPath), { recursive: true });
+    await writeFile(
+      sessionPath,
+      JSON.stringify({ current_task: null, tdd_enabled: true, tdd_coverage_threshold: 95 }),
+      "utf8",
+    );
+
+    await upgrade({ yes: true });
+
+    const migrated = await readFile(configPath, "utf8");
+    expect(migrated).toContain("version: 5");
+    expect(migrated).toContain("tdd_enabled: false");
+    expect(migrated).toContain("tdd_coverage_threshold: 95");
+    expect(JSON.parse(await readFile(sessionPath, "utf8"))).toMatchObject({
+      tdd_enabled: false,
+      tdd_coverage_threshold: 95,
+    });
+    expect(console.log).toHaveBeenCalledWith(
+      expect.stringContaining("TDD remains off until ec-tdd-init succeeds"),
+    );
   });
 
   it("migrates lite to guard approval and fast workflow", async () => {

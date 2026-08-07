@@ -85,9 +85,11 @@ initialization standard. Check each item:
   and non-empty?
 - **Project profile**: `project.yaml` exists with `mode` and `test` fields (ec-init owns it;
   `config.yaml` is CLI-owned — not ec-init's concern)?
-- **TDD runtime contract**: CLI-owned `config.yaml` has schema 4 TDD defaults and
-  `.easy-coding/tools/easy_coding_java_coverage.py` exists? Missing fields or tool mean
-  `easy-coding upgrade` is required; ec-init must not repair them directly.
+- **TDD runtime contract**: CLI-owned `config.yaml` has schema 5 TDD defaults and both
+  `.easy-coding/tools/easy_coding_java_coverage.py` and
+  `.easy-coding/tools/easy_coding_tdd_readiness.py` exist? Missing fields or tools mean
+  `easy-coding upgrade` is required; ec-init must not repair them directly. Project-specific
+  JaCoCo/GitLab readiness remains owned by `ec-tdd-init`, not `ec-init`.
 - **Platform hook config freshness**: for each installed platform in `.easy-coding/config.yaml`,
   read the platform hook config and verify managed Easy Coding hook commands use the portable
   relative hook launcher bound to this project root's `project.id`. If `project.id` is missing,

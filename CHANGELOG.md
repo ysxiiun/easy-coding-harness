@@ -6,6 +6,22 @@
 - `y`：常规功能升级
 - `z`：日常 bug 修复
 
+## 0.10.0-beta.2
+
+- 新增 `ec-tdd-init`，在 TDD 关闭态初始化或刷新 Java 单测执行、JaCoCo XML、GitLab
+  TEST job、报告 artifact 与 changed-line coverage gate；初始化只建设基础设施，不批量补
+  存量业务单测，也不要求仓库全量覆盖率。
+- 新增 `.easy-coding/tools/easy_coding_tdd_readiness.py` 与覆盖构建、GitLab CI、coverage
+  工具的文件指纹 receipt；项目级 `easy-coding config`、session `set-tdd` 和 ANALYSIS →
+  IMPLEMENT 均在开启/冻结 TDD 前机械校验 readiness，缺失或漂移时只允许先初始化或
+  保持关闭。TDD 关闭的普通 hook 不扫描这些文件。
+- `tdd-init` 作为专用代码任务始终冻结 `tdd_enabled=false`，即使遗留项目/session 或暂停
+  任务请求开启 TDD，也可正常创建和修改 CI，消除“开启 TDD 后又依赖尚未创建 CI”的
+  循环阻塞；初始化完成后仍需用户显式开启 TDD。
+- 配置 schema 升至 5；升级时没有 readiness 的 beta.1 项目与 session TDD 请求迁移为
+  关闭并保留阈值，已冻结活动任务合同不被静默改写。后续业务任务仍只验收相对冻结
+  baseline 的新增/修改生产代码行，默认门槛 90%、测试设计目标接近 100%。
+
 ## 0.10.0-beta.1
 
 - 新增默认关闭的 Java TDD 模式，支持项目级 CLI 配置与 session 覆盖；覆盖率阈值默认

@@ -14,7 +14,7 @@ What lives in each platform directory and how the three platforms differ.
 | Sub-agent defs | `.claude/agents/*.md` | `.codex/agents/*.toml` | `.qoder/agents/*.md` |
 | CN variant | — | — | `.qodercn/` |
 
-Each skill is installed as `{skills-dir}/ec-{name}/SKILL.md`. The 14 skills are
+Each skill is installed as `{skills-dir}/ec-{name}/SKILL.md`. The 15 skills are
 platform-agnostic — one template, resolved per platform at write time. The agent's native
 discovery surfaces them under `/ec-` or `$ec-`.
 

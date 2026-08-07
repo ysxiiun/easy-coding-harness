@@ -20,7 +20,7 @@ async function writeConfig(
   await writeFile(
     path.join(tempDir, ".easy-coding", "config.yaml"),
     [
-      "version: 4",
+      "version: 5",
       `harness_version: ${harnessVersion}`,
       "agents:",
       "  - codex",
@@ -84,6 +84,7 @@ describe("status command", () => {
     expect(output()).toContain("configured_workflow_mode: fast");
     expect(output()).toContain("effective_tdd_enabled: false");
     expect(output()).toContain("effective_tdd_coverage_threshold: 90");
+    expect(output()).toContain("tdd_readiness: needs_init");
   });
 
   it("reports session TDD overrides and frozen task defaults independently", async () => {

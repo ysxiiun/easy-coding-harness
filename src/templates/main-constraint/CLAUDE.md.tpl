@@ -31,7 +31,7 @@ platform prefixes such as `/` or `$`. If no status line is injected, do not inve
 - `/ec-brainstorming` — design exploration before building (hard design gate)
 - `/ec-analysis` `/ec-implementing` `/ec-reviewing` `/ec-verification` — workflow stages
 - `/ec-memory` — short/long memory archive
-- `/ec-task-management` — task lifecycle panel · `/ec-config` — Approval/Workflow/TDD settings · `/ec-task-close` — interrupt a task
+- `/ec-task-management` — task lifecycle panel · `/ec-config` — Approval/Workflow/TDD settings · `/ec-tdd-init` — Java changed-line gate initialization · `/ec-task-close` — interrupt a task
 - `/ec-no-harness` — bypass only Easy Coding for the current session
 - `/ec-git` — git discipline · `/ec-meta` — understand/customize the harness
 
@@ -47,9 +47,12 @@ First run `/ec-init`; daily work goes through `/ec-workflow`.
   evidence gates.
 - TDD is session override > project `behavior.tdd_enabled` > `false`; its changed-line threshold
   is session override > project `behavior.tdd_coverage_threshold` > `90`. ANALYSIS -> IMPLEMENT
-  freezes both. Disabled TDD adds no CI scan, JaCoCo work, commands, artifacts, or stronger gates.
-  Enabled TDD applies only to Java code tasks and requires lifecycle, review, local coverage, and
-  GitLab TEST-stage gate evidence.
+  freezes both. TDD may be enabled only after `ec-tdd-init` records valid infrastructure readiness;
+  there is no enable-now/init-later state. The dedicated `tdd-init` task always freezes TDD off and
+  initializes only changed-line coverage infrastructure, never historical business-test coverage.
+  Disabled TDD adds no CI scan, JaCoCo work, commands, artifacts, or stronger gates. Enabled TDD
+  applies only to Java code tasks and requires lifecycle, review, local coverage, and GitLab
+  TEST-stage evidence for production lines changed since the task baseline.
 - Confirmation-required edges use `pending_transition`; automatic edges use the restricted
   `auto-transition` API. A read-only task creates no test-strategy.md, never enters REVIEW,
   VERIFICATION, or MEMORY, and writes no task memory.

@@ -61,8 +61,10 @@ export async function writeRuntimeScaffold(
 async function writeToolsScaffold(easyCodingDir: string): Promise<void> {
   const toolsDir = path.join(easyCodingDir, TOOLS_DIR);
   await ensureDir(toolsDir);
-  const src = getTemplatePath("runtime", "tools", "easy_coding_java_coverage.py");
-  await writeTextFile(path.join(toolsDir, "easy_coding_java_coverage.py"), await readTextFile(src));
+  for (const file of ["easy_coding_java_coverage.py", "easy_coding_tdd_readiness.py"]) {
+    const src = getTemplatePath("runtime", "tools", file);
+    await writeTextFile(path.join(toolsDir, file), await readTextFile(src));
+  }
 }
 
 async function writeTemplatesScaffold(easyCodingDir: string): Promise<void> {

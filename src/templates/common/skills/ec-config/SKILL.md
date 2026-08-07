@@ -18,7 +18,15 @@ Call `snapshot` and show project, session, effective, and frozen task values for
 
 Use the returned fields directly, including `project_tdd_enabled`, `session_tdd_enabled`,
 `effective_tdd_enabled`, their threshold counterparts, `task_tdd_enabled`, and the task's
-per-repository `task_tdd_baselines` frozen state.
+per-repository `task_tdd_baselines` frozen state. When `tdd_readiness_status=not_checked` because
+TDD is off, explicitly run the read-only readiness command below before showing readiness:
+
+```bash
+python3 .easy-coding/tools/easy_coding_tdd_readiness.py --cwd . check
+```
+
+This explicit configuration-panel check is the only disabled-mode readiness scan; ordinary hooks
+must not inspect build or CI files while TDD is off.
 
 Explain precedence as `session override > project config > defaults`. Defaults are Approval
 `guard`, Workflow `adaptive`, TDD disabled, and TDD changed-line coverage threshold 90%. An active
@@ -29,6 +37,7 @@ changes affect future tasks and ANALYSIS only.
 
 Use `easy-coding config` for project settings. The CLI confirms one atomic update of Approval,
 Workflow, TDD, and (when enabled) the threshold. The threshold must be an integer from 1 to 100.
+Enabling TDD is rejected atomically unless `ec-tdd-init` readiness is currently `ready`.
 
 ## Session configuration
 
@@ -52,3 +61,8 @@ Turning TDD off must preserve the existing Fast/Standard/Strict test depth exact
 CI, request JaCoCo, add TDD artifacts, run coverage commands, or strengthen acceptance criteria.
 When TDD is on, explain that it applies only to Java code tasks and activates RED/GREEN/REFACTOR,
 TDD review, local changed-line JaCoCo coverage, and GitLab TEST-stage gate planning.
+
+Before any project/session enable action, require `tdd_readiness_status=ready`. If it is not ready,
+offer only `ec-tdd-init` or cancellation; never offer or persist "enable now, initialize later".
+Readiness means infrastructure can measure future changed production lines. It does not certify
+repository-wide coverage and does not require tests for unchanged historical code.

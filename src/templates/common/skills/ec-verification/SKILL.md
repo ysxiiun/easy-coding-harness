@@ -26,7 +26,9 @@ Read-only tasks never enter this stage. Obtain fresh fingerprints before running
 - `strict`: run the project's full applicable lint, typecheck, test, and build gates.
 
 These rules remain unchanged when frozen TDD is off: do not discover JaCoCo reports, run the
-coverage tool, inspect GitLab, or add a coverage record.
+coverage tool, inspect GitLab, or add a coverage record. The explicit `type=tdd-init` task is an
+infrastructure exception: run its planned build/CI syntax checks and readiness tool, but do not
+measure repository-wide coverage or append TDD coverage evidence for unchanged production code.
 
 When frozen TDD is on, first run the planned Java unit command and generate JaCoCo XML, then run
 the same deterministic gate intended for GitLab:
@@ -101,6 +103,12 @@ appended only after the remote job succeeds and must also include:
 
 Both records must preserve the same task-frozen baseline and threshold. A local-only result,
 pending/failed pipeline, missing job identity, or synthetic remote pass cannot satisfy MEMORY.
+
+For `type=tdd-init`, the infrastructure receipt must already have been recorded during IMPLEMENT
+and reviewed with the rest of the implementation. Run only `easy_coding_tdd_readiness.py check`
+here. If it reports drift, return to IMPLEMENT to refresh the receipt and repeat REVIEW; never
+rewrite it inside VERIFICATION. The state gate requires `ready` before MEMORY. This does not
+enable TDD; report the explicit `ec-config`/`easy-coding config` next step.
 
 - Every must-test item has an executed check.
 - Bug fixes include a regression test when project infrastructure exists.

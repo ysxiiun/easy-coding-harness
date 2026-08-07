@@ -411,7 +411,14 @@ describe("clear command", () => {
       "tools",
       "easy_coding_java_coverage.py",
     );
+    const readinessTool = path.join(
+      tempDir,
+      ".easy-coding",
+      "tools",
+      "easy_coding_tdd_readiness.py",
+    );
     expect(await pathExists(coverageTool)).toBe(true);
+    expect(await pathExists(readinessTool)).toBe(true);
 
     await clear({ yes: true });
 
@@ -420,6 +427,7 @@ describe("clear command", () => {
     expect(await pathExists(path.join(tempDir, ".codex", "agents"))).toBe(false);
     expect(await pathExists(path.join(tempDir, ".codex", "hooks.json"))).toBe(false);
     expect(await pathExists(coverageTool)).toBe(false);
+    expect(await pathExists(readinessTool)).toBe(false);
   });
 
   it("prunes manifest hook registrations by hook_path when a command was wrapped", async () => {

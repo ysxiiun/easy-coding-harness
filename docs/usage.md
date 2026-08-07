@@ -179,9 +179,12 @@ Agent 会创建任务并进入 INIT；INIT 工作完成后自动进入 ANALYSIS�
 任务都进入 REVIEW；任何模式都不会跳过方案、审查、验证或记忆检查点。Confirm 只在
 ANALYSIS → IMPLEMENT 等待一次，之后的自动推进仍必须先通过对应检查点。
 
-Java TDD 默认关闭，关闭时状态栏和测试深度保持不变。开启后状态栏在 Workflow 后显示
-`· **TDD**`，ANALYSIS → IMPLEMENT 冻结覆盖率阈值（默认 90，可配置 1..100），并要求
-RED/GREEN/REFACTOR、TDD review、本地 JaCoCo 差异覆盖率及 GitLab TEST-stage 同源门禁。
+Java TDD 默认关闭，关闭时状态栏和测试深度保持不变。首次开启前运行 `ec-tdd-init`，只
+初始化 JUnit/JaCoCo/GitLab changed-line coverage 基础设施，不补存量业务单测，也不要求
+全量覆盖率；readiness 通过后才允许显式开启。开启后状态栏在 Workflow 后显示
+`· **TDD**`，ANALYSIS → IMPLEMENT 冻结 baseline 与覆盖率阈值（默认 90，可配置
+1..100），只验收本任务新增/修改生产代码行，并要求 RED/GREEN/REFACTOR、TDD review、
+本地 JaCoCo 差异覆盖率及 GitLab TEST-stage 同源门禁。
 
 #### 2. 需求分析（ANALYSIS）
 
@@ -300,7 +303,19 @@ $ec-config     （Codex）
 ```
 
 裸唤起只读展示项目/session/生效/任务冻结的 Approval、Workflow、TDD 与阈值。显式选择后
-可设置或清除 session 覆盖；项目级配置使用 `easy-coding config`。
+可设置或清除 session 覆盖；项目级配置使用 `easy-coding config`。readiness 未通过时，
+项目级和 session 级开启都会拒绝写入，不支持“先开启、稍后初始化”。
+
+### 初始化 Java TDD 基础设施
+
+```text
+/ec-tdd-init     （Claude Code / Qoder）
+$ec-tdd-init     （Codex）
+```
+
+该 skill 创建专用 `tdd-init` 代码任务，任务自身始终以 TDD 关闭态运行，因此可以安全修改
+构建和 GitLab CI 配置。它只让未来任务能够按各自 baseline 计算增量覆盖率，不生成历史
+业务单测；完成后 TDD 仍保持关闭，需用户再通过 `ec-config` 显式开启。
 
 ### 当前会话不使用 Harness
 
@@ -414,12 +429,14 @@ easy-coding upgrade
 - **覆盖**：Skills、Hooks、子代理定义、平台配置、主约束文件生成区域
 - **原位迁移**：config.yaml 更新 `harness_version`；旧确认设置迁移为
   `behavior.approval_mode` 与 `behavior.workflow_mode`，其中 lite 映射为 guard + fast；
-  旧 task/session 状态元数据继续幂等迁移
+  schema 5 会把没有 readiness 的 beta.1 项目/session TDD 请求迁移为关闭并保留阈值；
+  旧 task/session 状态元数据继续幂等迁移，已冻结活动任务合同不被静默改写
 - **内容保留**：任务 dev-spec / execution / test-strategy、memory 内容、SOUL.md、RULES.md、ABSTRACT.md 等用户资产不被覆盖
 
 ### easy-coding config
 
-交互修改当前项目的审批模式、工作流模式、Java TDD 与覆盖率阈值：
+交互修改当前项目的审批模式、工作流模式、Java TDD 与覆盖率阈值；readiness 未通过时
+开启操作整体取消，不会部分写入其他模式：
 
 ```bash
 easy-coding config
@@ -452,6 +469,7 @@ easy-coding status
 | `ec-memory` | 记忆归档 | ec-workflow 自动派发 |
 | `ec-task-management` | 任务面板 | 查看/创建/选择/恢复/交接任务 |
 | `ec-config` | 模式配置面板 | 查看或修改 Approval、Workflow、TDD 与阈值 |
+| `ec-tdd-init` | Java TDD 基础设施初始化 | 首次开启 TDD 前或 readiness 漂移后 |
 | `ec-task-close` | 中断任务 | 取消当前任务 |
 | `ec-no-harness` | 当前 session 旁路 Harness | 临时使用原生 Agent 能力 |
 | `ec-git` | Git 纪律 | 涉及 git 操作时自动激活 |

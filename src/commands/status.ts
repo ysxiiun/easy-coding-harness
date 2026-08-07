@@ -19,6 +19,7 @@ import {
   readTaskJson,
   summarizeTaskStatuses,
 } from "../utils/task-json.js";
+import { inspectTddReadiness } from "../utils/tdd-readiness.js";
 
 export async function status(): Promise<void> {
   renderBanner();
@@ -35,6 +36,7 @@ export async function status(): Promise<void> {
   const activeTasks = tasks.filter((item) => isActiveTask(item.task));
   const sessions = await listSessionFiles(cwd);
   const versionRelation = compareVersions(config.harness_version, VERSION);
+  const tddReadiness = await inspectTddReadiness(cwd);
 
   console.log(chalk.bold("Harness"));
   console.log(`  version: ${config.harness_version}`);
@@ -61,6 +63,10 @@ export async function status(): Promise<void> {
   console.log(`  workflow_mode: ${projectWorkflowMode}`);
   console.log(`  tdd_enabled: ${projectTddEnabled}`);
   console.log(`  tdd_coverage_threshold: ${projectTddCoverageThreshold}`);
+  console.log(`  tdd_readiness: ${tddReadiness.status}`);
+  if (tddReadiness.status !== "ready") {
+    console.log(`  tdd_readiness_reasons: ${tddReadiness.reasons.join("; ")}`);
+  }
   console.log("");
   console.log(chalk.bold("Sessions"));
   console.log(`  project_approval_mode: ${projectApprovalMode}`);

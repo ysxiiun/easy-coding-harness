@@ -132,7 +132,7 @@ agent 会读项目，生成 `SOUL.md`、`RULES.md`、`ABSTRACT.md`、`TEST_STRAT
 /ec-workflow 实现 xxx 功能
 ```
 
-`ec-workflow` 负责创建或恢复任务。项目和当前 session 可分别覆盖审批模式、工作流模式与 Java TDD；ANALYSIS 会展示风险下限、推荐模式和各状态执行差异。TDD 默认关闭且不增加任何测试成本；开启时冻结阈值（默认 90%）并执行本地 + GitLab 差异覆盖门禁。新代码任务在 IMPLEMENT 后统一进入 REVIEW；只读任务展示完整报告后进入 COMPLETE，不执行 REVIEW、VERIFICATION 或 MEMORY。
+`ec-workflow` 负责创建或恢复任务。项目和当前 session 可分别覆盖审批模式、工作流模式与 Java TDD；ANALYSIS 会展示风险下限、推荐模式和各状态执行差异。TDD 默认关闭且不增加任何测试成本；首次开启前由 `ec-tdd-init` 在 TDD 关闭态建设 JUnit/JaCoCo/GitLab 增量覆盖率基础设施，不补存量业务单测。readiness 通过后才能显式开启，任务会冻结 baseline 与阈值（默认 90%），只对本任务新增/修改生产代码行执行本地 + GitLab 差异覆盖门禁。新代码任务在 IMPLEMENT 后统一进入 REVIEW；只读任务展示完整报告后进入 COMPLETE，不执行 REVIEW、VERIFICATION 或 MEMORY。
 
 如果当前会话不希望 Harness 接管，显式调用 `/ec-no-harness`（Codex 使用 `$ec-no-harness`）。它只旁路 Easy Coding，其他 skills 和 hooks 仍正常工作，任务状态也会原样保留。
 
@@ -144,7 +144,7 @@ agent 会读项目，生成 `SOUL.md`、`RULES.md`、`ABSTRACT.md`、`TEST_STRAT
 | `easy-coding add-agent` | 给已接入项目追加某个平台支持 |
 | `easy-coding upgrade` | CLI 升级后同步项目内生成文件，用户资产保留 |
 | `easy-coding update` | 更新全局 CLI 到最新发布版 |
-| `easy-coding config` | 交互修改项目级 Approval、Workflow 与 Java TDD |
+| `easy-coding config` | 交互修改项目级 Approval、Workflow 与 Java TDD；开启 TDD 前要求 readiness |
 | `easy-coding status` | 查看已安装平台、harness 版本、当前任务状态 |
 | `easy-coding clear` | 移除 harness 安装物，保留 tasks、spec、memory 等用户资产 |
 

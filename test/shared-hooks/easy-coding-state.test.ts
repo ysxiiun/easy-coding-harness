@@ -1,4 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -16,6 +17,47 @@ afterEach(async () => {
 
 function stateApiPath(): string {
   return path.join(process.cwd(), "src", "templates", "shared-hooks", "easy_coding_state.py");
+}
+
+async function writeTddReadinessFixture(): Promise<void> {
+  const build = "<plugin>jacoco-maven-plugin</plugin>\n";
+  const tool = "# Easy Coding changed Java production-line JaCoCo coverage gate\n";
+  const ci = [
+    "changed-line-coverage:",
+    "  stage: test",
+    "  artifacts: { reports: jacoco }",
+    "  script: python3 .easy-coding/tools/easy_coding_java_coverage.py check --base $EASY_CODING_TDD_BASE_SHA --threshold $EASY_CODING_TDD_THRESHOLD",
+    "",
+  ].join("\n");
+  await writeFile(path.join(tempDir, "pom.xml"), build, "utf8");
+  await writeFile(path.join(tempDir, ".gitlab-ci.yml"), ci, "utf8");
+  await mkdir(path.join(tempDir, ".easy-coding", "tools"), { recursive: true });
+  await writeFile(path.join(tempDir, ".easy-coding", "tools", "easy_coding_java_coverage.py"), tool);
+  const receipt = path.join(tempDir, ".easy-coding", "tdd", "readiness.json");
+  await mkdir(path.dirname(receipt), { recursive: true });
+  await writeFile(
+    receipt,
+    JSON.stringify({
+      schema: "easy-coding/tdd-readiness-v1",
+      provider: "gitlab",
+      coverage_scope: "changed-production-lines",
+      historical_coverage_required: false,
+      build_files: [{ path: "pom.xml", sha256: createHash("sha256").update(build).digest("hex") }],
+      ci_files: [
+        { path: ".gitlab-ci.yml", sha256: createHash("sha256").update(ci).digest("hex") },
+      ],
+      tool_files: [
+        {
+          path: ".easy-coding/tools/easy_coding_java_coverage.py",
+          sha256: createHash("sha256").update(tool).digest("hex"),
+        },
+      ],
+      coverage_report_patterns: ["target/site/jacoco/jacoco.xml"],
+      changed_line_gate_command:
+        "python3 .easy-coding/tools/easy_coding_java_coverage.py check --base $EASY_CODING_TDD_BASE_SHA --threshold $EASY_CODING_TDD_THRESHOLD",
+    }),
+    "utf8",
+  );
 }
 
 async function writeTaskFixture(
@@ -66,6 +108,7 @@ async function writeSessionFixture(
   currentTask: string | null,
   extra: Record<string, unknown> = {},
 ): Promise<void> {
+  if (extra.tdd_enabled === true) await writeTddReadinessFixture();
   await mkdir(path.join(tempDir, ".easy-coding", "sessions"), { recursive: true });
   await writeFile(
     path.join(tempDir, ".easy-coding", "sessions", "test.json"),
@@ -1334,7 +1377,7 @@ describe("easy_coding_state.py ANALYSIS template gate", () => {
     await writeFile(
       path.join(tempDir, ".easy-coding", "config.yaml"),
       [
-        "version: 4",
+        "version: 5",
         "behavior:",
         "  approval_mode: guard",
         "  workflow_mode: adaptive",
@@ -2586,6 +2629,7 @@ describe("easy_coding_state.py automatic and optional transitions", () => {
   it("shows TDD only when enabled and honors a frozen task over later session changes", async () => {
     await writeConfirmModeConfig("guard");
     await writeSessionFixture(null);
+    await writeTddReadinessFixture();
 
     const enabled = JSON.parse(
       execFileSync(
@@ -2634,6 +2678,7 @@ describe("easy_coding_state.py automatic and optional transitions", () => {
     expect(frozen.displayed_tdd_enabled).toBe(true);
     expect(frozen.displayed_tdd_coverage_threshold).toBe(95);
 
+    await rm(path.join(tempDir, ".gitlab-ci.yml"));
     const disabled = JSON.parse(
       execFileSync(
         "python3",
@@ -2649,6 +2694,172 @@ describe("easy_coding_state.py automatic and optional transitions", () => {
       ),
     ) as Record<string, unknown>;
     expect(disabled.status_line).not.toContain("**TDD**");
+    expect(disabled.tdd_readiness_status).toBe("not_checked");
+    expect(disabled.tdd_readiness_reasons).toEqual([]);
+  });
+
+  it("rejects a session TDD enable before ec-tdd-init readiness exists", async () => {
+    await writeConfirmModeConfig("guard");
+    await writeSessionFixture(null);
+
+    const result = spawnSync(
+      "python3",
+      [
+        stateApiPath(),
+        "set-tdd",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--enabled",
+        "true",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("before ec-tdd-init succeeds");
+    const session = JSON.parse(
+      await readFile(path.join(tempDir, ".easy-coding", "sessions", "test.json"), "utf8"),
+    ) as Record<string, unknown>;
+    expect(session).not.toHaveProperty("tdd_enabled");
+  });
+
+  it("forces a tdd-init task to TDD off even when a stale session requests TDD", async () => {
+    const taskId = "08-07-tdd-init-no-cycle";
+    await writeConfirmModeConfig("guard");
+    await writeSessionFixture(taskId);
+    const sessionPath = path.join(tempDir, ".easy-coding", "sessions", "test.json");
+    const session = JSON.parse(await readFile(sessionPath, "utf8")) as Record<string, unknown>;
+    session.tdd_enabled = true;
+    await writeFile(sessionPath, JSON.stringify(session, null, 2), "utf8");
+    await writeTaskFixture(taskId, "ANALYSIS", "codex", { type: "tdd-init" });
+    await writeAnalysisArtifacts(taskId);
+    await writeFile(
+      path.join(tempDir, ".easy-coding", "tasks", taskId, "test-strategy.md"),
+      [
+        "# TDD infrastructure strategy",
+        "JaCoCo XML and GitLab TEST infrastructure only.",
+        "coverage scope: changed production lines",
+        "historical coverage required: no",
+        "Record during IMPLEMENT with easy_coding_tdd_readiness.py.",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    execFileSync(
+      "python3",
+      [
+        stateApiPath(),
+        "request-transition",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--stage",
+        "IMPLEMENT",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    const output = JSON.parse(
+      execFileSync(
+        "python3",
+        [
+          stateApiPath(),
+          "confirm-transition",
+          "--session-file",
+          ".easy-coding/sessions/test.json",
+          "--stage",
+          "IMPLEMENT",
+          "--agent",
+          "codex",
+        ],
+        { cwd: tempDir, encoding: "utf8" },
+      ),
+    ) as Record<string, unknown>;
+
+    expect(output.status).toBe("IMPLEMENT");
+    expect(output.task_tdd_enabled).toBe(false);
+    expect(output.displayed_tdd_enabled).toBe(false);
+  });
+
+  it("blocks tdd-init verification completion until readiness is ready", async () => {
+    const taskId = "08-07-tdd-init-readiness-gate";
+    await writeConfirmModeConfig("auto");
+    await writeSessionFixture(taskId);
+    await writeTaskFixture(taskId, "VERIFICATION", "codex", {
+      type: "tdd-init",
+      workflow_mode: "fast",
+      workflow_mode_legacy: true,
+      tdd_enabled: false,
+      tdd_coverage_threshold: 90,
+    });
+    await writeAnalysisArtifacts(taskId);
+    const fingerprints = JSON.parse(
+      execFileSync(
+        "python3",
+        [
+          stateApiPath(),
+          "evidence-fingerprints",
+          "--session-file",
+          ".easy-coding/sessions/test.json",
+          "--agent",
+          "codex",
+        ],
+        { cwd: tempDir, encoding: "utf8" },
+      ),
+    ) as { implementation_fingerprint: string; config_fingerprint: string };
+    await appendFile(
+      path.join(tempDir, ".easy-coding", "tasks", taskId, "execution.jsonl"),
+      `${JSON.stringify({
+        type: "verify",
+        check: "infrastructure-test",
+        check_type: "test",
+        command: "mvn test",
+        passed: true,
+        timestamp: "2026-08-07T00:00:00Z",
+        implementation_fingerprint: fingerprints.implementation_fingerprint,
+        config_fingerprint: fingerprints.config_fingerprint,
+      })}\n`,
+      "utf8",
+    );
+
+    const blocked = spawnSync(
+      "python3",
+      [
+        stateApiPath(),
+        "auto-transition",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--stage",
+        "MEMORY",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    expect(blocked.status).toBe(1);
+    expect(blocked.stderr).toContain("until readiness passes");
+
+    await writeTddReadinessFixture();
+    const ready = JSON.parse(
+      execFileSync(
+        "python3",
+        [
+          stateApiPath(),
+          "auto-transition",
+          "--session-file",
+          ".easy-coding/sessions/test.json",
+          "--stage",
+          "MEMORY",
+          "--agent",
+          "codex",
+        ],
+        { cwd: tempDir, encoding: "utf8" },
+      ),
+    ) as Record<string, unknown>;
+    expect(ready.status).toBe("MEMORY");
   });
 
   it("ignores pre-schema-4 custom TDD keys so legacy projects remain default-off", async () => {
@@ -5599,6 +5810,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
     const taskId = "08-06-tdd-verification";
     await writeConfirmModeConfig("guard");
     await writeSessionFixture(taskId);
+    await writeTddReadinessFixture();
     await writeTaskFixture(taskId, "VERIFICATION", "codex", {
       workflow_mode: "fast",
       tdd_enabled: true,
@@ -5884,6 +6096,24 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
       })}\n`,
       "utf8",
     );
+    await writeFile(path.join(tempDir, ".gitlab-ci.yml"), "drifted\n", "utf8");
+    const driftedReadiness = spawnSync(
+      "python3",
+      [
+        stateApiPath(),
+        "request-transition",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--stage",
+        "MEMORY",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    expect(driftedReadiness.status).toBe(1);
+    expect(driftedReadiness.stderr).toContain("before ec-tdd-init succeeds");
+    await writeTddReadinessFixture();
     const requested = JSON.parse(
       execFileSync(
         "python3",
