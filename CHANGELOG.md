@@ -6,6 +6,18 @@
 - `y`：常规功能升级
 - `z`：日常 bug 修复
 
+## 0.10.0-beta.3
+
+- TDD 业务任务的 `VERIFICATION` 门禁收口为本地证据：每个仓库（Canonical 场景下每个
+  source task）必须有通过的本地单测，以及达到冻结阈值的本地 JaCoCo changed-line
+  coverage；不再要求远程 GitLab pipeline URL、job identity 或成功状态。
+- `ec-tdd-init` 继续在 TDD 关闭态生成并校验参数化 GitLab TEST-stage job、构建配置、
+  JaCoCo XML 与 readiness receipt，但远程 CI 只作为项目自动化能力，不再触发 Harness
+  中间提交、推送或等待远程结果。
+- beta.1/beta.2 任务中已有的 `coverage_scope=gitlab` 记录保持原样并从新验收集合中忽略，
+  因此 pending/failed 远程记录不会阻塞升级后的本地门禁；本地 baseline、阈值、报告
+  指纹及 TDD 生命周期/review 约束保持不变。
+
 ## 0.10.0-beta.2
 
 - 新增 `ec-tdd-init`，在 TDD 关闭态初始化或刷新 Java 单测执行、JaCoCo XML、GitLab

@@ -161,7 +161,8 @@ agent must be able to see what was generated and on what evidence.
    you verified exist (read package.json scripts or equivalent — do not guess).
    If effective TDD is disabled, do not inspect JaCoCo or GitLab and do not add TDD-specific
    requirements. If it is enabled for Java, additionally document JUnit/JaCoCo commands,
-   production/test source roots, XML report paths, and the existing GitLab TEST-stage gate.
+   production/test source roots, XML report paths, the local acceptance gate, and the generated
+   GitLab TEST-stage job as non-blocking automation infrastructure.
 5. **Memory migration probe** — Check for old-format memory files:
    - `.easy-coding/memory/long/MEMORY.md` exists but lacks `memory_schema: 2` frontmatter
    - `.easy-coding/memory/long/BUSINESS.md` or `TECHNICAL.md` missing

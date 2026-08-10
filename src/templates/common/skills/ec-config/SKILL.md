@@ -60,7 +60,9 @@ After explicit user selection, use the current logical session file:
 Turning TDD off must preserve the existing Fast/Standard/Strict test depth exactly: do not inspect
 CI, request JaCoCo, add TDD artifacts, run coverage commands, or strengthen acceptance criteria.
 When TDD is on, explain that it applies only to Java code tasks and activates RED/GREEN/REFACTOR,
-TDD review, local changed-line JaCoCo coverage, and GitLab TEST-stage gate planning.
+TDD review, a passed local unit-test gate, and local changed-line JaCoCo coverage. `ec-tdd-init`
+still generates the GitLab TEST-stage job, but Harness does not wait for or record remote pipeline
+results as acceptance evidence.
 
 Before any project/session enable action, require `tdd_readiness_status=ready`. If it is not ready,
 offer only `ec-tdd-init` or cancellation; never offer or persist "enable now, initialize later".

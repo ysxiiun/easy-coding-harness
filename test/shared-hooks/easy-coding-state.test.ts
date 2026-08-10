@@ -1408,14 +1408,36 @@ describe("easy_coding_state.py ANALYSIS template gate", () => {
       })}\n`,
       "utf8",
     );
-    await writeFile(
-      path.join(taskDir, "test-strategy.md"),
-      `# TDD\n\nJUnit and JaCoCo XML; immutable Git baseline ${baseline}; GitLab TEST gate; threshold 95%.\n`,
-      "utf8",
-    );
     await appendFile(
       path.join(taskDir, "dev-spec.md"),
       `\n### TDD Mode\nEnabled; immutable Git baseline ${baseline}; threshold 95%.\n`,
+      "utf8",
+    );
+    await writeFile(
+      path.join(taskDir, "test-strategy.md"),
+      `# TDD\n\n本地单测和 JaCoCo XML；不可变 Git baseline ${baseline}；远程 CI 不阻塞；阈值 95%。\n`,
+      "utf8",
+    );
+    const missingStructuredContract = spawnSync(
+      "python3",
+      [
+        stateApiPath(),
+        "request-transition",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--stage",
+        "IMPLEMENT",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    expect(missingStructuredContract.status).toBe(1);
+    expect(missingStructuredContract.stderr).toContain("local_test_gate: required");
+    expect(missingStructuredContract.stderr).toContain("remote_ci_acceptance: non-blocking");
+    await writeFile(
+      path.join(taskDir, "test-strategy.md"),
+      `# TDD\n\n本地单测和 JaCoCo XML；不可变 Git baseline ${baseline}；阈值 95%。\nlocal_test_gate: required\nremote_ci_acceptance: non-blocking\n`,
       "utf8",
     );
 
@@ -5806,7 +5828,117 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
     );
   });
 
-  it("requires TDD review and changed-line coverage only for a frozen TDD task", async () => {
+  it("requires a passed local unit-test record for a frozen TDD task", async () => {
+    const taskId = "08-07-tdd-local-test";
+    await writeConfirmModeConfig("guard");
+    await writeSessionFixture(taskId);
+    await writeTddReadinessFixture();
+    await writeTaskFixture(taskId, "VERIFICATION", "codex", {
+      workflow_mode: "fast",
+      tdd_enabled: true,
+      tdd_coverage_threshold: 95,
+      tdd_baselines: { project: "0".repeat(40) },
+    });
+    await mkdir(path.join(tempDir, "src"), { recursive: true });
+    await writeFile(path.join(tempDir, "src", "Example.java"), "class Example {}\n", "utf8");
+    const executionPath = path.join(
+      tempDir,
+      ".easy-coding",
+      "tasks",
+      taskId,
+      "execution.jsonl",
+    );
+    await writeFile(
+      executionPath,
+      `${JSON.stringify({
+        type: "plan",
+        strategy: "single",
+        units: [
+          {
+            id: "U1",
+            title: "TDD local test gate",
+            type: "backend",
+            files: ["src/Example.java"],
+            depends_on: [],
+          },
+        ],
+      })}\n`,
+      "utf8",
+    );
+    const fingerprints = JSON.parse(
+      execFileSync(
+        "python3",
+        [
+          stateApiPath(),
+          "evidence-fingerprints",
+          "--session-file",
+          ".easy-coding/sessions/test.json",
+          "--agent",
+          "codex",
+        ],
+        { cwd: tempDir, encoding: "utf8" },
+      ),
+    ) as { implementation_fingerprint: string; config_fingerprint: string };
+    for (const dimension of ["combined", "tdd"]) {
+      await appendFile(
+        executionPath,
+        `${JSON.stringify({
+          type: "review",
+          dimension,
+          passed: true,
+          reviewer: "codex",
+          implementation_fingerprint: fingerprints.implementation_fingerprint,
+          timestamp: "2026-08-07T00:00:00Z",
+          findings: [],
+        })}\n`,
+        "utf8",
+      );
+    }
+    await appendFile(
+      executionPath,
+      `${JSON.stringify({
+        type: "verify",
+        check: "changed-line-coverage",
+        check_type: "coverage",
+        coverage_scope: "local",
+        command:
+          "python3 .easy-coding/tools/easy_coding_java_coverage.py check --base 0000000000000000000000000000000000000000 --threshold 95",
+        passed: true,
+        implementation_fingerprint: fingerprints.implementation_fingerprint,
+        config_fingerprint: fingerprints.config_fingerprint,
+        timestamp: "2026-08-07T00:01:00Z",
+        coverage: {
+          baseline_sha: "0".repeat(40),
+          covered_lines: 20,
+          total_lines: 20,
+          percentage: 100,
+          threshold: 95,
+          report_paths: ["target/site/jacoco/jacoco.xml"],
+          report_sha256: "a".repeat(64),
+        },
+      })}\n`,
+      "utf8",
+    );
+
+    const missingLocalTest = spawnSync(
+      "python3",
+      [
+        stateApiPath(),
+        "request-transition",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--stage",
+        "MEMORY",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    expect(missingLocalTest.status).toBe(1);
+    expect(missingLocalTest.stderr).toContain("requires passed local unit-test evidence");
+  });
+
+  it("requires TDD review, local unit tests, and local changed-line coverage only for a frozen TDD task", async () => {
     const taskId = "08-06-tdd-verification";
     await writeConfirmModeConfig("guard");
     await writeSessionFixture(taskId);
@@ -6013,23 +6145,6 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
       })}\n`,
       "utf8",
     );
-    const missingGitlab = spawnSync(
-      "python3",
-      [
-        stateApiPath(),
-        "request-transition",
-        "--session-file",
-        ".easy-coding/sessions/test.json",
-        "--stage",
-        "MEMORY",
-        "--agent",
-        "codex",
-      ],
-      { cwd: tempDir, encoding: "utf8" },
-    );
-    expect(missingGitlab.status).toBe(1);
-    expect(missingGitlab.stderr).toContain("project:gitlab");
-
     const gitlabCoverage = {
       baseline_sha: "0".repeat(40),
       covered_lines: 20,
@@ -6048,50 +6163,10 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
         coverage_scope: "gitlab",
         command:
           "python3 .easy-coding/tools/easy_coding_java_coverage.py check --base 0000000000000000000000000000000000000000 --threshold 95",
-        passed: true,
+        passed: false,
         implementation_fingerprint: fingerprints.implementation_fingerprint,
         config_fingerprint: fingerprints.config_fingerprint,
         timestamp: "2026-08-06T00:03:00Z",
-        coverage: gitlabCoverage,
-      })}\n`,
-      "utf8",
-    );
-    const missingPipelineIdentity = spawnSync(
-      "python3",
-      [
-        stateApiPath(),
-        "request-transition",
-        "--session-file",
-        ".easy-coding/sessions/test.json",
-        "--stage",
-        "MEMORY",
-        "--agent",
-        "codex",
-      ],
-      { cwd: tempDir, encoding: "utf8" },
-    );
-    expect(missingPipelineIdentity.status).toBe(1);
-    expect(missingPipelineIdentity.stderr).toContain("successful pipeline URL and job name");
-
-    await appendFile(
-      executionPath,
-      `${JSON.stringify({
-        type: "verify",
-        check: "changed-line-coverage",
-        check_type: "coverage",
-        coverage_scope: "gitlab",
-        command:
-          "python3 .easy-coding/tools/easy_coding_java_coverage.py check --base 0000000000000000000000000000000000000000 --threshold 95",
-        passed: true,
-        implementation_fingerprint: fingerprints.implementation_fingerprint,
-        config_fingerprint: fingerprints.config_fingerprint,
-        timestamp: "2026-08-06T00:04:00Z",
-        ci: {
-          provider: "gitlab",
-          pipeline_url: "https://gitlab.example/pipelines/42",
-          job_name: "tdd-changed-line-coverage",
-          status: "success",
-        },
         coverage: gitlabCoverage,
       })}\n`,
       "utf8",

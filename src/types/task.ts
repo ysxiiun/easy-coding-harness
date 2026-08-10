@@ -223,6 +223,7 @@ export type ExecutionRecord =
       repo_id?: string;
       source_task_id?: string;
       failures?: string[];
+      // `gitlab` 与 `ci` 仅用于读取历史证据；新验收只生产并消费 `local`。
       coverage_scope?: "local" | "gitlab";
       ci?: {
         provider: "gitlab";

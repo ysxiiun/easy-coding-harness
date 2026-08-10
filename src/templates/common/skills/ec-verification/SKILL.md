@@ -30,8 +30,8 @@ coverage tool, inspect GitLab, or add a coverage record. The explicit `type=tdd-
 infrastructure exception: run its planned build/CI syntax checks and readiness tool, but do not
 measure repository-wide coverage or append TDD coverage evidence for unchanged production code.
 
-When frozen TDD is on, first run the planned Java unit command and generate JaCoCo XML, then run
-the same deterministic gate intended for GitLab:
+When frozen TDD is on, first run the planned local Java unit command and generate JaCoCo XML,
+then run the deterministic local acceptance gate:
 
 ```bash
 python3 .easy-coding/tools/easy_coding_java_coverage.py check \
@@ -43,10 +43,10 @@ The tool measures covered added/modified production Java executable lines only. 
 comment, blank, import, and test-source lines are excluded by diff/JaCoCo intersection. Missing
 or ambiguous source files and reports older than their modified source fail; zero modified
 executable lines is explicit N/A. Always regenerate JaCoCo XML after the final source change.
-Record CI as pending until the remote pipeline actually passes; local green is not remote green.
 Never substitute `HEAD`, a mutable ref, project defaults, or current session settings for the
-task-frozen baseline SHA and threshold. GitLab must invoke the tool with the same two frozen
-values; a session override therefore requires the CI command/variable for this task to match it.
+task-frozen baseline SHA and threshold. `ec-tdd-init` still generates a GitLab job that can run
+the same tool, but remote pipeline execution and status are outside Harness acceptance. Never
+request an intermediate commit or push merely to obtain CI evidence.
 
 The main Agent may run commands inline. Dispatch verifier sub-agents only when checks are
 independent and parallel execution materially saves time or isolates specialist environments.
@@ -86,23 +86,11 @@ For TDD coverage, copy the tool output into `coverage`: `baseline_sha`, `covered
 `applicable:false` plus the tool's reason only for zero executable modified lines. A percentage
 below the frozen threshold fails even when ordinary tests pass.
 
-Append two coverage records per repository (and per Canonical source task): one with
-`coverage_scope:"local"`, and one with `coverage_scope:"gitlab"`. The GitLab record may be
-appended only after the remote job succeeds and must also include:
-
-```json
-{
-  "ci": {
-    "provider": "gitlab",
-    "pipeline_url": "https://gitlab.example/.../pipelines/123",
-    "job_name": "changed-line-coverage",
-    "status": "success"
-  }
-}
-```
-
-Both records must preserve the same task-frozen baseline and threshold. A local-only result,
-pending/failed pipeline, missing job identity, or synthetic remote pass cannot satisfy MEMORY.
+Append one coverage record with `coverage_scope:"local"` per repository (and per Canonical
+source task). The state gate also requires a passed local `check_type:"test"` record for the same
+owner. The coverage record preserves the task-frozen baseline and threshold. Do not append or
+wait for GitLab pipeline evidence; historical remote coverage records are ignored by acceptance
+without modifying or deleting the stored records.
 
 For `type=tdd-init`, the infrastructure receipt must already have been recorded during IMPLEMENT
 and reviewed with the rest of the implementation. Run only `easy_coding_tdd_readiness.py check`

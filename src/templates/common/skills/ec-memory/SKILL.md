@@ -28,9 +28,10 @@ Name it `{memory_id}_{YYYYMMDD}_{smart_name}.md` and set
 `.easy-coding/memory/short/`, then register it with
 `memory-short-complete`. Never invent test results or commit hashes.
 
-When frozen TDD is enabled, add its threshold, lifecycle evidence, local changed-line result,
-and remote CI status to the short memory's execution evidence. When TDD is off, omit TDD fields
-entirely so ordinary tasks incur no additional memory work.
+When frozen TDD is enabled, add its threshold, lifecycle evidence, passed local unit-test result,
+and local changed-line result to the short memory's execution evidence. Remote CI status is not
+part of Harness acceptance or task memory. When TDD is off, omit TDD fields entirely so ordinary
+tasks incur no additional memory work.
 
 Ask the state API for `memory-instruction`. Distill only when it returns `action:distill`;
 otherwise record `no-op`. Long memory receives reusable facts only, not file dumps, transient

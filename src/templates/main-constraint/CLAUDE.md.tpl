@@ -51,8 +51,9 @@ First run `/ec-init`; daily work goes through `/ec-workflow`.
   there is no enable-now/init-later state. The dedicated `tdd-init` task always freezes TDD off and
   initializes only changed-line coverage infrastructure, never historical business-test coverage.
   Disabled TDD adds no CI scan, JaCoCo work, commands, artifacts, or stronger gates. Enabled TDD
-  applies only to Java code tasks and requires lifecycle, review, local coverage, and GitLab
-  TEST-stage evidence for production lines changed since the task baseline.
+  applies only to Java code tasks and requires lifecycle, review, passed local unit tests, and
+  local coverage for production lines changed since the task baseline. `ec-tdd-init` still
+  generates GitLab TEST-stage automation, but remote CI status is not Harness acceptance evidence.
 - Confirmation-required edges use `pending_transition`; automatic edges use the restricted
   `auto-transition` API. A read-only task creates no test-strategy.md, never enters REVIEW,
   VERIFICATION, or MEMORY, and writes no task memory.

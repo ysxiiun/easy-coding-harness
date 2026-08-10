@@ -2526,6 +2526,13 @@ def validate_verification_readiness(root: Path, task_id: str, task: dict) -> Non
             and record.get("config_fingerprint") == fingerprints["config_fingerprint"]
             and is_non_empty_string(record.get("check"))
         ):
+            if (
+                task.get("tdd_enabled") is True
+                and record.get("check_type") == "coverage"
+                and record.get("coverage_scope") == "gitlab"
+            ):
+                # 远程 CI 只作为生成的自动化能力，历史 pending/failed 记录不再参与本地验收。
+                continue
             check = str(record["check"])
             if task.get("tdd_enabled") is True and record.get("check_type") == "coverage":
                 check = f"{check}\0{record.get('coverage_scope') or ''}"
@@ -2608,6 +2615,12 @@ def validate_verification_readiness(root: Path, task_id: str, task: dict) -> Non
         )
     if task.get("tdd_enabled") is True:
         require_tdd_readiness(root)
+        test_records = [
+            record
+            for record in latest_by_check.values()
+            if record.get("check_type") == "test"
+            and record.get("applicable") is not False
+        ]
         coverage_records = [
             record
             for record in latest_by_check.values()
@@ -2618,6 +2631,17 @@ def validate_verification_readiness(root: Path, task_id: str, task: dict) -> Non
                 "TDD verification requires changed-production-line JaCoCo coverage evidence."
             )
         if is_spec_task:
+            tested_source_tasks = {
+                str(record.get("source_task_id") or "") for record in test_records
+            }
+            missing_test_tasks = sorted(
+                set(task_repositories) - tested_source_tasks
+            )
+            if missing_test_tasks:
+                raise StateError(
+                    "TDD Canonical verification requires local unit-test evidence for every selected source task: "
+                    + ", ".join(missing_test_tasks)
+                )
             covered_source_tasks = {
                 str(record.get("source_task_id") or "") for record in coverage_records
             }
@@ -2629,19 +2653,16 @@ def validate_verification_readiness(root: Path, task_id: str, task: dict) -> Non
                     "TDD Canonical verification requires separate coverage evidence for every selected source task: "
                     + ", ".join(missing_coverage_tasks)
                 )
-        coverage_scopes_by_owner: dict[str, set[str]] = {}
+        elif not test_records:
+            raise StateError(
+                "TDD verification requires passed local unit-test evidence."
+            )
         for record in coverage_records:
             scope = str(record.get("coverage_scope") or "")
-            if scope not in {"local", "gitlab"}:
+            if scope != "local":
                 raise StateError(
-                    "TDD coverage evidence must identify coverage_scope as local or gitlab."
+                    "TDD coverage evidence must identify coverage_scope as local."
                 )
-            owner = (
-                str(record.get("source_task_id") or "")
-                if is_spec_task
-                else "project"
-            )
-            coverage_scopes_by_owner.setdefault(owner, set()).add(scope)
         expected_threshold = task.get("tdd_coverage_threshold")
         expected_baselines = task.get("tdd_baselines")
         if (
@@ -2656,18 +2677,6 @@ def validate_verification_readiness(root: Path, task_id: str, task: dict) -> Non
             coverage = record.get("coverage")
             if not isinstance(coverage, dict):
                 raise StateError("TDD coverage evidence must include the coverage result object.")
-            if record.get("coverage_scope") == "gitlab":
-                ci = record.get("ci")
-                if (
-                    not isinstance(ci, dict)
-                    or ci.get("provider") != "gitlab"
-                    or ci.get("status") != "success"
-                    or not is_non_empty_string(ci.get("pipeline_url"))
-                    or not is_non_empty_string(ci.get("job_name"))
-                ):
-                    raise StateError(
-                        "GitLab coverage evidence requires a successful pipeline URL and job name."
-                    )
             total = coverage.get("total_lines")
             covered = coverage.get("covered_lines")
             percentage = coverage.get("percentage")
@@ -2722,18 +2731,6 @@ def validate_verification_readiness(root: Path, task_id: str, task: dict) -> Non
                 raise StateError(
                     f"TDD changed-line coverage must meet the frozen {threshold}% threshold."
                 )
-        expected_coverage_owners = set(task_repositories) if is_spec_task else {"project"}
-        missing_scopes = [
-            f"{owner}:{scope}"
-            for owner in sorted(expected_coverage_owners)
-            for scope in ("local", "gitlab")
-            if scope not in coverage_scopes_by_owner.get(owner, set())
-        ]
-        if missing_scopes:
-            raise StateError(
-                "TDD verification requires both local and successful GitLab coverage gates: "
-                + ", ".join(missing_scopes)
-            )
     if task.get("workflow_mode") == "strict":
         if is_spec_task:
             check_types_by_repository: dict[str, set[str]] = {
@@ -3098,7 +3095,13 @@ def validate_analysis_readiness(
             strategy_content = test_strategy.read_text(encoding="utf-8")
         except OSError:
             strategy_content = ""
-        required_tdd_markers = ["TDD", "JaCoCo", "baseline", "GitLab"]
+        required_tdd_markers = [
+            "TDD",
+            "JaCoCo",
+            "baseline",
+            "local_test_gate: required",
+            "remote_ci_acceptance: non-blocking",
+        ]
         missing_tdd_markers = [
             marker for marker in required_tdd_markers if marker.lower() not in strategy_content.lower()
         ]

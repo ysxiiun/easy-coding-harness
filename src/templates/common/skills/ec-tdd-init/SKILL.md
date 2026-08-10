@@ -64,7 +64,9 @@ purpose is to cover unchanged production code.
 
 The reusable GitLab job must consume a baseline SHA and threshold supplied for the future task;
 do not hardcode the initialization commit or the default 90% threshold. The same Python coverage
-tool must be used locally and remotely.
+tool must be usable locally and remotely. This generated job is remote automation infrastructure,
+not a Harness task acceptance dependency: later tasks require local unit-test and coverage
+evidence only, and never wait for a pipeline URL, job identity, or remote success status.
 
 ## Readiness receipt and verification
 

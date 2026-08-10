@@ -113,20 +113,24 @@ When TDD is enabled for a Java code task, make `test-strategy.md` record:
   toward 100% while treating the threshold as the mechanical minimum;
 - feature/bug RED -> GREEN -> REFACTOR evidence, or for pure refactors a pre-change
   characterization GREEN -> post-change GREEN sequence without inventing a RED failure;
-- `.gitlab-ci.yml` and included configuration, the TEST-stage job, JUnit/JaCoCo artifacts, and an
-  equivalent changed-line gate. Reuse a gate only when its threshold is at least the configured
-  value; otherwise include the CI change in the confirmed implementation scope.
+- the local unit-test command and local changed-line acceptance command. Record that
+  `ec-tdd-init` generated the GitLab TEST-stage job, but remote execution, pipeline identity, and
+  status are non-blocking and never require an intermediate commit or push. Include these exact,
+  language-independent contract markers: `local_test_gate: required` and
+  `remote_ci_acceptance: non-blocking`.
 - current `tdd_readiness_status=ready`; if missing or drifted, stop before IMPLEMENT and route to
   `ec-tdd-init`. Never plan to initialize CI inside an already-enabled TDD feature task.
 
 The state API mechanically freezes current Git `HEAD` per repository into `task.tdd_baselines`
-when ANALYSIS advances to IMPLEMENT. Plan both local and GitLab commands with that exact SHA and
-the frozen threshold; never use a mutable `HEAD` fallback at verification time. Non-Canonical TDD
-is limited to one Git repository; multi-repository TDD must use Canonical repository bindings.
+when ANALYSIS advances to IMPLEMENT. Plan the local command with that exact SHA and the frozen
+threshold. The generated GitLab job remains parameterized for infrastructure parity, but the
+Harness acceptance plan never waits for remote CI. Never use a mutable `HEAD` fallback at
+verification time. Non-Canonical TDD is limited to one Git repository; multi-repository TDD must
+use Canonical repository bindings.
 
 Also append a `### TDD Mode` section to `dev-spec.md` with enabled state, frozen threshold,
-baseline, local gate, GitLab TEST gate, and lifecycle evidence. Do not add this section when TDD
-is disabled.
+baseline, local unit-test gate, local coverage gate, generated GitLab job as non-blocking
+infrastructure, and lifecycle evidence. Do not add this section when TDD is disabled.
 
 If the task is not a Java project, explain that Java-only TDD cannot be activated and obtain a
 mode decision before advancing. The CLI never installs JaCoCo or edits CI automatically.

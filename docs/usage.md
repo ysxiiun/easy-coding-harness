@@ -184,7 +184,8 @@ Java TDD 默认关闭，关闭时状态栏和测试深度保持不变。首次�
 全量覆盖率；readiness 通过后才允许显式开启。开启后状态栏在 Workflow 后显示
 `· **TDD**`，ANALYSIS → IMPLEMENT 冻结 baseline 与覆盖率阈值（默认 90，可配置
 1..100），只验收本任务新增/修改生产代码行，并要求 RED/GREEN/REFACTOR、TDD review、
-本地 JaCoCo 差异覆盖率及 GitLab TEST-stage 同源门禁。
+本地单测通过及本地 JaCoCo 差异覆盖率达到冻结阈值。GitLab TEST-stage job 仍由
+`ec-tdd-init` 生成，但 Harness 不等待远程 pipeline，也不要求为取得 CI 证据而中间提交推送。
 
 #### 2. 需求分析（ANALYSIS）
 
@@ -315,7 +316,8 @@ $ec-tdd-init     （Codex）
 
 该 skill 创建专用 `tdd-init` 代码任务，任务自身始终以 TDD 关闭态运行，因此可以安全修改
 构建和 GitLab CI 配置。它只让未来任务能够按各自 baseline 计算增量覆盖率，不生成历史
-业务单测；完成后 TDD 仍保持关闭，需用户再通过 `ec-config` 显式开启。
+业务单测；完成后 TDD 仍保持关闭，需用户再通过 `ec-config` 显式开启。生成的远程 job
+属于项目 CI 自动化能力，不是 Harness 业务任务的验收依赖。
 
 ### 当前会话不使用 Harness
 

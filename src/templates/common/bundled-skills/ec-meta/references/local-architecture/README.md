@@ -58,8 +58,9 @@ and config fingerprints, and MEMORY keeps the conditional long-memory threshold 
 Java TDD is a third independent, default-off control managed by `ec-config`. Session overrides
 project configuration; ANALYSIS freezes enabled state and the 1..100 changed-line threshold
 (default 90) on entry to IMPLEMENT. Disabled TDD changes no ordinary workflow test depth. Enabled
-TDD adds lifecycle evidence, a TDD review dimension, and the same JaCoCo diff gate locally and in
-GitLab TEST-stage CI.
+TDD adds lifecycle evidence, a TDD review dimension, passed local unit-test evidence, and a local
+JaCoCo diff gate. `ec-tdd-init` still generates the equivalent GitLab TEST-stage job, but remote
+pipeline execution and status are not Harness acceptance dependencies.
 
 The active task pointer lives in `sessions/{agent}-{session-id}.json` (with an agent-prefixed PPID fallback only
 when a hook payload has no logical session ID);

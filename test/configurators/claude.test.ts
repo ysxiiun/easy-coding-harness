@@ -199,7 +199,15 @@ describe("configureClaude", () => {
     );
     expect(tddInitSkill).toContain("historical coverage required: no");
     expect(tddInitSkill).toContain("TDD off -> initialize infrastructure");
+    expect(tddInitSkill).toContain("not a Harness task acceptance dependency");
     expect(tddInitSkill).not.toContain("{{");
+    const tddVerificationSkill = await readFile(
+      path.join(tempDir, ".claude", "skills", "ec-verification", "SKILL.md"),
+      "utf8",
+    );
+    expect(tddVerificationSkill).toContain('one coverage record with `coverage_scope:"local"`');
+    expect(tddVerificationSkill).not.toContain('coverage_scope:"gitlab"');
+    expect(tddVerificationSkill).not.toContain("pipeline_url");
     expect(
       await pathExists(path.join(tempDir, ".easy-coding", "tools", "easy_coding_java_coverage.py")),
     ).toBe(true);
