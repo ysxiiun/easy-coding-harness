@@ -161,6 +161,10 @@ async function writeAnalysisArtifacts(taskId: string): Promise<void> {
       "证据：src/example.ts:1；真实模板文本 `{title}` 允许出现在方案中。",
       "### 冲突摘要",
       "无冲突。",
+      "### 决策闭环",
+      "decision_status: closed",
+      "- **已解决问题与结论**：无",
+      "- **确认依据**：无额外决策",
       "### 影响面分析",
       "仅影响状态迁移。",
       "### 改动范围",
@@ -1576,6 +1580,7 @@ describe("easy_coding_state.py ANALYSIS template gate", () => {
         "### 需求解析",
         "### 现状",
         "### 冲突摘要",
+        "### 决策闭环",
         "### 影响面分析",
         "### 改动范围",
         "### 修改方案",
@@ -1630,6 +1635,10 @@ describe("easy_coding_state.py ANALYSIS template gate", () => {
         "证据：src/example.ts:1。",
         "### 冲突摘要",
         "无冲突。",
+        "### 决策闭环",
+        "decision_status: closed",
+        "- **已解决问题与结论**：无",
+        "- **确认依据**：无额外决策",
         "### 影响面分析",
         "仅影响状态迁移。",
         "### 改动范围",
@@ -1669,6 +1678,266 @@ describe("easy_coding_state.py ANALYSIS template gate", () => {
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("需求解析");
     expect(result.stderr).toContain("改动范围");
+  });
+
+  it.each(["open", "pending", "unresolved"])(
+    "rejects an ANALYSIS transition while decision_status is %s",
+    async (decisionStatus) => {
+      const taskId = `08-10-analysis-decision-${decisionStatus}`;
+      await writeSessionFixture(taskId);
+      await writeTaskFixture(taskId, "ANALYSIS", "codex");
+      await writeAnalysisArtifacts(taskId);
+      const devSpecPath = path.join(tempDir, ".easy-coding", "tasks", taskId, "dev-spec.md");
+      const devSpec = await readFile(devSpecPath, "utf8");
+      await writeFile(
+        devSpecPath,
+        devSpec.replace("decision_status: closed", `decision_status: ${decisionStatus}`),
+        "utf8",
+      );
+
+      const result = spawnSync(
+        "python3",
+        [
+          stateApiPath(),
+          "request-transition",
+          "--session-file",
+          ".easy-coding/sessions/test.json",
+          "--stage",
+          "IMPLEMENT",
+          "--agent",
+          "codex",
+        ],
+        { cwd: tempDir, encoding: "utf8" },
+      );
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("unresolved material decisions");
+      expect(result.stderr).toContain(`decision_status is '${decisionStatus}'`);
+    },
+  );
+
+  it("requires exactly one closed decision marker before IMPLEMENT", async () => {
+    const taskId = "08-10-analysis-decision-marker-count";
+    await writeSessionFixture(taskId);
+    await writeTaskFixture(taskId, "ANALYSIS", "codex");
+    await writeAnalysisArtifacts(taskId);
+    const devSpecPath = path.join(tempDir, ".easy-coding", "tasks", taskId, "dev-spec.md");
+    const devSpec = await readFile(devSpecPath, "utf8");
+
+    await writeFile(devSpecPath, devSpec.replace("decision_status: closed\n", ""), "utf8");
+    const missing = spawnSync(
+      "python3",
+      [
+        stateApiPath(),
+        "request-transition",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--stage",
+        "IMPLEMENT",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    expect(missing.status).toBe(1);
+    expect(missing.stderr).toContain("missing the decision closure marker");
+
+    await writeFile(
+      devSpecPath,
+      devSpec
+        .replace("decision_status: closed\n", "")
+        .replace("### 风险与注意事项", "### 风险与注意事项\ndecision_status: closed"),
+      "utf8",
+    );
+    const misplaced = spawnSync(
+      "python3",
+      [
+        stateApiPath(),
+        "request-transition",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--stage",
+        "IMPLEMENT",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    expect(misplaced.status).toBe(1);
+    expect(misplaced.stderr).toContain(
+      "decision_status marker must be inside the `### 决策闭环` section",
+    );
+
+    await writeFile(
+      devSpecPath,
+      devSpec.replace("decision_status: closed", "decision_status: closed\ndecision_status: closed"),
+      "utf8",
+    );
+    const duplicate = spawnSync(
+      "python3",
+      [
+        stateApiPath(),
+        "request-transition",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--stage",
+        "IMPLEMENT",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    expect(duplicate.status).toBe(1);
+    expect(duplicate.stderr).toContain("exactly one decision_status marker");
+  });
+
+  it("rejects decision markers outside the unique decision section", async () => {
+    const taskId = "08-10-analysis-decision-marker-location";
+    await writeSessionFixture(taskId);
+    await writeTaskFixture(taskId, "ANALYSIS", "codex");
+    await writeAnalysisArtifacts(taskId);
+    const devSpecPath = path.join(tempDir, ".easy-coding", "tasks", taskId, "dev-spec.md");
+    const devSpec = await readFile(devSpecPath, "utf8");
+
+    await writeFile(
+      devSpecPath,
+      devSpec.replace(
+        "### 风险与注意事项",
+        "### 风险与注意事项\ndecision_status: closed",
+      ),
+      "utf8",
+    );
+    const misplacedDuplicate = spawnSync(
+      "python3",
+      [
+        stateApiPath(),
+        "request-transition",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--stage",
+        "IMPLEMENT",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    expect(misplacedDuplicate.status).toBe(1);
+    expect(misplacedDuplicate.stderr).toContain("exactly one decision_status marker");
+
+    await writeFile(
+      devSpecPath,
+      devSpec.replace("### 影响面分析", "### 决策闭环\n无重复决策。\n### 影响面分析"),
+      "utf8",
+    );
+    const duplicateSection = spawnSync(
+      "python3",
+      [
+        stateApiPath(),
+        "request-transition",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--stage",
+        "IMPLEMENT",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    expect(duplicateSection.status).toBe(1);
+    expect(duplicateSection.stderr).toContain("exactly one `### 决策闭环` section");
+  });
+
+  it.each([
+    ["fenced-marker", "```yaml\ndecision_status: closed\n```"],
+    [
+      "nested-fence-marker",
+      "````markdown\n```yaml\ndecision_status: closed\n```\n````",
+    ],
+    ["indented-code-marker", "    decision_status: closed"],
+  ])("ignores decision_status examples in %s", async (suffix, markerExample) => {
+    const taskId = `08-10-analysis-decision-${suffix}`;
+    await writeSessionFixture(taskId);
+    await writeTaskFixture(taskId, "ANALYSIS", "codex");
+    await writeAnalysisArtifacts(taskId);
+    const devSpecPath = path.join(tempDir, ".easy-coding", "tasks", taskId, "dev-spec.md");
+    const devSpec = await readFile(devSpecPath, "utf8");
+    await writeFile(
+      devSpecPath,
+      devSpec.replace("decision_status: closed", markerExample),
+      "utf8",
+    );
+
+    const result = spawnSync(
+      "python3",
+      [
+        stateApiPath(),
+        "request-transition",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--stage",
+        "IMPLEMENT",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("missing the decision closure marker");
+  });
+
+  it("requires resolved conclusions and confirmation evidence in the decision section", async () => {
+    const taskId = "08-10-analysis-decision-evidence";
+    await writeSessionFixture(taskId);
+    await writeTaskFixture(taskId, "ANALYSIS", "codex");
+    await writeAnalysisArtifacts(taskId);
+    const devSpecPath = path.join(tempDir, ".easy-coding", "tasks", taskId, "dev-spec.md");
+    const devSpec = await readFile(devSpecPath, "utf8");
+
+    await writeFile(
+      devSpecPath,
+      devSpec.replace("- **已解决问题与结论**：无\n", ""),
+      "utf8",
+    );
+    const missingConclusion = spawnSync(
+      "python3",
+      [
+        stateApiPath(),
+        "request-transition",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--stage",
+        "IMPLEMENT",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    expect(missingConclusion.status).toBe(1);
+    expect(missingConclusion.stderr).toContain("`已解决问题与结论` field; found 0");
+
+    await writeFile(
+      devSpecPath,
+      devSpec.replace("- **确认依据**：无额外决策", "- **确认依据**：**待确认**"),
+      "utf8",
+    );
+    const unresolvedEvidence = spawnSync(
+      "python3",
+      [
+        stateApiPath(),
+        "request-transition",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--stage",
+        "IMPLEMENT",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    expect(unresolvedEvidence.status).toBe(1);
+    expect(unresolvedEvidence.stderr).toContain("unresolved decision closure evidence");
+    expect(unresolvedEvidence.stderr).toContain("`确认依据` is '**待确认**'");
   });
 
   it("rejects plan units that cannot produce a bounded implementation task card", async () => {

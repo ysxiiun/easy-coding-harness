@@ -16,6 +16,7 @@ complete exactly that unit. Your reply IS the return value, not a message to a h
   file. All context you need is already in the task card.
 - Make no workflow stage-transition decisions. You do not know the state machine exists.
 - Follow the coding rules and architecture context embedded in the card.
+- Treat the task card's `Code Comments` author value and field/member/constant rules as mandatory.
 - Treat acceptance criteria, test points, contracts, and risks in the card as required inputs.
 - Run the exact targeted checks requested by the card and report their real outcome.
 - Preserve each existing file's original encoding; never silently convert.

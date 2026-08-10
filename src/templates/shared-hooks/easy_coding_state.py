@@ -38,6 +38,7 @@ MANDATORY_DEV_SPEC_HEADERS: list[str] = [
     "### 需求解析",
     "### 现状",
     "### 冲突摘要",
+    "### 决策闭环",
     "### 影响面分析",
     "### 改动范围",
     "### 修改方案",
@@ -117,6 +118,19 @@ SHORT_MEMORY_UUID_V7_PATTERN = re.compile(
 )
 LEGACY_SHORT_MEMORY_ID_PATTERN = re.compile(r"^SM-\d{8}-\d+$")
 DEV_SPEC_PLACEHOLDER_PATTERN = re.compile(r"\[\[EC_TODO:[^\]\n]+\]\]")
+DECISION_STATUS_PATTERN = re.compile(
+    r"\s*decision_status\s*:\s*([a-z][a-z0-9_-]*)\s*", re.IGNORECASE
+)
+DECISION_CONCLUSIONS_PATTERN = re.compile(
+    r"\s*(?:[-+*]\s+)?(?:\*\*)?已解决问题与结论(?:\*\*)?\s*[:：]\s*(.+?)\s*"
+)
+DECISION_EVIDENCE_PATTERN = re.compile(
+    r"\s*(?:[-+*]\s+)?(?:\*\*)?确认依据(?:\*\*)?\s*[:：]\s*(.+?)\s*"
+)
+UNRESOLVED_DECISION_VALUE_PATTERN = re.compile(
+    r"(?:待确认|待决策|未确认|未决|todo|tbd|unknown|open|pending|unresolved)[。.!！]?",
+    re.IGNORECASE,
+)
 MARKDOWN_HEADING_PATTERN = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 TABLE_HEADER_CELLS = {
     "改动文件",
@@ -2910,24 +2924,89 @@ def validate_read_only_completion(root: Path, task_id: str) -> None:
         )
 
 
+def markdown_fence_token(line: str) -> tuple[str, int, str] | None:
+    stripped = line.lstrip()
+    if not stripped or stripped[0] not in {"`", "~"}:
+        return None
+    marker = stripped[0]
+    run_length = len(stripped) - len(stripped.lstrip(marker))
+    if run_length < 3:
+        return None
+    return marker, run_length, stripped[run_length:]
+
+
 def markdown_headings(content: str) -> list[tuple[int, int, str]]:
     headings: list[tuple[int, int, str]] = []
-    fence_marker: str | None = None
+    fence_marker: tuple[str, int] | None = None
     for index, line in enumerate(content.splitlines()):
-        stripped = line.lstrip()
-        if stripped.startswith(("```", "~~~")):
-            marker = stripped[:3]
-            if fence_marker is None:
-                fence_marker = marker
-            elif fence_marker == marker:
+        fence = markdown_fence_token(line)
+        if fence_marker is not None:
+            marker, run_length, remainder = fence or ("", 0, "")
+            if (
+                marker == fence_marker[0]
+                and run_length >= fence_marker[1]
+                and not remainder.strip()
+            ):
                 fence_marker = None
             continue
-        if fence_marker is not None:
+        if fence is not None:
+            marker, run_length, remainder = fence
+            if marker != "`" or "`" not in remainder:
+                fence_marker = (marker, run_length)
             continue
         match = MARKDOWN_HEADING_PATTERN.match(line.strip())
         if match:
             headings.append((index, len(match.group(1)), match.group(2).strip()))
     return headings
+
+
+def markdown_section_body(content: str, title: str, level: int = 3) -> str | None:
+    lines = content.splitlines()
+    headings = markdown_headings(content)
+    heading_index = next(
+        (
+            index
+            for index, (_, heading_level, heading_title) in enumerate(headings)
+            if heading_level == level and heading_title == title
+        ),
+        None,
+    )
+    if heading_index is None:
+        return None
+    line_index, heading_level, _ = headings[heading_index]
+    next_line_index = len(lines)
+    for candidate_line, candidate_level, _ in headings[heading_index + 1 :]:
+        if candidate_level <= heading_level:
+            next_line_index = candidate_line
+            break
+    return "\n".join(lines[line_index + 1 : next_line_index])
+
+
+def markdown_standalone_field_values(content: str, pattern: re.Pattern[str]) -> list[str]:
+    values: list[str] = []
+    fence_marker: tuple[str, int] | None = None
+    for line in content.splitlines():
+        fence = markdown_fence_token(line)
+        if fence_marker is not None:
+            marker, run_length, remainder = fence or ("", 0, "")
+            if (
+                marker == fence_marker[0]
+                and run_length >= fence_marker[1]
+                and not remainder.strip()
+            ):
+                fence_marker = None
+            continue
+        if fence is not None:
+            marker, run_length, remainder = fence
+            if marker != "`" or "`" not in remainder:
+                fence_marker = (marker, run_length)
+            continue
+        if line.startswith(("\t", "    ")):
+            continue
+        match = pattern.fullmatch(line)
+        if match:
+            values.append(match.group(1).strip())
+    return values
 
 
 def has_meaningful_markdown_body(content: str) -> bool:
@@ -3045,6 +3124,71 @@ def validate_analysis_readiness(
             )
         if "[阶段：ANALYSIS]" in dev_spec_content or "### 待用户决策" in dev_spec_content:
             reasons.append("dev-spec.md contains forbidden analysis-only sections")
+
+        decision_headings = [
+            heading
+            for heading in markdown_headings(dev_spec_content)
+            if heading[1] == 3 and heading[2] == "决策闭环"
+        ]
+        if len(decision_headings) != 1:
+            reasons.append(
+                "dev-spec.md must contain exactly one `### 决策闭环` section; "
+                f"found {len(decision_headings)}"
+            )
+        decision_section = markdown_section_body(dev_spec_content, "决策闭环") or ""
+        all_decision_statuses = [
+            value.lower()
+            for value in markdown_standalone_field_values(
+                dev_spec_content, DECISION_STATUS_PATTERN
+            )
+        ]
+        section_decision_statuses = [
+            value.lower()
+            for value in markdown_standalone_field_values(
+                decision_section, DECISION_STATUS_PATTERN
+            )
+        ]
+        if not all_decision_statuses:
+            reasons.append(
+                "dev-spec.md is missing the decision closure marker `decision_status: closed`; "
+                "resume ec-analysis, resolve material questions, and record the conclusions first"
+            )
+        elif len(all_decision_statuses) != 1:
+            reasons.append(
+                "dev-spec.md must contain exactly one decision_status marker; "
+                f"found {len(all_decision_statuses)}"
+            )
+        elif len(section_decision_statuses) != 1:
+            reasons.append(
+                "dev-spec.md decision_status marker must be inside the `### 决策闭环` section"
+            )
+        elif section_decision_statuses[0] != "closed":
+            reasons.append(
+                "dev-spec.md has unresolved material decisions: "
+                f"decision_status is {section_decision_statuses[0]!r}, expected 'closed'"
+            )
+        decision_conclusions = markdown_standalone_field_values(
+            decision_section, DECISION_CONCLUSIONS_PATTERN
+        )
+        decision_evidence = markdown_standalone_field_values(
+            decision_section, DECISION_EVIDENCE_PATTERN
+        )
+        for field_name, values in (
+            ("已解决问题与结论", decision_conclusions),
+            ("确认依据", decision_evidence),
+        ):
+            if len(values) != 1:
+                reasons.append(
+                    "dev-spec.md decision closure must contain exactly one non-empty "
+                    f"`{field_name}` field; found {len(values)}"
+                )
+            elif UNRESOLVED_DECISION_VALUE_PATTERN.fullmatch(
+                re.sub(r"[`*_]", "", values[0]).strip()
+            ):
+                reasons.append(
+                    "dev-spec.md has unresolved decision closure evidence: "
+                    f"`{field_name}` is {values[0]!r}"
+                )
 
         if not skeleton.exists():
             reasons.append("dev-spec skeleton template is missing")

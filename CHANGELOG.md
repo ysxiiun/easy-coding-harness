@@ -6,6 +6,18 @@
 - `y`：常规功能升级
 - `z`：日常 bug 修复
 
+## 0.10.0-beta.4
+
+- ANALYSIS 完成后不再向会话回贴整份 `dev-spec.md`，改为展示核心方案、验收摘要、
+  Workflow Mode 与主要风险，并在客户端支持时提供完整 Dev-Spec 的绝对 Markdown 文件链接，
+  不支持本地链接时保留可复制的绝对路径。
+- Dev-Spec 新增结构化“决策闭环”章节；技术路线、接口、模型、状态、范围或验收存在未决问题时，
+  Agent 必须停留在 ANALYSIS 逐项问答并回填结论。状态 API 要求唯一的
+  `decision_status: closed` 标记，未闭合方案不能进入 IMPLEMENT。
+- `ec-implementing` 新增注释交付门禁：作者署名必须使用当前宿主 Agent 与 Easy Coding 的组合，
+  例如 `Codex with Easy Coding`；新增数据模型字段、枚举成员和常量必须逐项说明语义及适用的
+  单位、格式、取值、空值或兼容约束。
+
 ## 0.10.0-beta.3
 
 - TDD 业务任务的 `VERIFICATION` 门禁收口为本地证据：每个仓库（Canonical 场景下每个

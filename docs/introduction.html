@@ -448,7 +448,7 @@
         </div>
         <div class="meta">
           <span>来源：<code>docs/introduction.md</code></span>
-          <span>版本：<code>0.10.0-beta.3</code></span>
+          <span>版本：<code>0.10.0-beta.4</code></span>
           <span>适配：Claude Code · Codex · Qoder</span>
         </div>
       </header>
@@ -499,7 +499,7 @@
             <div class="idea-card">
               <div class="num">2</div>
               <h3>人机共创，关键节点设硬门控</h3>
-              <p><code>approval_mode</code> 控制状态边是否等待，<code>workflow_mode</code> 控制状态内执行深度。Confirm 只在 ANALYSIS 后确认一次，随后在质量门禁通过后自动推进；Adaptive 在 ANALYSIS 后冻结为 Fast、Standard 或 Strict。Java TDD 默认关闭，首次开启前由 <code>ec-tdd-init</code> 在 TDD 关闭态建设 JUnit、JaCoCo 与 GitLab 增量覆盖率基础设施，不补存量业务单测；readiness 通过后才允许显式开启，并只以本地单测和本地差异覆盖率验收相对任务 baseline 的新增或修改生产代码行（默认 90%）。GitLab job 仍会生成，但远程结果不阻塞 Harness。所有新代码任务都保留 REVIEW 与 VERIFICATION 门控。</p>
+              <p><code>approval_mode</code> 控制状态边是否等待，<code>workflow_mode</code> 控制状态内执行深度。ANALYSIS 先通过问答闭合技术路线、接口、模型、状态、范围和验收问题，只有 Dev-Spec 写入唯一的 <code>decision_status: closed</code> 后才允许进入 IMPLEMENT；会话只展示核心方案和主要风险，完整内容通过本地链接或绝对路径按需查看。Confirm 只在 ANALYSIS 后确认一次，随后在质量门禁通过后自动推进；Adaptive 在 ANALYSIS 后冻结为 Fast、Standard 或 Strict。Java TDD 默认关闭，首次开启前由 <code>ec-tdd-init</code> 在 TDD 关闭态建设 JUnit、JaCoCo 与 GitLab 增量覆盖率基础设施，不补存量业务单测；readiness 通过后才允许显式开启，并只以本地单测和本地差异覆盖率验收相对任务 baseline 的新增或修改生产代码行（默认 90%）。GitLab job 仍会生成，但远程结果不阻塞 Harness。IMPLEMENT 中需要作者署名时使用当前宿主 Agent 与 Easy Coding 的组合；新增模型字段、枚举成员和常量必须逐项写清注释。所有新代码任务都保留 REVIEW 与 VERIFICATION 门控。</p>
             </div>
             <div class="idea-card">
               <div class="num">3</div>

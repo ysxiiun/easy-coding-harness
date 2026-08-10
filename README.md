@@ -86,6 +86,9 @@ any stage --[user abort via ec-task-close]--> CLOSED
   ANALYSIS → IMPLEMENT 确认一次，随后各阶段在质量门禁通过后自动推进，`auto` 从开始即
   自动推进。
 - 工作流模式优先级为 session 覆盖 > 项目 `behavior.workflow_mode` > `adaptive`。Adaptive 在 ANALYSIS 结束时根据风险解析、展示并冻结为 `fast`、`standard` 或 `strict`，用户可在风险下限之上调整。
+- ANALYSIS 会先通过问答闭合影响技术路线、接口、模型、状态、范围或验收的实质性问题，
+  并在 Dev-Spec 中记录唯一的 `decision_status: closed`。会话只展示核心方案、验收摘要、
+  Workflow Mode 与主要风险；完整 `dev-spec.md` 通过绝对本地链接或路径按需查看。
 - Java TDD 默认关闭；优先级为 session 覆盖 > 项目配置 > `false/90%`。首次开启前必须运行 `ec-tdd-init`，只建设 JUnit/JaCoCo/GitLab 增量覆盖率基础设施，不补存量业务单测；readiness 通过后才允许显式开启。开启后在 ANALYSIS → IMPLEMENT 冻结开关、baseline 与阈值，只验收本任务新增/修改生产代码行，执行 RED/GREEN/REFACTOR（纯重构使用 characterization GREEN → GREEN），并要求本地单测通过、本地差异覆盖率达到冻结阈值。GitLab TEST-stage job 仍会生成，但远程 pipeline 结果不属于 Harness 验收证据，也不会触发中间提交推送。关闭时普通任务不扫描 CI/JaCoCo、不增加命令或提高原工作流验收深度。
 - 所有新代码任务都完整进入 REVIEW；不同工作流模式只调整各状态内部的上下文加载、执行主体、审查独立性、验证范围和记忆深度，不绕过状态或证据门禁。
 - 显式 `doc` / `analysis` / `report` 只读任务不生成 `test-strategy.md`；展示完整报告后按生效模式进入 COMPLETE，不执行 REVIEW、VERIFICATION 或 MEMORY，也不写任务记忆。
@@ -192,7 +195,8 @@ session 临时覆盖统一通过 `ec-config` 对话修改。升级到 0.10.0-bet
 5；未完成 `ec-tdd-init` readiness 的项目/session TDD 请求迁移为关闭并保留阈值，同时
 部署共享 Java 差异覆盖率与 readiness 工具。0.10.0-beta.3 起，TDD 业务任务只依赖本地
 单测与本地差异覆盖率，历史远程 CI 证据保留但不再参与验收。已经冻结的活动任务合同
-不会被静默改写。
+不会被静默改写。0.10.0-beta.4 起，仍停在 ANALYSIS 的旧任务必须补齐决策闭环后才能
+进入 IMPLEMENT；已经进入后续阶段的任务不受影响。
 
 若当前会话不希望 Harness 接管，显式调用 `/ec-no-harness`（Codex 使用
 `$ec-no-harness`）。它只旁路 Easy Coding，不关闭其他 hooks，也不忽略其他 skills；

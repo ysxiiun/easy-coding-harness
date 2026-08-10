@@ -37,6 +37,10 @@ async function writeReadyAnalysisArtifacts(root: string, taskId: string): Promis
       "证据：src/example.ts:1。",
       "### 冲突摘要",
       "无冲突。",
+      "### 决策闭环",
+      "decision_status: closed",
+      "- **已解决问题与结论**：无",
+      "- **确认依据**：无额外决策",
       "### 影响面分析",
       "仅影响 fixture。",
       "### 改动范围",
@@ -144,6 +148,9 @@ describe("configureClaude", () => {
     expect(analysisSkill).toContain("mechanical minimum");
     expect(analysisSkill).toContain("acceptance_criteria");
     expect(analysisSkill).toContain("No transition without a valid workflow proposal");
+    expect(analysisSkill).toContain("concise session summary instead of");
+    expect(analysisSkill).toContain("[View full Dev-Spec](</absolute/path/to/dev-spec.md>)");
+    expect(analysisSkill).toContain("decision_status: closed");
 
     const implementingSkill = await readFile(
       path.join(tempDir, ".claude", "skills", "ec-implementing", "SKILL.md"),
@@ -152,6 +159,10 @@ describe("configureClaude", () => {
     expect(implementingSkill).toContain("A single low-risk unit may be implemented inline");
     expect(implementingSkill).toContain("acceptance_criteria");
     expect(implementingSkill).toContain("Code tasks enter REVIEW");
+    expect(implementingSkill).toContain("Codex with Easy Coding");
+    expect(implementingSkill).toContain("Every new model field, enum member, and constant");
+    expect(implementingSkill).toContain("user-facing host Agent");
+    expect(implementingSkill).toContain("## Code Comments");
 
     const implementerAgent = await readFile(
       path.join(tempDir, ".claude", "agents", "ec-implementer.md"),
@@ -159,6 +170,7 @@ describe("configureClaude", () => {
     );
     expect(implementerAgent).toContain("NONE — read-only deliverable");
     expect(implementerAgent).toContain("`deliverable`");
+    expect(implementerAgent).toContain("`Code Comments`");
 
     const reviewingSkill = await readFile(
       path.join(tempDir, ".claude", "skills", "ec-reviewing", "SKILL.md"),
@@ -175,6 +187,8 @@ describe("configureClaude", () => {
     );
     expect(devSpecSkeleton.startsWith("## 技术方案：[[EC_TODO:任务标题]]")).toBe(true);
     expect(devSpecSkeleton).toContain("[[EC_TODO:");
+    expect(devSpecSkeleton).toContain("### 决策闭环");
+    expect(devSpecSkeleton).toContain("decision_status: [[EC_TODO:");
     expect(devSpecSkeleton).not.toContain("[阶段：ANALYSIS]");
     expect(devSpecSkeleton).not.toContain("### 待用户决策");
 
@@ -292,7 +306,9 @@ describe("configureClaude", () => {
     expect(main).toContain("pre-render the matching numbered fallback");
     expect(main).toContain("consume a matching\n  numbered reply against the stored edge");
     expect(main).toContain("read-only task creates no test-strategy.md");
-    expect(main).toContain("ask every unresolved decision during analysis");
+    expect(main).toContain("set `decision_status: open`");
+    expect(main).toContain("progressively record");
+    expect(main).toContain("never paste the full");
 
     const workflowSkill = await readFile(
       path.join(tempDir, ".claude", "skills", "ec-workflow", "SKILL.md"),

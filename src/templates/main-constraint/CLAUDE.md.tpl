@@ -74,10 +74,14 @@ First run `/ec-init`; daily work goes through `/ec-workflow`.
   only Easy Coding workflow/stage orchestration for this session. Continue honoring every
   non-Easy-Coding skill, hook, and instruction. Do not clear or mutate the suspended task.
 - ANALYSIS must follow template-first: read `.easy-coding/templates/dev-spec-skeleton.md` then
-  write its exact content to the task's dev-spec.md as the FIRST tool calls. Next inspect evidence
-  without editing the skeleton, ask every unresolved decision during analysis, and wait. Only
-  after all decisions are resolved may the agent fill the complete dev-spec.md. The final report
-  contains neither `[阶段：ANALYSIS]` nor a `待用户决策` section.
+  write its exact content to the task's dev-spec.md as the FIRST tool calls. Next inspect evidence,
+  set `decision_status: open`, ask every unresolved material decision, and progressively record
+  each confirmed answer and its evidence in `### 决策闭环`. Only after all material decisions are
+  resolved may the agent set the single `decision_status: closed`, finalize the artifacts, and
+  propose IMPLEMENT. The session presentation is a concise core-solution, acceptance, workflow,
+  and risk summary with an absolute local link/path to the full dev-spec.md; never paste the full
+  artifact by default. The final artifact contains neither `[阶段：ANALYSIS]` nor a
+  `待用户决策` section.
 - REVIEW and VERIFICATION are fingerprinted hard gates. Review evidence must match the final
   implementation; verification evidence must match final implementation and config. The frozen
   workflow mode selects targeted, impacted, or full commands without weakening the green gate.

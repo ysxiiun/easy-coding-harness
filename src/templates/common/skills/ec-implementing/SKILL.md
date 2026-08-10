@@ -36,6 +36,17 @@ Communicate with the user in the user's language.
    enters REVIEW.
 7. Read-only `doc` / `analysis` / `report` tasks remain `single` with `files:[]`, make no writes,
    return a non-empty `deliverable`, then follow the mode-aware IMPLEMENT -> COMPLETE edge.
+8. When a project template, local convention, or new source header uses author attribution, the
+   author value must be `<Current Agent Name> with Easy Coding`, for example
+   `Codex with Easy Coding`. `Current Agent Name` means the user-facing host Agent (for example,
+   Codex, Claude, or Qoder), never an implementation sub-agent role such as `ec-implementer`.
+   Never copy a previous human or Agent name into newly authored code.
+9. Every newly added field in a data-bearing model must have a meaningful field-level comment.
+   This includes new or extended entity/DO/DTO/VO/BO, request/response, configuration, and similar
+   model types. Every new enum member and every new declared constant requires the same treatment.
+   Describe the semantic meaning and, when relevant, units, format, allowed values, nullability,
+   default behavior, or compatibility constraints. A type-level comment does not replace comments
+   on its fields or members; do not add low-value comments to ordinary local variables.
 
 ## Choose the execution owner
 
@@ -81,6 +92,7 @@ Sub-agents never dispatch other sub-agents or read `.easy-coding` workflow asset
 ## Test Points    {unit.test_points and exact targeted commands}
 ## Contracts      {inputs, outputs, invariants shared with other units}
 ## Risks          {known edge cases and compatibility risks}
+## Code Comments  {resolved host Agent author value; model-field, enum-member, and constant rules}
 ## Coding Rules   {pre-digested RULES sections}
 ## Architecture   {pre-digested ABSTRACT sections}
 ## Output
@@ -92,8 +104,12 @@ deliverable|null, issues:[], needs_attention:[]
 
 1. Append a `dispatch` record before work begins. Canonical-backed records include `repo_id` and
    `source_task_id`; resolve every file relative to `task.repo_paths[repo_id]` before dispatch.
+   Populate `Code Comments` on every code task card with the resolved user-facing host Agent
+   author value and the field/member/constant rules above; sub-agents do not read this Skill.
 2. Execute according to dependency order and selected owner.
 3. Run targeted unit tests and self-audit scope, contracts, TODOs, and introduced warnings.
+   Also audit new author attributions and every new model field, enum member, and constant against
+   the comment requirements above before recording success.
 4. Append one `result` record. Only a successful unit uses `status:"completed"`; include
    unresolved issues rather than hiding them, and do not advance while `issues` or
    `needs_attention` is non-empty.
@@ -119,4 +135,6 @@ conversation overhead while keeping work observable.
 - [ ] Every unit has a dispatch/result pair and satisfied its acceptance criteria.
 - [ ] Targeted tests ran or a concrete blocker is recorded.
 - [ ] Cross-unit contracts still match.
+- [ ] New author attributions use the user-facing host `<Current Agent Name> with Easy Coding`.
+- [ ] Every new model field, enum member, and constant has a meaningful field-level comment.
 - [ ] Code tasks enter REVIEW, regardless of workflow mode.

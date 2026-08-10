@@ -161,6 +161,7 @@ describe("configureCodex", () => {
 
     const agent = await readFile(path.join(tempDir, ".codex", "agents", "ec-implementer.toml"), "utf8");
     expect(agent).toContain('name = "ec-implementer"');
+    expect(agent).toContain('task card\'s "Code Comments"');
 
     const main = await readFile(path.join(tempDir, "AGENTS.md"), "utf8");
     expect(main).toContain("Codex: `$ec-*`");
@@ -175,6 +176,9 @@ describe("configureCodex", () => {
     expect(main).toContain("explicitly guarantees an indefinite wait");
     expect(main).toContain("pre-render the matching numbered fallback");
     expect(main).toContain("consume a matching\n  numbered reply against the stored edge");
+    expect(main).toContain("set `decision_status: open`");
+    expect(main).toContain("progressively record");
+    expect(main).toContain("never paste the full");
     expect(main).not.toContain("[ Easy Coding ] ready");
     expect(main).not.toContain("tasks``");
     expect(main).not.toContain("}```");

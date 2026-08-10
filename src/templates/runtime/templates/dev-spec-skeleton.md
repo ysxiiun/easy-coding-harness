@@ -24,6 +24,11 @@
 - 需求 vs 现有代码：[[EC_TODO:填写结果或“无冲突”]]
 - Dev-Spec vs 现有代码：[[EC_TODO:填写结果或“无冲突”]]
 
+### 决策闭环
+decision_status: [[EC_TODO:仅当所有实质性问题均已解决并回填后写 closed]]
+- **已解决问题与结论**：[[EC_TODO:逐项记录影响技术路线、接口、模型、状态、范围或验收的问题及最终结论；无则写“无”]]
+- **确认依据**：[[EC_TODO:用户答复、冻结 Spec、现有代码证据或“无额外决策”]]
+
 ### Canonical Spec 来源
 - **来源**：[[EC_TODO:非 Canonical 任务写“无”；否则填写 repo-relative path、spec_id、revision、SHA-256]]
 - **选择任务 / 仓库**：[[EC_TODO:非 Canonical 任务写“无”；否则填写 selected task IDs 与 repo IDs]]

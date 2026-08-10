@@ -42,7 +42,28 @@ read. `scope-drifted` requires current-code conflict analysis before confirmatio
 ## Analysis artifacts
 
 Copy `.easy-coding/templates/dev-spec-skeleton.md` first, then replace every `[[EC_TODO:...]]`.
-Keep every mandatory section. `### Workflow Mode` is required.
+Keep every mandatory section. The `### 决策闭环` (Decision Closure) and `### Workflow Mode`
+sections are required. The decision section must contain exactly one standalone
+`decision_status: closed` marker, and no other `decision_status` marker may appear elsewhere in
+the document. Record every material question and its resolved conclusion in that section, or
+record that no extra decision was needed.
+
+## Decision closure before implementation
+
+Treat uncertainty that can change the technical route, public or internal contract, data model,
+state flow, edit scope, compatibility behavior, or acceptance criteria as a material open
+question. While any such question remains:
+
+1. stay in ANALYSIS and ask the user focused questions, preferably one decision at a time;
+2. do not present a final analysis summary, propose the final Workflow Mode, request
+   ANALYSIS -> IMPLEMENT, or suggest that implementation can begin;
+3. update the Dev-Spec with each confirmed answer and its evidence;
+4. use `decision_status: open` while the artifact is still being developed, then replace it with
+   the single `decision_status: closed` marker only after every material question is resolved.
+
+Risks, integration work that is intentionally deferred by a frozen Spec, and environmental
+verification limits are not automatically open questions. Describe them as risks or explicit
+acceptance boundaries. Never use `closed` to hide a decision that still needs the user.
 
 Execution plan records use:
 
@@ -183,13 +204,21 @@ while still in ANALYSIS.
 
 ## User presentation and transition
 
-Before the boundary, present:
+After decision closure and before the boundary, present a concise session summary instead of
+pasting the full `dev-spec.md`. The summary must contain:
 
-- proposed scope and units;
-- acceptance and test strategy;
+- the core solution and affected scope/units;
+- acceptance and test-strategy highlights;
 - configured, minimum, and selected workflow modes with reasons;
-- how IMPLEMENT, REVIEW, VERIFICATION, and MEMORY will run;
+- the material risks and explicit acceptance boundaries;
 - explicit user ability to request a higher mode or a permitted lower mode.
+
+End the summary with the absolute path to
+`.easy-coding/tasks/<task-id>/dev-spec.md`. When the current client supports local-file Markdown
+links, render `[View full Dev-Spec](</absolute/path/to/dev-spec.md>)`; otherwise print the
+copyable absolute path. Do not dump the full artifact merely because the client cannot link it.
+If the user asks to inspect the full plan, open or read that stored file on demand using the
+current Agent's supported file capability.
 
 Then request or auto-apply ANALYSIS -> IMPLEMENT according to `effective_approval_mode`.
 The state API atomically freezes the proposal when the transition is applied. `approval_mode`
@@ -201,6 +230,8 @@ controls waiting; it never changes the selected execution depth.
 - No unresolved skeleton placeholders.
 - No code task with an empty change scope.
 - No unit without acceptance criteria, test points, contracts, and risks.
+- No final summary, workflow proposal, or transition while a material decision is unresolved.
+- No transition without exactly one `decision_status: closed` marker in `dev-spec.md`.
 - No transition without a valid workflow proposal.
 - No Canonical-backed transition with changed source SHA, unresolved repository identity,
   incomplete selected-task coverage, or an open Unit/Step/File/Symbol/Test traceability gap.
