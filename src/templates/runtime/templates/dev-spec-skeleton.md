@@ -30,7 +30,9 @@ decision_status: [[EC_TODO:仅当所有实质性问题均已解决并回填后�
 - **确认依据**：[[EC_TODO:用户答复、冻结 Spec、现有代码证据或“无额外决策”]]
 
 ### Canonical Spec 来源
-- **来源**：[[EC_TODO:非 Canonical 任务写“无”；否则填写 repo-relative path、spec_id、revision、SHA-256]]
+- **来源定位**：[[EC_TODO:非 Canonical 任务写“无”；否则填写 path、path_mode、spec_id 与 design revision]]
+- **设计 / 文档摘要**：[[EC_TODO:非 Canonical 任务写“无”；否则填写 design_sha256、document_sha256]]
+- **共享执行状态**：[[EC_TODO:非 Canonical 任务写“无”；否则填写 execution_revision、writeback 状态及是否需要 reconcile]]
 - **选择任务 / 仓库**：[[EC_TODO:非 Canonical 任务写“无”；否则填写 selected task IDs 与 repo IDs]]
 - **消费闭包**：[[EC_TODO:非 Canonical 任务写“无”；否则填写 contracts、direct dependencies、changes、steps、tests 摘要]]
 - **基线与冲突**：[[EC_TODO:非 Canonical 任务写“无”；否则逐仓填写 exact/scope-unchanged/scope-drifted/baseline-unavailable 及处理结论]]

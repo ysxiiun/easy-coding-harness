@@ -11,7 +11,9 @@ from typing import Any, Iterable
 from easy_dev_spec_protocol import SCHEMA, select_scope, validate_spec
 
 
-UPSTREAM_PROTOCOL_COMMIT = "7eb9b64cdb4c8c338c5871c3c759526f2c78fb8e"
+UPSTREAM_PROTOCOL_COMMIT = "8239a5befae08b41da43b7cfbf41acf07e487d04"
+UPSTREAM_PROTOCOL_SHA256 = "a6016f04b4ce18794038ebcdbcab6e400a8a08aa2929a3e777c2b35ee3f7e7a1"
+UPSTREAM_EXECUTION_WRITER_SHA256 = "17f03314adce341269e2689aa41bb7bb29c236979be530a373fef58fe88a2524"
 
 
 class EasyDevSpecError(ValueError):
@@ -21,12 +23,17 @@ class EasyDevSpecError(ValueError):
 def _read_spec(
     path: Path,
     require_ready: bool = False,
-) -> tuple[str, dict[str, Any], dict[str, str]]:
+    require_execution: bool = False,
+) -> tuple[str, dict[str, Any], dict[str, str], Any]:
     if not path.is_file():
         raise EasyDevSpecError(f"Spec file does not exist: {path}")
     try:
         text = path.read_text(encoding="utf-8")
-        report = validate_spec(text, require_ready=require_ready)
+        report = validate_spec(
+            text,
+            require_ready=require_ready,
+            require_execution=require_execution,
+        )
     except (OSError, UnicodeError) as exc:
         raise EasyDevSpecError(f"Cannot read Spec as UTF-8: {path}: {exc}") from exc
     if report.protocol == "legacy":
@@ -40,7 +47,7 @@ def _read_spec(
         section_id: section.content
         for section_id, section in report.sections.items()
     }
-    return text, report.manifest, sections
+    return text, report.manifest, sections, report
 
 
 def normalize_remote(remote: str) -> str:
@@ -153,7 +160,7 @@ def inspect_spec(
     selected_task_ids: Iterable[str] | None = None,
 ) -> dict[str, Any]:
     resolved_spec_path = spec_path.resolve()
-    text, manifest, sections = _read_spec(resolved_spec_path)
+    text, manifest, sections, report = _read_spec(resolved_spec_path)
     repositories = manifest["repositories"]
     tasks = manifest["tasks"]
     changes = manifest["changes"]
@@ -223,8 +230,9 @@ def inspect_spec(
     try:
         source_path = portable_path(root, resolved_spec_path)
     except EasyDevSpecError:
-        # inspect 是纯只读命令，允许展示项目外输入；创建任务时仍会拒绝项目外来源。
+        # Explicit project-external input remains readable and is stored as an absolute locator.
         source_path = str(resolved_spec_path)
+    execution = report.execution
     return {
         "protocol": "canonical-v1",
         "schema": SCHEMA,
@@ -234,6 +242,12 @@ def inspect_spec(
         "title": manifest["title"],
         "source_path": source_path,
         "source_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        "design_sha256": report.design_sha256,
+        "document_sha256": report.document_sha256,
+        "execution_revision": (
+            execution.get("execution_revision") if isinstance(execution, dict) else None
+        ),
+        "execution": execution,
         "repositories": repositories,
         "tasks": tasks,
         "changes": changes,
@@ -256,7 +270,11 @@ def select_consumption_scopes(
     """Return final-protocol consumption closures grouped by repository."""
 
     resolved_spec_path = spec_path.resolve()
-    text, manifest, _ = _read_spec(resolved_spec_path, require_ready=True)
+    text, manifest, _, report = _read_spec(
+        resolved_spec_path,
+        require_ready=True,
+        require_execution=True,
+    )
     selected_ids = list(dict.fromkeys(selected_task_ids))
     if not selected_ids:
         raise EasyDevSpecError("At least one Canonical Spec task must be selected")
@@ -306,6 +324,9 @@ def select_consumption_scopes(
         "status": manifest["status"],
         "source_path": source_path,
         "source_sha256": source_sha256,
+        "design_sha256": report.design_sha256,
+        "document_sha256": report.document_sha256,
+        "execution_revision": report.execution.get("execution_revision"),
         "selected_task_ids": selected_ids,
         "scopes": scopes,
     }
@@ -331,6 +352,14 @@ def select_tasks(
 
     selected_set = set(selected_ids)
     evidence_by_dependency = dependency_evidence or {}
+    execution = inspection.get("execution")
+    execution_by_task = {
+        str(snapshot.get("task_id")): snapshot
+        for snapshot in execution.get("tasks", [])
+        if isinstance(execution, dict)
+        and isinstance(snapshot, dict)
+        and isinstance(snapshot.get("task_id"), str)
+    } if isinstance(execution, dict) else {}
     dependency_target_counts: dict[str, int] = {}
     for source_task_id in selected_ids:
         for dependency in task_by_id[source_task_id].get("depends_on", []):
@@ -346,15 +375,30 @@ def select_tasks(
             evidence = evidence_by_dependency.get(edge_key)
             if evidence is None and dependency_target_counts[dependency_id] == 1:
                 evidence = evidence_by_dependency.get(dependency_id)
+            source_snapshot = execution_by_task.get(source_task_id, {})
+            shared_dependency = next(
+                (
+                    item
+                    for item in source_snapshot.get("dependencies", [])
+                    if isinstance(item, dict) and item.get("task_id") == dependency_id
+                ),
+                None,
+            )
+            dependency_snapshot = execution_by_task.get(dependency_id, {})
+            shared_satisfied = bool(
+                isinstance(shared_dependency, dict)
+                and shared_dependency.get("status") == "satisfied"
+            )
+            dependency_completed = dependency_snapshot.get("status") == "completed"
             if dependency_type == "hard":
-                satisfied = dependency_id in selected_set or bool(evidence)
-                if not satisfied:
+                satisfied = shared_satisfied or dependency_completed or bool(evidence)
+                if dependency_id not in selected_set and not satisfied:
                     missing_hard.append(f"{source_task_id}->{dependency_id}")
             elif dependency_type == "contract":
-                satisfied = True
+                satisfied = shared_satisfied or inspection.get("status") == "READY"
                 evidence = evidence or "canonical-spec-ready-contract"
             else:
-                satisfied = bool(evidence)
+                satisfied = shared_satisfied or bool(evidence)
             dependency_records.append(
                 {
                     "source_task_id": source_task_id,
@@ -362,6 +406,11 @@ def select_tasks(
                     "dependency_type": dependency_type,
                     "required_evidence": dependency["required_evidence"],
                     "status": "satisfied" if satisfied else "pending",
+                    "shared_status": (
+                        shared_dependency.get("status")
+                        if isinstance(shared_dependency, dict)
+                        else "pending"
+                    ),
                     **({"evidence": evidence} if evidence else {}),
                 }
             )
@@ -391,6 +440,12 @@ def select_tasks(
             test for test in inspection["tests"] if test.get("task_id") in selected_set
         ],
         "dependency_records": dependency_records,
+        "execution_revision": inspection.get("execution_revision"),
+        "execution_tasks": [
+            execution_by_task[task_id]
+            for task_id in selected_ids
+            if task_id in execution_by_task
+        ],
     }
 
 
@@ -406,6 +461,9 @@ def inspection_summary(inspection: dict[str, Any]) -> dict[str, Any]:
         "title",
         "source_path",
         "source_sha256",
+        "design_sha256",
+        "document_sha256",
+        "execution_revision",
         "repositories",
         "tasks",
         "dependency_edges",
@@ -414,4 +472,21 @@ def inspection_summary(inspection: dict[str, Any]) -> dict[str, Any]:
         "baseline_status",
         "repository_bindings",
     )
-    return {key: inspection[key] for key in keys}
+    summary = {key: inspection[key] for key in keys}
+    execution = inspection.get("execution")
+    if isinstance(execution, dict):
+        summary["execution"] = {
+            key: execution.get(key)
+            for key in (
+                "schema",
+                "spec_id",
+                "design_revision",
+                "design_sha256",
+                "execution_revision",
+                "updated_at",
+                "tasks",
+            )
+        }
+    else:
+        summary["execution"] = None
+    return summary

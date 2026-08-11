@@ -275,13 +275,19 @@ describe("configureClaude", () => {
     ).toContain("READY_LINE");
     expect(
       await readFile(path.join(tempDir, ".claude", "hooks", "easy_dev_spec.py"), "utf8"),
-    ).toContain("7eb9b64cdb4c8c338c5871c3c759526f2c78fb8e");
+    ).toContain("8239a5befae08b41da43b7cfbf41acf07e487d04");
     expect(
       await readFile(
         path.join(tempDir, ".claude", "hooks", "easy_dev_spec_protocol.py"),
         "utf8",
       ),
     ).toContain('SCHEMA = "easy-dev-spec/v1"');
+    expect(
+      await readFile(
+        path.join(tempDir, ".claude", "hooks", "easy_dev_spec_execution.py"),
+        "utf8",
+      ),
+    ).toContain("def record_task_status(");
 
     const main = await readFile(path.join(tempDir, "CLAUDE.md"), "utf8");
     expect(main).toContain("easy-coding-harness generated");
@@ -336,6 +342,14 @@ describe("configureClaude", () => {
     expect(memorySkill).toContain("memory-short-complete");
     expect(memorySkill).toContain("memory-new-id");
     expect(memorySkill).toContain("memory-instruction");
+    expect(memorySkill).toContain("memory-architecture-assessment");
+    expect(memorySkill).toContain(
+      "must not re-analyze the repository or repeat the entire conversation",
+    );
+    expect(memorySkill).toContain("Whenever `required:true`, record the decision");
+    expect(memorySkill).toContain("Default to\n  `no-op`");
+    expect(memorySkill).toContain("missing-ABSTRACT startup exception");
+    expect(memorySkill).toContain("never\nsilently edit `RULES.md`");
     expect(memorySkill).toContain("auto-transition");
     expect(memorySkill).toContain("memory-complete");
     expect(memorySkill).toContain("source_task: {current task id, exact}");
@@ -348,6 +362,7 @@ describe("configureClaude", () => {
     expect(initSkill).toContain("project-init-complete --session-file <P> --agent <agent-id>");
     expect(initSkill).toContain("snapshot --agent <agent-id>");
     expect(initSkill).toContain("Never execute a command with\n   the literal placeholder `<P>`");
+    expect(initSkill).toContain("explicit `missing-abstract` assessment");
     const preflightIndex = initSkill.indexOf("## Project-init preflight (run first — read-only)");
     const sessionResolutionIndex = initSkill.indexOf(
       "## Session path resolution (run after preflight — before any project write)",
@@ -1208,6 +1223,16 @@ describe("configureClaude", () => {
             "claude-code",
           ],
           { cwd: tempDir, encoding: "utf8" },
+        );
+        await writeFile(
+          path.join(tempDir, ".easy-coding", "ABSTRACT.md"),
+          "# Architecture\n\nLifecycle fixture.\n",
+          "utf8",
+        );
+        await writeFile(
+          path.join(tempDir, ".easy-coding", "CHANGELOG.md"),
+          "# Architecture changelog\n",
+          "utf8",
         );
         execFileSync("python3", [stateApi, "memory-instruction", "--session-file", sessionFile], {
           cwd: tempDir,

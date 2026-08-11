@@ -69,6 +69,12 @@ Verdict:
 In-scope defects are fixed automatically. Ask the user only for a new design choice, changed
 public contract, or contradiction with a confirmed decision.
 
+For Canonical-backed review, append the local review record first. Any blocking finding then
+writes the owning source task `blocked` through `writeback-spec-task`, referencing the local
+record. A passed review does not change shared task status. A `replan` verdict returns to ANALYSIS;
+confirmed static Spec changes use revision + READY + `sync-spec-design` rather than edits to the
+derived plan or machine execution block.
+
 ## Evidence record
 
 Append one final record per executed dimension for the current implementation fingerprint.

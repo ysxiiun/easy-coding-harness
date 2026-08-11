@@ -210,6 +210,14 @@ INIT ─自动→ ANALYSIS → IMPLEMENT → REVIEW → VERIFICATION → MEMORY 
   关闭。
 - **工作流模式**：session 覆盖优先于项目 `behavior.workflow_mode`，缺失时为 `adaptive`。ANALYSIS 保存 configured/selected/minimum/source/reasons 提案，进入 IMPLEMENT 时原子冻结为具体模式。
 - **Java TDD 模式**：session 覆盖优先于项目 `behavior.tdd_enabled`，默认关闭；覆盖率阈值默认 90，可配置 1..100。开启入口必须先验证 `ec-tdd-init` readiness，不存在“先开启、稍后初始化”。专用 `tdd-init` 代码任务始终冻结 TDD 关闭，只建设 JUnit/JaCoCo/GitLab changed-line coverage 基础设施，不补存量业务单测或要求全量覆盖。后续业务任务进入 IMPLEMENT 时原子冻结 baseline 与阈值，以 100% 为测试设计目标、以配置阈值作为新增/修改生产代码行最低门禁；VERIFICATION 对每个仓库（Canonical 下每个 source task）同时要求通过的本地单测证据与本地 changed-line coverage 证据。GitLab TEST stage 继续复用同一脚本，但远程 pipeline URL、job identity 与成功状态不进入 Harness 验收；beta.1/beta.2 的历史 GitLab coverage 记录保留并在新门禁中忽略。
+- **共享 Canonical 执行投影**：Canonical Spec 的静态设计和机器执行区分层管理。Harness
+  用 design revision + `design_sha256` 绑定本地计划，只把跨应用必须消费的 Task、Step、
+  dependency 状态投影到 `EDS:EXECUTION`；详细 result/review/verify 仍保留在本地
+  `execution.jsonl`。写回采用 `execution_revision` CAS、稳定幂等键、相邻锁与原子替换，
+  冲突时仅在设计未变的前提下刷新并重试一次。项目外显式路径使用 absolute locator，
+  迁移后必须按 schema/spec_id/design revision/design digest 精确 rebind。静态方案变化只能
+  revision +1、重新 READY 并 `sync-spec-design`，执行区禁止人工修改；共享回写与 Git
+  提交/推送是两个独立事实。
 - **pending_transition**：仅审批模式要求人工确认时记录；自动边走受限 `auto-transition`。所有新代码主链从 IMPLEMENT 进入 REVIEW。
 - **确认门展示**：存在人工确认边时，Agent 完整展示“确认进入/返回目标阶段”“交接给其他智能体”和 free-form Other。模式选择已包含在 ANALYSIS 方案中，用户可在风险下限之上修改。取消、超时或无法解析时保留 `pending_transition`。
 - **VERIFICATION**：Fast 运行最小充分的定向检查，Standard 运行受影响范围的 lint/typecheck/test，Strict 运行项目适用的完整 lint/typecheck/test/build；所选模式要求的检查必须绑定当前实现与配置指纹并全部通过，"should pass" 不是证据。
@@ -422,9 +430,25 @@ IMPLEMENT 展示报告后已直接结束，不进入 REVIEW。
 2. 冲突检测：当前代码 > 用户最新确认 > 本轮沉淀 > 旧长期记忆
 3. 淘汰检查：delete（无价值）/ merge（语义重复）/ deprecate（曾有效但已被替代）
 
-#### 7.3 ABSTRACT 自动更新
+#### 7.3 架构认知评估与 ABSTRACT 条件更新
 
-记忆沉淀过程中如果发现架构变更（新增/删除模块、核心流程变化、技术栈变更），自动更新 ABSTRACT.md 并追加 CHANGELOG.md。
+日常任务只生成不可变短期记忆，不承担架构维护。只有长期记忆触发 `distill` 时，MEMORY 才在
+业务/技术事实沉淀之后执行独立的架构评估；默认结论为 `no-op`，不能为了更新而更新。
+
+评估动作固定为：
+
+- `no-op`：候选事实未形成稳定架构变化，ABSTRACT 与架构 CHANGELOG 必须保持不变；
+- `backfill`：ABSTRACT 原本缺失，首个实质性初创任务可在长期记忆未触发时例外回补；
+- `update`：冻结候选证明模块边界、职责/依赖方向、核心流程、技术栈或运行基础设施已经变化。
+
+`backfill/update` 只读取候选关联的模块与入口，定向修改受影响的 ABSTRACT 章节，并创建或追加
+`.easy-coding/CHANGELOG.md`。普通 Bug 修复、局部字段或 DTO 变化、临时方案、局部重构和例行依赖
+升级不构成更新理由。稳定编码约定只进入 TECHNICAL 作为 RULES 更新候选，MEMORY 不静默修改
+SOUL、RULES 或 TEST_STRATEGY。
+
+状态 API 冻结架构资产指纹并记录 `action / trigger / reason / evidence / affected_sections`；架构
+评估未完成或文件变化与动作不一致时，候选短期记忆不得删除，MEMORY 不能完成。0.10.0-beta.5
+之前已经冻结的 MEMORY 指令保持旧契约兼容。
 
 **设计亮点**：记忆系统不仅"写"，还在分析阶段被强制"读"——ec-analysis 必须读取相关记忆并在分析输出中引用，确保过往经验真正被应用。
 
@@ -471,8 +495,8 @@ IMPLEMENT 展示报告后已直接结束，不进入 REVIEW。
 |------|------|--------|---------|
 | 身份层 | SOUL.md | 项目人格、对话标准 | 极少 |
 | 约束层 | RULES.md | 语言编码规范 | 稳定 |
-| 认知层 | ABSTRACT.md | 项目架构、模块、技术栈 | 架构变更时 |
-| 记忆层 | memory/ | 历史经验和事实 | 每次任务 |
+| 认知层 | ABSTRACT.md | 项目架构、模块、技术栈 | 长期沉淀后的证据评估判定需要时 |
+| 记忆层 | memory/ | 历史经验和事实 | 短期每次任务；长期超过窗口时 |
 
 #### 9.3 项目模式自动检测
 

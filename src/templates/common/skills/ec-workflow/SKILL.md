@@ -67,12 +67,16 @@ plan decision; Auto continues immediately. Both remove later waiting, not qualit
    chooses one or more tasks and resolves repository paths or omitted hard-dependency evidence,
    call `create-task-from-spec` once for the complete selection. A document without a Canonical
    manifest remains a legacy ANALYSIS input for an ordinary task. A malformed, DRAFT, or otherwise
-   non-READY Canonical Spec stays blocked and must never be downgraded to the legacy route. Never
-   edit the source Spec.
+   non-READY Canonical Spec stays blocked and must never be downgraded to the legacy route. A
+   READY Canonical Spec without shared execution remains readable, but run
+   `initialize-spec-execution` before selection can become an executable Harness task.
 
    ```bash
    {{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py inspect-dev-spec \
      --spec <path> [--repo-path <repo-id>=<path>]...
+
+   {{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py initialize-spec-execution \
+     --spec <path>
 
    {{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py select-dev-spec-scope \
      --spec <path> --spec-task <task-id> [--spec-task <task-id>]...
@@ -90,6 +94,10 @@ plan decision; Auto continues immediately. Both remove later waiting, not qualit
 
    When multiple selected tasks depend on the same target, disambiguate creation evidence with
    `<source-task-id>-><dependency-task-id>=<evidence>`.
+   Explicit project-external Spec files are supported and stored as absolute locators. If that
+   locator moves, use `rebind-spec-source`; never guess by basename. Shared execution progress is
+   written only through state API writer commands. Static design edits require revision + READY +
+   `sync-spec-design`; never hand-edit the `EDS:EXECUTION` region.
 4. When the user explicitly invokes `ec-tdd-init`, let that skill own preflight and create a
    `type=tdd-init` code task only after scope confirmation. Do not reinterpret it as an ordinary
    TDD-enabled feature task and do not require readiness before creating it.
@@ -119,6 +127,12 @@ plan decision; Auto continues immediately. Both remove later waiting, not qualit
 - `VERIFICATION`: dispatch `ec-verification`; archive requires current green evidence.
 - `MEMORY`: dispatch `ec-memory`.
 - `COMPLETE` / `CLOSED`: report terminal status and clear stale session ownership.
+
+For a Canonical-backed task whose snapshot reports pending writeback, call
+`reconcile-spec-execution` before dispatching the stage. Do not advance locally while shared
+writeback remains pending or conflicted. A deterministic writer rejection reports `error` and
+clears the pending action so the corrected action can proceed; never overwrite a different
+pending action.
 
 ## Boundary handling
 

@@ -77,7 +77,10 @@ and a non-empty `not_applicable_reason`; it does not count as the required appli
 check, and must not be represented by an invented successful command.
 
 Record failures in `failures[]`. If any current-fingerprint record fails, return to IMPLEMENT;
-do not append a later synthetic pass without rerunning the failed command.
+do not append a later synthetic pass without rerunning the failed command. For a Canonical-backed
+failure, append the local verify record first, then write the owning source task `blocked` with a
+concise reference to that record. The repair transition automatically reopens blocked source tasks
+only; unaffected implemented tasks retain their latest shared conclusion.
 
 ## Coverage and acceptance
 
@@ -115,6 +118,13 @@ includes the owning `repo_id` and `source_task_id`; duplicate check names in dif
 tasks remain separate evidence records. In `strict`, every involved repository independently
 records all four check types; a repository-specific non-applicable record still needs its reason
 and source ownership.
+
+After all current-fingerprint local checks pass for a Canonical source task, call
+`writeback-spec-task --status verified`. Include passed `kind:"test"` evidence for every bound
+Canonical Test ID plus concise references to local review/build/coverage records. The subsequent
+VERIFICATION -> MEMORY application requires every selected shared task to be `verified` or
+`completed`; remote CI remains outside this acceptance gate. If writeback is interrupted, run
+`reconcile-spec-execution` before requesting the transition.
 
 Record the exact integration edge only after its evidence exists:
 

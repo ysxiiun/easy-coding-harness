@@ -132,7 +132,7 @@ agent 会读项目，生成 `SOUL.md`、`RULES.md`、`ABSTRACT.md`、`TEST_STRAT
 /ec-workflow 实现 xxx 功能
 ```
 
-`ec-workflow` 负责创建或恢复任务。项目和当前 session 可分别覆盖审批模式、工作流模式与 Java TDD；ANALYSIS 先通过问答闭合技术路线、接口、模型、状态、范围和验收问题，只有 Dev-Spec 写入唯一的 `decision_status: closed` 后才允许进入 IMPLEMENT。会话只展示核心方案和主要风险，完整 Dev-Spec 通过本地链接或绝对路径按需查看。TDD 默认关闭且不增加任何测试成本；首次开启前由 `ec-tdd-init` 在 TDD 关闭态建设 JUnit/JaCoCo/GitLab 增量覆盖率基础设施，不补存量业务单测。readiness 通过后才能显式开启，任务会冻结 baseline 与阈值（默认 90%），只对本任务新增/修改生产代码行要求本地单测通过和本地差异覆盖率达标；生成的 GitLab job 不作为 Harness 验收依赖。IMPLEMENT 中需要作者署名时使用当前宿主 Agent 与 Easy Coding 的组合；新增模型字段、枚举成员和常量必须逐项写清注释。新代码任务在 IMPLEMENT 后统一进入 REVIEW；只读任务展示完整报告后进入 COMPLETE，不执行 REVIEW、VERIFICATION 或 MEMORY。
+`ec-workflow` 负责创建或恢复任务。项目和当前 session 可分别覆盖审批模式、工作流模式与 Java TDD；ANALYSIS 先通过问答闭合技术路线、接口、模型、状态、范围和验收问题，只有 Dev-Spec 写入唯一的 `decision_status: closed` 后才允许进入 IMPLEMENT。会话只展示核心方案和主要风险，完整 Dev-Spec 通过本地链接或绝对路径按需查看。新版 Canonical Spec 会把静态设计与共享执行状态分离：Harness 以 design digest 冻结方案，并用 CAS、幂等键和断点对账把实施、验证与完成结论投影回共享 Spec，不会因正常进度回写误判方案漂移。TDD 默认关闭且不增加任何测试成本；首次开启前由 `ec-tdd-init` 在 TDD 关闭态建设 JUnit/JaCoCo/GitLab 增量覆盖率基础设施，不补存量业务单测。readiness 通过后才能显式开启，任务会冻结 baseline 与阈值（默认 90%），只对本任务新增/修改生产代码行要求本地单测通过和本地差异覆盖率达标；生成的 GitLab job 不作为 Harness 验收依赖。IMPLEMENT 中需要作者署名时使用当前宿主 Agent 与 Easy Coding 的组合；新增模型字段、枚举成员和常量必须逐项写清注释。新代码任务在 IMPLEMENT 后统一进入 REVIEW；只读任务展示完整报告后进入 COMPLETE，不执行 REVIEW、VERIFICATION 或 MEMORY。
 
 如果当前会话不希望 Harness 接管，显式调用 `/ec-no-harness`（Codex 使用 `$ec-no-harness`）。它只旁路 Easy Coding，其他 skills 和 hooks 仍正常工作，任务状态也会原样保留。
 

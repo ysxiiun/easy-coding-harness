@@ -210,6 +210,16 @@ ANALYSIS 结束时只展示以下摘要，并在客户端支持时提供可点�
 - Workflow Mode（配置值、风险下限、推荐值、原因和各状态执行差异）
 - 主要风险与明确的验收边界
 
+当任务来自新版 Canonical Spec 时，静态方案以 design revision 与 `design_sha256` 作为
+有效性门禁，`document_sha256` 和 `execution_revision` 可随着共享执行状态前进。Harness
+在实施、验证、完成或取消形成可验证结论后，通过 CAS 与幂等键写回 Task/Step/dependency
+投影；异常中断后运行 `reconcile-spec-execution`。项目外显式 Spec 使用绝对 locator，移动后
+只能用身份一致的 `rebind-spec-source` 修复。需要改变静态任务/契约/范围时回到 ANALYSIS，
+将原 Spec revision 恰好加一、恢复 READY 并执行 `sync-spec-design`，禁止手工编辑执行区。
+共享写回只有一个 pending 动作槽，不能用新动作覆盖未对账动作；并发 CAS 可重试冲突保留
+现场，而旧设计动作、幂等键载荷冲突和确定性状态错误会终止并释放写槽。repair 仅重开
+blocked 来源任务，且只接受本次共享 `in_progress` 事件之后产生的本地 result 证据。
+
 #### 3. 审批模式、工作流模式与状态边
 
 当生效模式要求确认时，阶段完成后状态仍停留在当前阶段，同时写入
@@ -272,8 +282,14 @@ lint、typecheck、test、build。验证证据绑定实现与配置指纹；未�
 你确认满意并进入 MEMORY 后，Agent 在同一状态内：
 1. 生成短期记忆
 2. 调用状态 API 检查长期记忆门禁，按结果沉淀或 no-op
-3. 更新 ABSTRACT（如有架构变更）
-4. 记忆处理完成后调用受限 `auto-transition` 自动进入 COMPLETE，并输出任务总结
+3. 仅在长期记忆 `distill` 时执行独立架构评估，默认 `no-op`
+4. 冻结候选证明架构认知过期时，定向更新 ABSTRACT 并追加 `.easy-coding/CHANGELOG.md`
+5. 初创项目首个实质任务若缺失 ABSTRACT，可在未触发 distill 时例外回补一次
+6. 记忆与必要的架构维护完成后调用受限 `auto-transition` 自动进入 COMPLETE，并输出任务总结
+
+架构评估只接受 `no-op / backfill / update`。普通 Bug 修复、局部字段/DTO 调整、临时方案、局部
+重构和例行依赖升级不会触发架构更新；稳定编码约定只记为 RULES 更新候选，不由 MEMORY 静默
+修改规则文件。若架构维护失败，冻结候选不会被消费，任务继续停留在 MEMORY。
 
 ---
 

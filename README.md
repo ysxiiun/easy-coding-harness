@@ -101,7 +101,8 @@ any stage --[user abort via ec-task-close]--> CLOSED
 
 Harness 可选择性消费 easy-dev-spec 生成的单文件 `easy-dev-spec/v1` Canonical Spec：
 
-1. `ec-workflow` 先只读检查 manifest、仓库、任务 DAG、依赖和 baseline，不创建任务。
+1. `ec-workflow` 先只读检查 manifest、仓库、任务 DAG、依赖、baseline 与共享 execution；
+   旧 Spec 仍可只读检查，但成为可执行任务前必须初始化共享执行区。
 2. 用户明确选择一个或多个 Spec task；`select-dev-spec-scope` 按仓库提取确定性消费
    闭包，Harness 不默认导入整份 Spec，也不会读取未选任务正文。
 3. 一次选择创建一个 Harness task；ANALYSIS 使用最终 producer READY 门禁，并将
@@ -110,9 +111,12 @@ Harness 可选择性消费 easy-dev-spec 生成的单文件 `easy-dev-spec/v1` C
 4. `hard` 依赖决定执行顺序，冻结的 `contract` 依赖允许并行编码，`integration` 依赖
    在证据闭合前阻止全链路完成。
 
-Canonical Spec 是只读设计源；`.easy-coding/tasks/<task-id>/` 下的 `dev-spec.md`、
-`execution.jsonl` 和 `test-strategy.md` 是绑定来源 SHA-256 的运行时派生物，不会把开发
-进度写回源 Spec。无 Canonical manifest 的历史 Dev-Spec 继续走原有整文分析流程。
+Canonical Spec 的静态设计由 design revision + `design_sha256` 冻结；共享
+`EDS:EXECUTION` 则接收 Harness 的 Task/Step/dependency 投影。写回使用
+`execution_revision` CAS、幂等键和断点对账，执行区变化不会使本地 plan/review/verify
+指纹失效，设计变化或 revision 回滚仍会阻塞。显式项目外路径受支持，迁移后只能通过
+身份一致的 rebind 修复定位。静态设计调整必须 revision +1、READY 并执行 `sync-design`；
+机器执行区禁止手工编辑。无 Canonical manifest 的历史 Dev-Spec 继续走原有整文分析流程。
 
 ## Supermodule 模型
 

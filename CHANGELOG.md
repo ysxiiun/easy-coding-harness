@@ -6,6 +6,36 @@
 - `y`：常规功能升级
 - `z`：日常 bug 修复
 
+## 0.10.0-beta.5
+
+- 兼容新版 `easy-dev-spec/v1` 共享执行区：同步设计/整文双摘要与 execution 投影协议，新增
+  单一共享 writer，将 Canonical Task、Step 和 dependency 的实施、验证、完成与取消结果
+  写回原 Spec；本地 `execution.jsonl` 继续保存完整门禁证据。
+- Canonical 绑定改为 `design_sha256 + document_sha256 + execution_revision`：执行进度更新不再
+  误判为方案漂移；CAS 冲突只在设计未变时自动重试一次，稳定幂等键避免重复事件，pending
+  写回可通过 `reconcile-spec-execution` 对账，revision 回退会被硬拦截。
+- 支持用户显式选择项目外 Spec 绝对路径，并提供身份严格校验的 `rebind-spec-source`；静态
+  设计调整必须 revision 恰好 +1、重新 READY 并调用 `sync-spec-design`，受影响任务及后继
+  状态重置后回到 ANALYSIS，禁止手工编辑 `EDS:EXECUTION`。
+- ANALYSIS→IMPLEMENT 只启动依赖已满足的来源任务；IMPLEMENT 按通过的本地测试证据回写
+  Step/implemented，REVIEW 写回阻塞，VERIFICATION 写回 verified，MEMORY→COMPLETE 自动
+  写回 completed，关闭任务写回 cancelled。共享写回与 Git 提交/推送保持相互独立。
+- 共享事件统一记录为 `easy-coding / <Agent> with Easy Coding`；单槽 pending 禁止被不同动作
+  覆盖，可重试 CAS 冲突保留现场，旧设计动作、幂等键载荷冲突和确定性状态错误会清槽解锁。
+  result 只消费当前 `in_progress` 尝试之后的 dispatch/严格成功证据，repair 只重开 blocked
+  来源任务；设计同步同时淘汰受影响依赖证据和旧实现指纹，本地 task.json 使用原子替换。
+
+- 将日常任务记忆与架构维护解耦：每个代码任务只生成不可变短期记忆；仅当长期记忆触发
+  `distill` 时才执行独立架构评估，并默认选择 `no-op`，避免为了更新而更新。
+- MEMORY 状态 API 新增冻结式架构评估契约和 `memory-architecture-assessment` 命令，记录
+  `action / trigger / reason / evidence / affected_sections`，并用 ABSTRACT 与架构 CHANGELOG
+  指纹校验 `no-op / backfill / update` 的实际文件结果；评估失败时不得消费短期候选。
+- 架构更新只接受模块边界、职责/依赖方向、核心流程、技术栈/运行基础设施或现有 ABSTRACT
+  与稳定事实冲突等证据；普通 Bug 修复、字段/DTO 调整、局部重构、临时方案和例行依赖升级
+  不触发更新。稳定编码约定只沉淀为 RULES 更新候选，不静默改写知识约束。
+- 初创项目首个实质任务若缺失 ABSTRACT，可通过 `missing-abstract` 例外在未触发长期蒸馏时
+  完成一次 `backfill`；0.10.0-beta.5 前已冻结的 MEMORY 指令及旧 MEMORY_LONG 恢复路径保持兼容。
+
 ## 0.10.0-beta.4
 
 - ANALYSIS 完成后不再向会话回贴整份 `dev-spec.md`，改为展示核心方案、验收摘要、

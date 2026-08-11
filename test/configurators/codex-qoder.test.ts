@@ -134,6 +134,9 @@ describe("configureCodex", () => {
       await pathExists(path.join(tempDir, ".codex", "hooks", "easy_dev_spec_protocol.py")),
     ).toBe(true);
     expect(
+      await pathExists(path.join(tempDir, ".codex", "hooks", "easy_dev_spec_execution.py")),
+    ).toBe(true);
+    expect(
       await pathExists(path.join(tempDir, ".codex", "hooks", "inject-workflow-state.py")),
     ).toBe(true);
     expect(
@@ -444,6 +447,9 @@ describe("configureQoder", () => {
     expect(
       await pathExists(path.join(tempDir, ".qoder", "hooks", "easy_dev_spec_protocol.py")),
     ).toBe(true);
+    expect(
+      await pathExists(path.join(tempDir, ".qoder", "hooks", "easy_dev_spec_execution.py")),
+    ).toBe(true);
     expect(await pathExists(path.join(tempDir, ".qoder", "hooks", "inject-subagent-context.py"))).toBe(
       true,
     );
@@ -518,6 +524,9 @@ describe("configureQoder", () => {
     );
     expect(
       await pathExists(path.join(tempDir, ".qodercn", "hooks", "easy_dev_spec_protocol.py")),
+    ).toBe(true);
+    expect(
+      await pathExists(path.join(tempDir, ".qodercn", "hooks", "easy_dev_spec_execution.py")),
     ).toBe(true);
     expect(await pathExists(path.join(tempDir, ".qodercn", "skills", "ec-meta", "SKILL.md"))).toBe(
       true,

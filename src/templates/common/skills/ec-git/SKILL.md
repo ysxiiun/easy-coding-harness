@@ -62,7 +62,13 @@ with `.easy-coding/sessions/` always excluded. The CLI already added it to `.git
 - Do not commit `spec/dev/` unless the user explicitly asks.
 - Do not omit managed `easy-coding upgrade` changes merely because they were created outside
   the current agent turn.
-- Never modify or stage the source Canonical Spec merely to record Harness execution progress.
+- Shared Canonical execution writeback and Git delivery are independent facts. Do not stage or
+  commit a project-external Spec automatically. For a Spec inside a Git repository, include it
+  only when the user's requested commit scope and normal repository rules include it; never claim
+  shared writeback merely because Git succeeded, or Git delivery merely because writeback
+  succeeded.
+- Never hand-edit `EDS:EXECUTION`. Static Spec changes are valid only through design revision +
+  READY + `sync-spec-design`; runtime progress uses the shared writer commands.
 - In a supermodule task launched from the parent root, parent `.easy-coding/` belongs to the
   parent git. Child `.easy-coding/memory/` changes created by memory archive belong to the
   owning child git and must be committed before the parent gitlink update.

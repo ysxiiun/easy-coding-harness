@@ -97,13 +97,18 @@ Sub-agents never dispatch other sub-agents or read `.easy-coding` workflow asset
 ## Architecture   {pre-digested ABSTRACT sections}
 ## Output
 status:"completed", repo_id|null, source_task_id|null, changed_files[], summary,
-deliverable|null, issues:[], needs_attention:[]
+deliverable|null, checks:[{command,passed,failures:[]}], issues:[], needs_attention:[]
 ```
 
 ## Dispatch and result loop
 
 1. Append a `dispatch` record before work begins. Canonical-backed records include `repo_id` and
    `source_task_id`; resolve every file relative to `task.repo_paths[repo_id]` before dispatch.
+   Before dispatching a selected task that is not already `in_progress`, call
+   `writeback-spec-task --status in_progress` with a key stable for that dispatch/recovery
+   attempt but distinct from any earlier accepted `in_progress` event. Do this only after its
+   hard/contract dependencies are ready; do not batch-start dependent tasks at the initial
+   IMPLEMENT boundary.
    Populate `Code Comments` on every code task card with the resolved user-facing host Agent
    author value and the field/member/constant rules above; sub-agents do not read this Skill.
 2. Execute according to dependency order and selected owner.
@@ -113,10 +118,20 @@ deliverable|null, issues:[], needs_attention:[]
 4. Append one `result` record. Only a successful unit uses `status:"completed"`; include
    unresolved issues rather than hiding them, and do not advance while `issues` or
    `needs_attention` is non-empty.
+   For Canonical-backed success, write each owned source Step `completed` through
+   `writeback-spec-step`, with passed evidence for every bound Canonical Test ID and a stable key.
+   After every source Step for that task is complete, write the task `implemented`. On failure,
+   write the affected Step `failed`; the shared writer moves its task to `blocked`. Local evidence
+   is appended first, shared projection second, and the returned acknowledgment last.
 5. If a result changes a cross-unit contract, stop dependent units and return to ANALYSIS.
 6. For parallel units, detect overlapping writes before advancing.
 7. If implementation needs a file, symbol, repository, or source step outside the mapped
    Canonical change set, stop and return to ANALYSIS instead of expanding scope implicitly.
+8. If a static Canonical change is confirmed, revise the original design by exactly one revision
+   and use `sync-spec-design`; never edit the machine-owned execution block. If a writeback was
+   interrupted, run `reconcile-spec-execution` with the stored idempotent pending action.
+   Reconciliation only consumes dispatch/result evidence created after the current `in_progress`
+   acknowledgment; it never opens a new repair attempt or reuses an earlier attempt's result.
 
 Do not emit a progress message for every trivial edit. Report at unit boundaries to reduce
 conversation overhead while keeping work observable.

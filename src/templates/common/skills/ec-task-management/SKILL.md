@@ -16,7 +16,8 @@ Call the state API snapshot and show:
 - task `concrete_workflow_mode` and frozen TDD state when present;
 - harness enabled/disabled state;
 - active and resumable tasks.
-- for Canonical-backed tasks: source Spec ID/revision/SHA, selected task IDs, repository
+- for Canonical-backed tasks: source locator/path mode, Spec ID/design revision/design digest,
+  document digest, execution revision, writeback status, selected task IDs, repository
   bindings/baseline status, and pending dependency evidence.
 
 Mode inspection and configuration belongs to `ec-config`. If the user asks to change Approval,
@@ -32,3 +33,8 @@ When creating from a Canonical Spec, call `inspect-dev-spec`, display the comple
 dependency selection, then call `select-dev-spec-scope` and `create-task-from-spec` only after
 explicit user selection. Multiple selected Spec tasks still create one Harness task, while the
 selector returns one deterministic consumption closure per selected repository.
+Initialize missing shared execution before creation. Support `rebind-spec-source` only when the
+new file matches schema + spec_id + design revision + design_sha256 and does not roll execution
+revision backward. A pending writeback is repaired with `reconcile-spec-execution`, never by
+editing the execution JSON block or starting a different writeback. A deterministic rejected
+action is cleared with `status:error`; correct its input instead of replaying it.

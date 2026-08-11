@@ -83,30 +83,38 @@ context window, a task survives session end and agent switches with zero informa
 
 ## Canonical Spec integration
 
-An `easy-dev-spec/v1` Canonical Spec is a read-only design source, not progress storage.
+An `easy-dev-spec/v1` Canonical Spec separates frozen static design from a shared execution ledger.
 `inspect-dev-spec` validates the document with the protocol implementation pinned from
 `easy-dev-spec@7eb9b64`; after explicit task selection, `select-dev-spec-scope` returns one
 deterministic producer-compatible closure per repository, and `create-task-from-spec` creates one
-Harness task with the source ID/revision/SHA, selected task IDs, portable repository bindings,
+Harness task with source locator mode, ID/design revision and digest, document digest, execution
+revision, selected task IDs, repository bindings,
 baseline classifications, and dependency evidence.
 
 ANALYSIS derives local `dev-spec.md`, `execution.jsonl`, and `test-strategy.md` for the selected
 consumption closure. Canonical-backed units keep repository, source task/steps, files, symbols,
 and test commands. Hard dependencies shape the Unit DAG, READY contracts can run in parallel,
-and integration dependencies block end-to-end completion until evidence is recorded. The source
-Canonical Spec is never rewritten with Harness runtime state.
+and integration dependencies block end-to-end completion until evidence is recorded. Harness
+keeps detailed evidence locally and projects cross-application Task/Step/dependency outcomes into
+`EDS:EXECUTION` through one CAS/idempotent writer. Static changes use revision + READY +
+`sync-spec-design`; agents never hand-edit the machine ledger. Explicit external locators are
+allowed and rebind only by exact Canonical identity.
 
 ## Memory system
 
 Short memory: one schema-v2 file per task, sliding window (max 10, keep 5). Long memory:
 three files (index + business + technical), distilled from out-of-window short memories with
-explicit conflict resolution. ABSTRACT.md is backfilled/updated when memory distillation
-detects an architecture change.
+explicit conflict resolution. Daily tasks only produce facts. When distillation runs, MEMORY
+performs a separate, default-no-op architecture assessment and updates only affected ABSTRACT
+sections when frozen evidence proves the architecture cognition is stale. A missing ABSTRACT
+after the first substantive startup task is the only non-distillation backfill exception.
 
 ## Project knowledge — four layers
 
 Identity (SOUL, rarely changes) · Constraints (RULES, stable) · Cognition (ABSTRACT, updated
-on architecture change) · Memory (short + long, updated every task). ec-workflow always reads
+only after evidence-backed architecture assessment) · Memory (short every task, long only on
+distillation). Stable convention changes become RULES candidates in technical memory, never
+silent RULES edits. ec-workflow always reads
 SOUL + RULES + recent short memory; ec-analysis loads ABSTRACT and matching long memory on
 demand.
 

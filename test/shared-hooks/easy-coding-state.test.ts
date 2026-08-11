@@ -251,6 +251,16 @@ async function writeMemoryFixture(
   await mkdir(path.join(tempDir, ".easy-coding", "memory", "short"), { recursive: true });
   await writeMemoryConfig(10, 5);
   await writeFile(
+    path.join(tempDir, ".easy-coding", "ABSTRACT.md"),
+    "# Architecture\n\nExisting fixture architecture.\n",
+    "utf8",
+  );
+  await writeFile(
+    path.join(tempDir, ".easy-coding", "CHANGELOG.md"),
+    "# Architecture changelog\n",
+    "utf8",
+  );
+  await writeFile(
     path.join(tempDir, ".easy-coding", "sessions", "test.json"),
     JSON.stringify(
       {
@@ -346,6 +356,32 @@ function readMemoryInstruction(scriptPath: string) {
     memory: Record<string, unknown>;
     status_line: string;
     status_context: string;
+  };
+}
+
+function recordArchitectureAssessment(
+  scriptPath: string,
+  action: "no-op" | "backfill" | "update",
+  evidence: string,
+  affectedSections: string[] = [],
+) {
+  const args = [
+    scriptPath,
+    "memory-architecture-assessment",
+    "--session-file",
+    ".easy-coding/sessions/test.json",
+    "--action",
+    action,
+    "--reason",
+    `Fixture ${action} reason`,
+    "--evidence",
+    evidence,
+    "--agent",
+    "codex",
+  ];
+  for (const section of affectedSections) args.push("--affected-section", section);
+  return JSON.parse(execFileSync("python3", args, { cwd: tempDir, encoding: "utf8" })) as {
+    architecture_assessment: Record<string, unknown>;
   };
 }
 
@@ -853,6 +889,24 @@ describe("easy_coding_state.py MEMORY instruction", () => {
     const snapshot = readMemoryInstruction(stateApiPath());
 
     expect(snapshot.memory).toMatchObject({ action: "no-op", short_count: 0 });
+    expect(snapshot.memory).not.toHaveProperty("architecture_assessment");
+    const completed = JSON.parse(
+      execFileSync(
+        "python3",
+        [
+          stateApiPath(),
+          "memory-complete",
+          "--session-file",
+          ".easy-coding/sessions/test.json",
+          "--action",
+          "no-op",
+          "--agent",
+          "codex",
+        ],
+        { cwd: tempDir, encoding: "utf8" },
+      ),
+    ) as { memory_progress: { completed: boolean } };
+    expect(completed.memory_progress.completed).toBe(true);
   });
 
   it("rejects malformed or cross-task short-memory checkpoints", async () => {
@@ -994,6 +1048,16 @@ describe("easy_coding_state.py MEMORY instruction", () => {
       ],
       { cwd: tempDir, encoding: "utf8" },
     );
+    await writeFile(
+      path.join(tempDir, ".easy-coding", "ABSTRACT.md"),
+      "# Architecture\n\nFingerprint fixture.\n",
+      "utf8",
+    );
+    await writeFile(
+      path.join(tempDir, ".easy-coding", "CHANGELOG.md"),
+      "# Architecture changelog\n",
+      "utf8",
+    );
     readMemoryInstruction(stateApiPath());
     await writeFile(
       memoryPath,
@@ -1049,7 +1113,7 @@ describe("easy_coding_state.py MEMORY instruction", () => {
 
     const snapshot = readMemoryInstruction(scriptPath);
 
-    expect(snapshot.memory).toEqual({
+    expect(snapshot.memory).toMatchObject({
       short_count: 1,
       short_term_max: 10,
       short_term_keep: 5,
@@ -1058,6 +1122,13 @@ describe("easy_coding_state.py MEMORY instruction", () => {
       candidate_files: [],
       kept_files: [`.easy-coding/memory/short/${memoryFixtureName(1)}`],
       checkpoint_disposition: "kept",
+      architecture_assessment: {
+        required: false,
+        trigger: "none",
+        allowed_actions: [],
+        abstract: { path: ".easy-coding/ABSTRACT.md", exists: true, non_empty: true },
+        changelog: { path: ".easy-coding/CHANGELOG.md", exists: true, non_empty: true },
+      },
     });
     expect(snapshot.status_line).toContain(
       "> **Easy Coding** · **Approval: Guard** · **Workflow: Adaptive** · `06-23-memory` · `MEMORY`",
@@ -1070,7 +1141,7 @@ describe("easy_coding_state.py MEMORY instruction", () => {
 
     const snapshot = readMemoryInstruction(scriptPath);
 
-    expect(snapshot.memory).toEqual({
+    expect(snapshot.memory).toMatchObject({
       short_count: 12,
       short_term_max: 10,
       short_term_keep: 5,
@@ -1085,11 +1156,39 @@ describe("easy_coding_state.py MEMORY instruction", () => {
         (_, index) => `.easy-coding/memory/short/${memoryFixtureName(index + 8)}`,
       ),
       checkpoint_disposition: "kept",
+      architecture_assessment: {
+        required: true,
+        trigger: "distillation",
+        allowed_actions: ["no-op", "update"],
+      },
     });
     expect(snapshot.status_line).toContain(
       "> **Easy Coding** · **Approval: Guard** · **Workflow: Adaptive** · `06-23-memory` · `MEMORY`",
     );
     expect(snapshot.status_context).toContain("[workflow-state:MEMORY]");
+
+    const missingAssessment = spawnSync(
+      "python3",
+      [
+        scriptPath,
+        "memory-complete",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--action",
+        "distill",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    expect(missingAssessment.status).toBe(1);
+    expect(missingAssessment.stderr).toContain("required architecture assessment");
+
+    recordArchitectureAssessment(
+      scriptPath,
+      "no-op",
+      `.easy-coding/memory/short/${memoryFixtureName(1)}`,
+    );
 
     for (let index = 1; index <= 7; index += 1) {
       await rm(
@@ -1127,6 +1226,11 @@ describe("easy_coding_state.py MEMORY instruction", () => {
   it("rejects distill completion when the retained checkpoint is missing", async () => {
     const scriptPath = await writeMemoryFixture(12);
     readMemoryInstruction(scriptPath);
+    recordArchitectureAssessment(
+      scriptPath,
+      "no-op",
+      `.easy-coding/memory/short/${memoryFixtureName(1)}`,
+    );
     for (let index = 1; index <= 7; index += 1) {
       await rm(
         path.join(
@@ -1167,6 +1271,11 @@ describe("easy_coding_state.py MEMORY instruction", () => {
       action: "distill",
       checkpoint_disposition: "candidate",
     });
+    recordArchitectureAssessment(
+      scriptPath,
+      "no-op",
+      `.easy-coding/memory/short/${memoryFixtureName(1)}`,
+    );
 
     const premature = spawnSync(
       "python3",
@@ -1213,6 +1322,394 @@ describe("easy_coding_state.py MEMORY instruction", () => {
       ),
     ) as { memory_progress: { completed: boolean } };
     expect(completed.memory_progress.completed).toBe(true);
+  });
+
+  it("rejects architecture asset changes when memory and architecture are both no-op", async () => {
+    const scriptPath = await writeMemoryFixture(1);
+    readMemoryInstruction(scriptPath);
+    await appendFile(
+      path.join(tempDir, ".easy-coding", "ABSTRACT.md"),
+      "\nUnexpected architecture edit.\n",
+      "utf8",
+    );
+
+    const completed = spawnSync(
+      "python3",
+      [
+        scriptPath,
+        "memory-complete",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--action",
+        "no-op",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+
+    expect(completed.status).toBe(1);
+    expect(completed.stderr).toContain("Architecture asset changed during a no-op assessment");
+  });
+
+  it("backfills a missing ABSTRACT on the first substantive memory even without distillation", async () => {
+    const scriptPath = await writeMemoryFixture(1);
+    await rm(path.join(tempDir, ".easy-coding", "ABSTRACT.md"));
+    await writeFile(
+      path.join(tempDir, ".easy-coding", "project.yaml"),
+      'mode: "startup" # quoted YAML value\nlanguage: typescript\ntest:\n  framework: vitest\n  command: npm test\n',
+      "utf8",
+    );
+    const snapshot = readMemoryInstruction(scriptPath);
+    expect(snapshot.memory).toMatchObject({
+      action: "no-op",
+      architecture_assessment: {
+        required: true,
+        trigger: "missing-abstract",
+        allowed_actions: ["backfill"],
+      },
+    });
+
+    await writeFile(
+      path.join(tempDir, ".easy-coding", "ABSTRACT.md"),
+      "# Architecture\n\nBackfilled from the first substantive task.\n",
+      "utf8",
+    );
+    await appendFile(
+      path.join(tempDir, ".easy-coding", "CHANGELOG.md"),
+      "\n- Backfilled project architecture.\n",
+      "utf8",
+    );
+    const assessment = recordArchitectureAssessment(
+      scriptPath,
+      "backfill",
+      `.easy-coding/memory/short/${memoryFixtureName(1)}`,
+      ["Project architecture"],
+    );
+    expect(assessment.architecture_assessment).toMatchObject({
+      action: "backfill",
+      trigger: "missing-abstract",
+      affected_sections: ["Project architecture"],
+    });
+
+    const completed = JSON.parse(
+      execFileSync(
+        "python3",
+        [
+          scriptPath,
+          "memory-complete",
+          "--session-file",
+          ".easy-coding/sessions/test.json",
+          "--action",
+          "no-op",
+          "--agent",
+          "codex",
+        ],
+        { cwd: tempDir, encoding: "utf8" },
+      ),
+    ) as { memory_progress: { completed: boolean } };
+    expect(completed.memory_progress.completed).toBe(true);
+  });
+
+  it("rejects a missing ABSTRACT outside the startup backfill exception", async () => {
+    const scriptPath = await writeMemoryFixture(1);
+    await rm(path.join(tempDir, ".easy-coding", "ABSTRACT.md"));
+    await writeFile(
+      path.join(tempDir, ".easy-coding", "project.yaml"),
+      "mode: iterative\nlanguage: typescript\ntest:\n  framework: vitest\n  command: npm test\n",
+      "utf8",
+    );
+
+    const instruction = spawnSync(
+      "python3",
+      [
+        scriptPath,
+        "memory-instruction",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+
+    expect(instruction.status).toBe(1);
+    expect(instruction.stderr).toContain("outside the startup backfill exception");
+  });
+
+  it("records an evidence-backed architecture update before consuming distillation candidates", async () => {
+    const scriptPath = await writeMemoryFixture(12);
+    readMemoryInstruction(scriptPath);
+    await writeFile(
+      path.join(tempDir, ".easy-coding", "ABSTRACT.md"),
+      "# Architecture\n\nUpdated module responsibility.\n",
+      "utf8",
+    );
+    await appendFile(
+      path.join(tempDir, ".easy-coding", "CHANGELOG.md"),
+      "\n- Updated module responsibility.\n",
+      "utf8",
+    );
+    const assessment = recordArchitectureAssessment(
+      scriptPath,
+      "update",
+      `.easy-coding/memory/short/${memoryFixtureName(1)}`,
+      ["Module responsibilities"],
+    );
+    expect(assessment.architecture_assessment).toMatchObject({
+      action: "update",
+      trigger: "distillation",
+      affected_sections: ["Module responsibilities"],
+    });
+
+    for (let index = 1; index <= 7; index += 1) {
+      await rm(
+        path.join(tempDir, ".easy-coding", "memory", "short", memoryFixtureName(index)),
+      );
+    }
+    const completed = JSON.parse(
+      execFileSync(
+        "python3",
+        [
+          scriptPath,
+          "memory-complete",
+          "--session-file",
+          ".easy-coding/sessions/test.json",
+          "--action",
+          "distill",
+          "--agent",
+          "codex",
+        ],
+        { cwd: tempDir, encoding: "utf8" },
+      ),
+    ) as { memory_progress: { completed: boolean } };
+    expect(completed.memory_progress.completed).toBe(true);
+  });
+
+  it("refuses architecture assessment after a frozen candidate was consumed early", async () => {
+    const scriptPath = await writeMemoryFixture(12);
+    readMemoryInstruction(scriptPath);
+    await rm(
+      path.join(tempDir, ".easy-coding", "memory", "short", memoryFixtureName(1)),
+    );
+
+    const assessment = spawnSync(
+      "python3",
+      [
+        scriptPath,
+        "memory-architecture-assessment",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--action",
+        "no-op",
+        "--reason",
+        "No stable architecture change",
+        "--evidence",
+        `.easy-coding/memory/short/${memoryFixtureName(1)}`,
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+
+    expect(assessment.status).toBe(1);
+    expect(assessment.stderr).toContain("Keep every frozen distillation candidate");
+  });
+
+  it("rejects affected sections on an architecture no-op assessment", async () => {
+    const scriptPath = await writeMemoryFixture(12);
+    readMemoryInstruction(scriptPath);
+
+    const assessment = spawnSync(
+      "python3",
+      [
+        scriptPath,
+        "memory-architecture-assessment",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--action",
+        "no-op",
+        "--reason",
+        "No stable architecture change",
+        "--evidence",
+        `.easy-coding/memory/short/${memoryFixtureName(1)}`,
+        "--affected-section",
+        "Modules",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+
+    expect(assessment.status).toBe(1);
+    expect(assessment.stderr).toContain("no-op must not declare affected sections");
+  });
+
+  it("rejects architecture evidence outside the frozen memory set", async () => {
+    const scriptPath = await writeMemoryFixture(12);
+    readMemoryInstruction(scriptPath);
+
+    const assessment = spawnSync(
+      "python3",
+      [
+        scriptPath,
+        "memory-architecture-assessment",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--action",
+        "no-op",
+        "--reason",
+        "No stable architecture change",
+        "--evidence",
+        ".easy-coding/memory/short/not-frozen.md",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+
+    expect(assessment.status).toBe(1);
+    expect(assessment.stderr).toContain("must come from the frozen memory set");
+  });
+
+  it("rejects architecture asset drift after a recorded update", async () => {
+    const scriptPath = await writeMemoryFixture(12);
+    readMemoryInstruction(scriptPath);
+    await writeFile(
+      path.join(tempDir, ".easy-coding", "ABSTRACT.md"),
+      "# Architecture\n\nUpdated module responsibility.\n",
+      "utf8",
+    );
+    await appendFile(
+      path.join(tempDir, ".easy-coding", "CHANGELOG.md"),
+      "\n- Updated module responsibility.\n",
+      "utf8",
+    );
+    recordArchitectureAssessment(
+      scriptPath,
+      "update",
+      `.easy-coding/memory/short/${memoryFixtureName(1)}`,
+      ["Module responsibilities"],
+    );
+    await appendFile(
+      path.join(tempDir, ".easy-coding", "ABSTRACT.md"),
+      "\nUnrecorded follow-up edit.\n",
+      "utf8",
+    );
+    for (let index = 1; index <= 7; index += 1) {
+      await rm(
+        path.join(tempDir, ".easy-coding", "memory", "short", memoryFixtureName(index)),
+      );
+    }
+
+    const completed = spawnSync(
+      "python3",
+      [
+        scriptPath,
+        "memory-complete",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--action",
+        "distill",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+
+    expect(completed.status).toBe(1);
+    expect(completed.stderr).toContain("changed after the architecture assessment was recorded");
+  });
+
+  it("rejects a corrupted recorded architecture assessment at completion", async () => {
+    const scriptPath = await writeMemoryFixture(12);
+    readMemoryInstruction(scriptPath);
+    recordArchitectureAssessment(
+      scriptPath,
+      "no-op",
+      `.easy-coding/memory/short/${memoryFixtureName(1)}`,
+    );
+    const taskPath = path.join(
+      tempDir,
+      ".easy-coding",
+      "tasks",
+      "06-23-memory",
+      "task.json",
+    );
+    const task = JSON.parse(await readFile(taskPath, "utf8")) as {
+      memory_progress: { architecture_assessment: { action: string } };
+    };
+    task.memory_progress.architecture_assessment.action = "backfill";
+    await writeFile(taskPath, JSON.stringify(task, null, 2), "utf8");
+    for (let index = 1; index <= 7; index += 1) {
+      await rm(
+        path.join(tempDir, ".easy-coding", "memory", "short", memoryFixtureName(index)),
+      );
+    }
+
+    const completed = spawnSync(
+      "python3",
+      [
+        scriptPath,
+        "memory-complete",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--action",
+        "distill",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+
+    expect(completed.status).toBe(1);
+    expect(completed.stderr).toContain("invalid action");
+  });
+
+  it("rejects a recorded update when architecture assets never changed", async () => {
+    const scriptPath = await writeMemoryFixture(12);
+    readMemoryInstruction(scriptPath);
+    recordArchitectureAssessment(
+      scriptPath,
+      "no-op",
+      `.easy-coding/memory/short/${memoryFixtureName(1)}`,
+    );
+    const taskPath = path.join(
+      tempDir,
+      ".easy-coding",
+      "tasks",
+      "06-23-memory",
+      "task.json",
+    );
+    const task = JSON.parse(await readFile(taskPath, "utf8")) as {
+      memory_progress: {
+        architecture_assessment: { action: string; affected_sections: string[] };
+      };
+    };
+    task.memory_progress.architecture_assessment.action = "update";
+    task.memory_progress.architecture_assessment.affected_sections = ["Modules"];
+    await writeFile(taskPath, JSON.stringify(task, null, 2), "utf8");
+    for (let index = 1; index <= 7; index += 1) {
+      await rm(
+        path.join(tempDir, ".easy-coding", "memory", "short", memoryFixtureName(index)),
+      );
+    }
+
+    const completed = spawnSync(
+      "python3",
+      [
+        scriptPath,
+        "memory-complete",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--action",
+        "distill",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+
+    expect(completed.status).toBe(1);
+    expect(completed.stderr).toContain("ABSTRACT.md did not change after this action");
   });
 });
 

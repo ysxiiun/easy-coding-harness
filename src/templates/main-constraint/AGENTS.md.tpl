@@ -87,6 +87,11 @@ First run `ec-init`; daily work goes through `ec-workflow`.
 - REVIEW and VERIFICATION are fingerprinted hard gates. Review evidence must match the final
   implementation; verification evidence must match final implementation and config. The frozen
   workflow mode selects targeted, impacted, or full commands without weakening the green gate.
+- Canonical-backed tasks bind static validity to design revision + `design_sha256`, while
+  `document_sha256` and `execution_revision` may advance through shared writer commands. Project-
+  external explicit Spec paths are allowed and may be repaired only with identity-checked rebind.
+  Runtime progress must use the shared writer with CAS/idempotency and reconciliation; static
+  design changes require revision + READY + `sync-spec-design`. Never hand-edit `EDS:EXECUTION`.
 - MEMORY combines short-memory creation and the conditional long-memory gate. Entry follows the
   effective confirmation mode; once memory processing completes, COMPLETE is automatic.
 - NO CODE-TASK COMPLETION CLAIMS WITHOUT FRESH VERIFICATION EVIDENCE.
@@ -106,6 +111,8 @@ First run `ec-init`; daily work goes through `ec-workflow`.
   creates the project-init task — agent skills perform all project analysis.
 - Cross-repo references in git-tracked task artifacts use repo NAMES, never local paths.
   Cache local paths only through the state script so they land on the current task.
+- Shared Canonical writeback is a stage gate but not proof of Git commit/push, and Git delivery is
+  not proof of writeback. Keep those facts and scopes separate.
 {{supermodule_boundary}}
 
 <!-- ═══ end easy-coding-harness generated ═══ -->

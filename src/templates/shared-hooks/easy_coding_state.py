@@ -7,6 +7,7 @@ import re
 import secrets
 import shlex
 import subprocess
+import tempfile
 import time
 import uuid
 from datetime import datetime, timezone
@@ -20,6 +21,17 @@ from easy_dev_spec import (
     select_consumption_scopes,
     select_tasks,
 )
+from easy_dev_spec_execution import (
+    ExecutionConflictError,
+    ExecutionStateError,
+    initialize_execution,
+    record_dependency_status,
+    record_step_status,
+    record_task_status,
+    show_execution,
+    sync_design,
+)
+from easy_dev_spec_protocol import split_execution_region
 
 
 TERMINAL_STATUSES = {"COMPLETE", "CLOSED"}
@@ -106,6 +118,12 @@ LEGACY_STAGE_MAP = {
 
 DEFAULT_SHORT_TERM_MAX = 10
 DEFAULT_SHORT_TERM_KEEP = 5
+# 架构认知正文的项目相对路径，用于冻结与复核 ABSTRACT 内容指纹。
+ARCHITECTURE_ABSTRACT_PATH = Path(".easy-coding/ABSTRACT.md")
+# 架构认知变更日志的项目相对路径，用于验证 backfill/update 留下审计记录。
+ARCHITECTURE_CHANGELOG_PATH = Path(".easy-coding/CHANGELOG.md")
+# MEMORY 架构评估唯一允许的动作集合；状态 API 和 CLI 参数共享该契约。
+ARCHITECTURE_ACTIONS = {"no-op", "backfill", "update"}
 SESSION_STALE_THRESHOLD_HOURS = 30 * 24
 SESSION_COMPONENT_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
 SESSION_AGENT_NAMESPACES = {"claude-code", "codex", "qoder", "unknown"}
@@ -812,6 +830,76 @@ def validate_recorded_short_memory(
     validate_short_memory_file(root, task_id, memory_file, expected_sha256)
 
 
+def architecture_asset_baseline(root: Path, relative_path: Path) -> dict:
+    path = root / relative_path
+    if not path.exists():
+        return {
+            "path": str(relative_path),
+            "exists": False,
+            "non_empty": False,
+            "sha256": None,
+        }
+    if not path.is_file():
+        raise StateError(f"Architecture asset is not a file: {relative_path}")
+    try:
+        content = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        raise StateError(f"Cannot read architecture asset as UTF-8: {relative_path}") from error
+    return {
+        "path": str(relative_path),
+        "exists": True,
+        "non_empty": bool(content.strip()),
+        "sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+    }
+
+
+def read_project_mode(root: Path) -> str | None:
+    project_profile = root / ".easy-coding" / "project.yaml"
+    if not project_profile.is_file():
+        return None
+    try:
+        content = project_profile.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        raise StateError("Cannot read .easy-coding/project.yaml as UTF-8.") from error
+    for raw_line in content.splitlines():
+        match = re.fullmatch(
+            r"\s*mode\s*:\s*(['\"]?)(startup|iterative)\1\s*(?:#.*)?", raw_line
+        )
+        if match:
+            return match.group(2)
+    return None
+
+
+def build_architecture_assessment_instruction(root: Path, memory_action: str) -> dict:
+    abstract = architecture_asset_baseline(root, ARCHITECTURE_ABSTRACT_PATH)
+    changelog = architecture_asset_baseline(root, ARCHITECTURE_CHANGELOG_PATH)
+    if not abstract["non_empty"] and read_project_mode(root) == "startup":
+        required = True
+        trigger = "missing-abstract"
+        allowed_actions = ["backfill"]
+    elif not abstract["non_empty"]:
+        raise StateError(
+            "ABSTRACT.md is missing or empty outside the startup backfill exception; "
+            "run ec-init supplementary initialization before completing MEMORY."
+        )
+    elif memory_action == "distill":
+        required = True
+        trigger = "distillation"
+        allowed_actions = ["no-op", "update"]
+    else:
+        required = False
+        trigger = "none"
+        allowed_actions = []
+    instruction = {
+        "required": required,
+        "trigger": trigger,
+        "allowed_actions": allowed_actions,
+        "abstract": abstract,
+        "changelog": changelog,
+    }
+    return instruction
+
+
 def build_memory_instruction(
     root: Path,
     checkpoint_file: str | None = None,
@@ -832,7 +920,7 @@ def build_memory_instruction(
         checkpoint_disposition = "kept"
     else:
         raise StateError("Recorded short-memory checkpoint is absent from the frozen memory set.")
-    return {
+    instruction = {
         "short_count": short_count,
         "short_term_max": config["short_term_max"],
         "short_term_keep": config["short_term_keep"],
@@ -842,6 +930,216 @@ def build_memory_instruction(
         "kept_files": kept_files,
         "checkpoint_disposition": checkpoint_disposition,
     }
+    if not legacy_checkpoint:
+        instruction["architecture_assessment"] = build_architecture_assessment_instruction(
+            root, action
+        )
+    return instruction
+
+
+def require_architecture_instruction(instruction: dict) -> dict | None:
+    assessment_instruction = instruction.get("architecture_assessment")
+    if assessment_instruction is None:
+        # 0.10.0-beta.5 之前已冻结的指令继续按旧契约完成，避免升级中断在途任务。
+        return None
+    if not isinstance(assessment_instruction, dict):
+        raise StateError("Memory instruction has an invalid architecture assessment contract.")
+    return assessment_instruction
+
+
+def validate_architecture_asset_changed(
+    baseline: dict,
+    current: dict,
+    label: str,
+) -> None:
+    if not current.get("exists") or not current.get("non_empty") or not current.get("sha256"):
+        raise StateError(f"Architecture {label} must exist and be non-empty after this action.")
+    if baseline.get("sha256") == current.get("sha256"):
+        raise StateError(f"Architecture {label} did not change after this action.")
+
+
+def validate_architecture_assets_unchanged(root: Path, instruction: dict) -> None:
+    for key, relative_path in (
+        ("abstract", ARCHITECTURE_ABSTRACT_PATH),
+        ("changelog", ARCHITECTURE_CHANGELOG_PATH),
+    ):
+        baseline = instruction.get(key)
+        if not isinstance(baseline, dict):
+            raise StateError(f"Architecture assessment is missing the {key} baseline.")
+        if architecture_asset_baseline(root, relative_path) != baseline:
+            raise StateError(f"Architecture asset changed during a no-op assessment: {relative_path}")
+
+
+def validate_architecture_action_result(
+    root: Path,
+    instruction: dict,
+    action: str,
+) -> tuple[dict, dict]:
+    abstract_before = instruction.get("abstract")
+    changelog_before = instruction.get("changelog")
+    if not isinstance(abstract_before, dict) or not isinstance(changelog_before, dict):
+        raise StateError("Architecture assessment is missing frozen asset baselines.")
+    abstract = architecture_asset_baseline(root, ARCHITECTURE_ABSTRACT_PATH)
+    changelog = architecture_asset_baseline(root, ARCHITECTURE_CHANGELOG_PATH)
+    if action == "no-op":
+        validate_architecture_assets_unchanged(root, instruction)
+    elif action == "backfill":
+        if abstract_before.get("non_empty") is True:
+            raise StateError(
+                "Architecture backfill is allowed only when ABSTRACT.md was missing or empty."
+            )
+        validate_architecture_asset_changed(abstract_before, abstract, "ABSTRACT.md")
+        validate_architecture_asset_changed(changelog_before, changelog, "CHANGELOG.md")
+    elif action == "update":
+        if abstract_before.get("non_empty") is not True:
+            raise StateError("Architecture update requires an existing ABSTRACT.md baseline.")
+        validate_architecture_asset_changed(abstract_before, abstract, "ABSTRACT.md")
+        validate_architecture_asset_changed(changelog_before, changelog, "CHANGELOG.md")
+    else:
+        raise StateError(f"Unknown architecture assessment action: {action}")
+    return abstract, changelog
+
+
+def allowed_architecture_evidence(progress: dict, instruction: dict) -> set[str]:
+    allowed_evidence = set(instruction.get("candidate_files") or [])
+    if not allowed_evidence:
+        checkpoint_file = progress.get("short_memory_file")
+        if isinstance(checkpoint_file, str):
+            allowed_evidence.add(checkpoint_file)
+    return allowed_evidence
+
+
+def record_architecture_assessment(
+    root: Path,
+    action: str,
+    reason: str,
+    evidence: list[str],
+    affected_sections: list[str],
+    agent: str,
+    task_id: str | None = None,
+    session_file: str | Path | None = None,
+) -> dict:
+    if action not in ARCHITECTURE_ACTIONS:
+        raise StateError(f"Unknown architecture assessment action: {action}")
+    session, resolved_task_id, task = resolve_current_task(root, task_id, session_file)
+    if task.get("status") != "MEMORY":
+        raise StateError("Architecture assessment is only available during MEMORY.")
+    progress = task.get("memory_progress")
+    if not isinstance(progress, dict) or progress.get("short_memory_written") is not True:
+        raise StateError("Short memory must be recorded before architecture assessment.")
+    instruction = progress.get("instruction")
+    if not isinstance(instruction, dict):
+        raise StateError("Request the authoritative memory instruction before architecture assessment.")
+    validate_recorded_short_memory(root, resolved_task_id, progress)
+    for candidate_file in instruction.get("candidate_files") or []:
+        if not resolve_short_memory_path(root, candidate_file).is_file():
+            raise StateError(
+                "Keep every frozen distillation candidate until architecture assessment succeeds: "
+                f"{candidate_file}"
+            )
+    assessment_instruction = require_architecture_instruction(instruction)
+    if assessment_instruction is None:
+        raise StateError("Legacy memory instructions do not require an architecture assessment.")
+    if assessment_instruction.get("required") is not True:
+        raise StateError("Architecture assessment is not required for this memory instruction.")
+    allowed_actions = assessment_instruction.get("allowed_actions")
+    if not isinstance(allowed_actions, list) or action not in allowed_actions:
+        raise StateError(
+            f"Architecture action {action} is not allowed for trigger "
+            f"{assessment_instruction.get('trigger')}."
+        )
+    normalized_reason = reason.strip()
+    normalized_evidence = list(dict.fromkeys(item.strip() for item in evidence if item.strip()))
+    normalized_sections = list(
+        dict.fromkeys(item.strip() for item in affected_sections if item.strip())
+    )
+    if not normalized_reason:
+        raise StateError("Architecture assessment requires a non-empty reason.")
+    if not normalized_evidence:
+        raise StateError("Architecture assessment requires at least one frozen memory evidence file.")
+    allowed_evidence = allowed_architecture_evidence(progress, instruction)
+    invalid_evidence = [item for item in normalized_evidence if item not in allowed_evidence]
+    if invalid_evidence:
+        raise StateError(
+            "Architecture assessment evidence must come from the frozen memory set: "
+            + ", ".join(invalid_evidence)
+        )
+    if action in {"backfill", "update"} and not normalized_sections:
+        raise StateError("Architecture backfill/update requires at least one affected section.")
+    if action == "no-op" and normalized_sections:
+        raise StateError("Architecture no-op must not declare affected sections.")
+
+    abstract, changelog = validate_architecture_action_result(
+        root, assessment_instruction, action
+    )
+
+    assessment = {
+        "action": action,
+        "trigger": assessment_instruction.get("trigger"),
+        "reason": normalized_reason,
+        "evidence": normalized_evidence,
+        "affected_sections": normalized_sections,
+        "abstract_sha256": abstract.get("sha256"),
+        "changelog_sha256": changelog.get("sha256"),
+        "recorded_at": now_iso(),
+        "recorded_by": agent,
+    }
+    progress["architecture_assessment"] = assessment
+    progress["updated_at"] = now_iso()
+    task["memory_progress"] = progress
+    task["last_agent"] = agent
+    write_task(root, resolved_task_id, task)
+    snapshot = snapshot_state(root, session_file, session)
+    snapshot["memory"] = instruction
+    snapshot["architecture_assessment"] = assessment
+    snapshot["action"] = "memory-architecture-assessment"
+    return snapshot
+
+
+def validate_recorded_architecture_assessment(root: Path, progress: dict, instruction: dict) -> None:
+    assessment_instruction = require_architecture_instruction(instruction)
+    if assessment_instruction is None:
+        return
+    if assessment_instruction.get("required") is not True:
+        validate_architecture_assets_unchanged(root, assessment_instruction)
+        if progress.get("architecture_assessment") is not None:
+            raise StateError("Unexpected architecture assessment for a no-op memory instruction.")
+        return
+    assessment = progress.get("architecture_assessment")
+    if not isinstance(assessment, dict):
+        raise StateError("Complete the required architecture assessment before MEMORY completion.")
+    action = assessment.get("action")
+    allowed_actions = assessment_instruction.get("allowed_actions")
+    if not isinstance(allowed_actions, list) or action not in allowed_actions:
+        raise StateError("Recorded architecture assessment has an invalid action.")
+    if assessment.get("trigger") != assessment_instruction.get("trigger"):
+        raise StateError("Recorded architecture assessment trigger does not match its instruction.")
+    reason = assessment.get("reason")
+    if not isinstance(reason, str) or not reason.strip():
+        raise StateError("Recorded architecture assessment is missing its reason.")
+    evidence = assessment.get("evidence")
+    if not isinstance(evidence, list) or not evidence or not all(
+        isinstance(item, str) for item in evidence
+    ):
+        raise StateError("Recorded architecture assessment has invalid evidence.")
+    if any(item not in allowed_architecture_evidence(progress, instruction) for item in evidence):
+        raise StateError("Recorded architecture assessment evidence is outside the frozen set.")
+    affected_sections = assessment.get("affected_sections")
+    if not isinstance(affected_sections, list) or not all(
+        isinstance(item, str) and item.strip() for item in affected_sections
+    ):
+        raise StateError("Recorded architecture assessment has invalid affected sections.")
+    if action == "no-op" and affected_sections:
+        raise StateError("Recorded architecture no-op must not declare affected sections.")
+    if action in {"backfill", "update"} and not affected_sections:
+        raise StateError("Recorded architecture backfill/update requires affected sections.")
+    abstract, changelog = validate_architecture_action_result(
+        root, assessment_instruction, action
+    )
+    if assessment.get("abstract_sha256") != abstract.get("sha256"):
+        raise StateError("ABSTRACT.md changed after the architecture assessment was recorded.")
+    if assessment.get("changelog_sha256") != changelog.get("sha256"):
+        raise StateError("Architecture CHANGELOG.md changed after the assessment was recorded.")
 
 
 def validate_distillation_file_sets(root: Path, instruction: dict) -> None:
@@ -923,7 +1221,28 @@ def normalize_legacy_task(task: dict) -> bool:
 
 def write_json(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, path)
+        try:
+            directory_descriptor = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory_descriptor)
+            finally:
+                os.close(directory_descriptor)
+        except OSError:
+            # Some platforms do not allow opening directories; file replacement is still atomic.
+            pass
+    finally:
+        if temporary_path.exists():
+            temporary_path.unlink()
 
 
 def acquire_legacy_state_lock(root: Path) -> Path | None:
@@ -1195,6 +1514,8 @@ def append_execution_record(root: Path, task_id: str, record: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
 
 
 def is_non_empty_string(value: object) -> bool:
@@ -1341,14 +1662,46 @@ def stored_spec_path(root: Path, task: dict) -> Path:
     source = task.get("spec_source")
     if not isinstance(source, dict) or not is_non_empty_string(source.get("path")):
         raise StateError("Spec-backed task is missing spec_source.path.")
-    raw_path = Path(str(source["path"]))
-    path = raw_path if raw_path.is_absolute() else root / raw_path
-    resolved = path.resolve()
-    try:
-        resolved.relative_to(root.resolve())
-    except ValueError as exc:
-        raise StateError("Spec-backed task source path must remain inside the project root.") from exc
+    path_mode = source.get("path_mode")
+    raw_path = Path(str(source["path"])).expanduser()
+    if path_mode is None:
+        path_mode = "absolute" if raw_path.is_absolute() else "project-relative"
+    if path_mode not in {"project-relative", "absolute"}:
+        raise StateError("Spec-backed task has an invalid spec_source.path_mode.")
+    if path_mode == "absolute" and not raw_path.is_absolute():
+        raise StateError("Absolute Spec binding must store an absolute path.")
+    if path_mode == "project-relative" and raw_path.is_absolute():
+        raise StateError("Project-relative Spec binding must not store an absolute path.")
+    resolved = (raw_path if path_mode == "absolute" else root / raw_path).resolve()
+    if path_mode == "project-relative":
+        try:
+            resolved.relative_to(root.resolve())
+        except ValueError as exc:
+            raise StateError("Project-relative Spec source escapes the project root.") from exc
+    if not resolved.is_file():
+        raise StateError(
+            "Canonical Spec source is unavailable; run rebind-spec-source with an explicit path."
+        )
     return resolved
+
+
+def legacy_source_digest_matches(
+    spec_path: Path, legacy_sha256: object, current_source_sha256: object
+) -> bool:
+    if not is_non_empty_string(legacy_sha256):
+        return False
+    if legacy_sha256 == current_source_sha256:
+        return True
+    try:
+        design_text, execution = split_execution_region(
+            spec_path.read_text(encoding="utf-8")
+        )
+    except (OSError, UnicodeError, ValueError):
+        return False
+    if execution is None:
+        return False
+    design_document_sha256 = hashlib.sha256(design_text.encode("utf-8")).hexdigest()
+    return legacy_sha256 == design_document_sha256
 
 
 def inspect_task_spec(root: Path, task: dict) -> tuple[dict, dict]:
@@ -1357,9 +1710,10 @@ def inspect_task_spec(root: Path, task: dict) -> tuple[dict, dict]:
     repo_paths = task.get("repo_paths")
     if not isinstance(source, dict) or not is_string_list(selected, allow_empty=False):
         raise StateError("Spec-backed task source and selected task metadata are incomplete.")
+    spec_path = stored_spec_path(root, task)
     try:
         inspection = inspect_spec(
-            stored_spec_path(root, task),
+            spec_path,
             root,
             repo_paths if isinstance(repo_paths, dict) else {},
             selected,
@@ -1375,6 +1729,10 @@ def inspect_task_spec(root: Path, task: dict) -> tuple[dict, dict]:
         selection = select_tasks(inspection, selected, satisfied)
     except EasyDevSpecError as exc:
         raise StateError(f"Canonical Spec validation failed: {exc}") from exc
+    if not isinstance(inspection.get("execution"), dict):
+        raise StateError(
+            "Canonical Spec shared execution is not initialized; run initialize-spec-execution."
+        )
     stored_dependencies = task.get("spec_dependency_evidence")
     if not isinstance(stored_dependencies, list):
         raise StateError("Spec-backed task dependency metadata is incomplete.")
@@ -1387,30 +1745,44 @@ def inspect_task_spec(root: Path, task: dict) -> tuple[dict, dict]:
         for record in stored_dependencies
         if isinstance(record, dict)
     }
-    if (
-        len(stored_by_edge) != len(stored_dependencies)
-        or set(stored_by_edge) != set(expected_by_edge)
-    ):
+    if len(stored_by_edge) != len(stored_dependencies) or set(stored_by_edge) != set(expected_by_edge):
         raise StateError("Canonical Spec dependency metadata no longer matches source selection.")
+    refreshed_dependencies: list[dict] = []
     for edge, expected in expected_by_edge.items():
         stored = stored_by_edge[edge]
-        for field in ("dependency_type", "required_evidence", "status"):
+        for field in ("dependency_type", "required_evidence"):
             if stored.get(field) != expected.get(field):
-                raise StateError(
-                    "Canonical Spec dependency metadata no longer matches source selection."
-                )
-        if stored.get("evidence") != expected.get("evidence"):
-            raise StateError(
-                "Canonical Spec dependency evidence no longer matches its recorded status."
-            )
+                raise StateError("Canonical Spec dependency metadata no longer matches source selection.")
+        refreshed = dict(stored)
+        refreshed["status"] = expected.get("status")
+        refreshed["shared_status"] = expected.get("shared_status")
+        if expected.get("evidence"):
+            refreshed["evidence"] = expected.get("evidence")
+        refreshed_dependencies.append(refreshed)
     if source.get("schema") != inspection.get("schema"):
         raise StateError("Canonical Spec schema no longer matches task.json.")
     if source.get("spec_id") != inspection.get("spec_id"):
         raise StateError("Canonical Spec ID no longer matches task.json.")
     if source.get("revision") != inspection.get("revision"):
-        raise StateError("Canonical Spec revision no longer matches task.json.")
-    if source.get("sha256") != inspection.get("source_sha256"):
-        raise StateError("Canonical Spec SHA-256 changed after task creation.")
+        raise StateError("Canonical Spec design revision changed; return the task to ANALYSIS.")
+    stored_design_sha256 = source.get("design_sha256")
+    if stored_design_sha256 is None:
+        if not legacy_source_digest_matches(
+            spec_path, source.get("sha256"), inspection.get("source_sha256")
+        ):
+            raise StateError(
+                "Legacy Canonical Spec digest changed before migration; rebind or recreate the task."
+            )
+        stored_design_sha256 = inspection.get("design_sha256")
+    if stored_design_sha256 != inspection.get("design_sha256"):
+        raise StateError("Canonical Spec static design changed; return the task to ANALYSIS.")
+    stored_execution_revision = source.get("execution_revision")
+    current_execution_revision = inspection.get("execution_revision")
+    if isinstance(stored_execution_revision, int) and isinstance(current_execution_revision, int):
+        if current_execution_revision < stored_execution_revision:
+            raise StateError(
+                "Canonical Spec execution revision moved backwards; restore the latest shared Spec."
+            )
     selected_repo_ids = set(selection["selected_repo_ids"])
     stored_bindings = task.get("spec_repositories")
     if not isinstance(stored_bindings, list):
@@ -1438,6 +1810,18 @@ def inspect_task_spec(root: Path, task: dict) -> tuple[dict, dict]:
         for field in ("repo_id", "name", "path", "baseline_commit"):
             if stored.get(field) != current.get(field):
                 raise StateError("Canonical Spec repository bindings no longer match task.json.")
+    source.update(
+        {
+            "path_mode": source.get("path_mode")
+            or ("absolute" if Path(str(source.get("path"))).is_absolute() else "project-relative"),
+            "design_sha256": inspection.get("design_sha256"),
+            "document_sha256": inspection.get("document_sha256"),
+            "execution_revision": inspection.get("execution_revision"),
+        }
+    )
+    source.pop("sha256", None)
+    task["spec_source"] = source
+    task["spec_dependency_evidence"] = refreshed_dependencies
     return inspection, selection
 
 
@@ -1696,6 +2080,8 @@ def has_valid_execution_plan(root: Path, task_id: str) -> bool:
                 return False
             if isinstance(record, dict) and record.get("type") == "plan":
                 latest_plan = record
+            elif isinstance(record, dict) and record.get("type") == "spec-design-sync":
+                latest_plan = None
     except OSError:
         return False
     task = load_task(root, task_id)
@@ -1735,6 +2121,8 @@ def latest_execution_plan(root: Path, task_id: str) -> dict | None:
     for record in execution_records(root, task_id):
         if record.get("type") == "plan":
             latest = record
+        elif record.get("type") == "spec-design-sync":
+            latest = None
     if latest is None or not is_valid_execution_plan(latest, allow_empty_files=True):
         return None
     return latest
@@ -2190,10 +2578,16 @@ def implementation_fingerprint(root: Path, task_id: str) -> str:
     digest.update(b"\0")
     if task and isinstance(task.get("spec_source"), dict):
         digest.update(b"canonical-spec\0")
+        source = task.get("spec_source") or {}
         digest.update(
             json.dumps(
                 {
-                    "source": task.get("spec_source"),
+                    "source": {
+                        "schema": source.get("schema"),
+                        "spec_id": source.get("spec_id"),
+                        "revision": source.get("revision"),
+                        "design_sha256": source.get("design_sha256"),
+                    },
                     "selected_tasks": task.get("selected_spec_tasks"),
                 },
                 ensure_ascii=False,
@@ -3509,6 +3903,7 @@ def spec_task_summary(task: dict | None) -> dict | None:
         "selected_spec_tasks": task.get("selected_spec_tasks", []),
         "repositories": task.get("spec_repositories", []),
         "pending_dependencies": pending_dependencies,
+        "writeback": task.get("spec_writeback_progress"),
     }
 
 
@@ -4222,15 +4617,6 @@ def create_task(
     return {"task_id": task_id, "task": task}
 
 
-def ensure_path_inside_root(root: Path, path: Path, label: str) -> Path:
-    resolved = path.resolve()
-    try:
-        resolved.relative_to(root.resolve())
-    except ValueError as exc:
-        raise StateError(f"{label} must be inside the Easy Coding project root.") from exc
-    return resolved
-
-
 def create_task_from_spec(
     root: Path,
     spec_path: str,
@@ -4244,12 +4630,14 @@ def create_task_from_spec(
     set_current: bool = True,
     session_file: str | Path | None = None,
 ) -> dict:
-    raw_spec_path = Path(spec_path)
-    resolved_spec_path = ensure_path_inside_root(
-        root,
-        raw_spec_path if raw_spec_path.is_absolute() else root / raw_spec_path,
-        "Canonical Spec path",
+    raw_spec_path = Path(spec_path).expanduser()
+    resolved_spec_path = (
+        raw_spec_path.resolve()
+        if raw_spec_path.is_absolute()
+        else (root / raw_spec_path).resolve()
     )
+    if not resolved_spec_path.is_file():
+        raise StateError("Canonical Spec path must be an explicitly selected UTF-8 file.")
     try:
         inspection = inspect_spec(
             resolved_spec_path,
@@ -4273,7 +4661,16 @@ def create_task_from_spec(
         str(binding["repo_id"]): str(binding["path"])
         for binding in bindings
     }
-    source_path = resolved_spec_path.relative_to(root.resolve()).as_posix()
+    if not isinstance(inspection.get("execution"), dict):
+        raise StateError(
+            "Canonical Spec shared execution is not initialized; run initialize-spec-execution first."
+        )
+    try:
+        source_path = resolved_spec_path.relative_to(root.resolve()).as_posix()
+        path_mode = "project-relative"
+    except ValueError:
+        source_path = str(resolved_spec_path)
+        path_mode = "absolute"
     fields = {
         "repos": list(selection["selected_repo_ids"]),
         "repo_paths": stored_repo_paths,
@@ -4282,11 +4679,19 @@ def create_task_from_spec(
             "spec_id": inspection["spec_id"],
             "revision": inspection["revision"],
             "path": source_path,
-            "sha256": inspection["source_sha256"],
+            "path_mode": path_mode,
+            "design_sha256": inspection["design_sha256"],
+            "document_sha256": inspection["document_sha256"],
+            "execution_revision": inspection["execution_revision"],
         },
         "selected_spec_tasks": selection["selected_task_ids"],
         "spec_repositories": bindings,
         "spec_dependency_evidence": selection["dependency_records"],
+        "spec_writeback_progress": {
+            "last_execution_revision": inspection["execution_revision"],
+            "status": "ok",
+            "updated_at": now_iso(),
+        },
     }
     return create_task(
         root,
@@ -4298,6 +4703,1214 @@ def create_task_from_spec(
         session_file,
         fields,
     )
+
+
+SPEC_WRITEBACK_APP = "easy-coding"
+
+
+def spec_writeback_agent(agent: str) -> str:
+    raw_agent = str(agent).strip()
+    if raw_agent.endswith(" with Easy Coding"):
+        return raw_agent
+    normalized = normalize_agent_identity(raw_agent)
+    display_name = {
+        "claude-code": "Claude Code",
+        "codex": "Codex",
+        "qoder": "Qoder",
+        "unknown": "Unknown Agent",
+    }.get(normalized, normalized)
+    return f"{display_name} with Easy Coding"
+
+
+def initialize_spec_execution_state(root: Path, spec_path: str) -> dict:
+    raw_path = Path(spec_path).expanduser()
+    resolved = raw_path.resolve() if raw_path.is_absolute() else (root / raw_path).resolve()
+    if not resolved.is_file():
+        raise StateError("Canonical Spec path must identify an explicit UTF-8 file.")
+    try:
+        execution = initialize_execution(resolved)
+        details = show_execution(resolved)
+    except (ExecutionStateError, ExecutionConflictError) as exc:
+        raise StateError(f"Cannot initialize Canonical Spec execution: {exc}") from exc
+    return {
+        "action": "initialize-spec-execution",
+        "spec": str(resolved),
+        "design_sha256": details["design_sha256"],
+        "document_sha256": details["document_sha256"],
+        "execution_revision": execution["execution_revision"],
+    }
+
+
+def _spec_event(execution: dict, idempotency_key: str) -> dict:
+    matches = [
+        event
+        for event in execution.get("events", [])
+        if isinstance(event, dict) and event.get("idempotency_key") == idempotency_key
+    ]
+    if len(matches) != 1:
+        raise StateError("Shared Spec writeback did not expose one matching idempotent event.")
+    return matches[0]
+
+
+def _writeback_progress(task: dict) -> dict:
+    progress = task.get("spec_writeback_progress")
+    if not isinstance(progress, dict):
+        progress = {}
+        task["spec_writeback_progress"] = progress
+    return progress
+
+
+def _is_idempotency_key_conflict(exc: ExecutionConflictError) -> bool:
+    return str(exc).startswith("幂等键已被不同事件使用")
+
+
+def _execute_spec_writeback(
+    root: Path,
+    harness_task_id: str,
+    task: dict,
+    action: dict,
+    idempotency_key: str,
+    invoke,
+) -> dict:
+    inspection, _ = inspect_task_spec(root, task)
+    source = task["spec_source"]
+    progress = _writeback_progress(task)
+    serialized_action = json.dumps(action, ensure_ascii=False, sort_keys=True)
+    existing_pending = progress.get("pending_action")
+    if isinstance(existing_pending, str) and existing_pending.strip():
+        try:
+            existing_action = json.loads(existing_pending)
+        except json.JSONDecodeError as exc:
+            raise StateError("Pending Canonical Spec writeback metadata is invalid JSON.") from exc
+        if existing_action != action:
+            raise StateError(
+                "A different Canonical Spec writeback is pending; run "
+                "reconcile-spec-execution before starting another action."
+            )
+    progress.update(
+        {
+            "last_execution_revision": source["execution_revision"],
+            "pending_action": serialized_action,
+            "status": "pending",
+            "updated_at": now_iso(),
+        }
+    )
+    write_task(root, harness_task_id, task)
+
+    def call_writer(current_inspection: dict) -> dict:
+        return invoke(
+            str(current_inspection["design_sha256"]),
+            int(current_inspection["execution_revision"]),
+        )
+
+    try:
+        execution = call_writer(inspection)
+    except ExecutionConflictError:
+        try:
+            refreshed = inspect_spec(
+                stored_spec_path(root, task),
+                root,
+                task.get("repo_paths") if isinstance(task.get("repo_paths"), dict) else {},
+                task.get("selected_spec_tasks") or [],
+            )
+        except EasyDevSpecError as exc:
+            progress["status"] = "error"
+            progress["updated_at"] = now_iso()
+            progress.pop("pending_action", None)
+            write_task(root, harness_task_id, task)
+            raise StateError(f"Cannot refresh Canonical Spec after CAS conflict: {exc}") from exc
+        if refreshed.get("design_sha256") != source.get("design_sha256"):
+            progress["status"] = "error"
+            progress["updated_at"] = now_iso()
+            progress.pop("pending_action", None)
+            write_task(root, harness_task_id, task)
+            raise StateError("Canonical Spec design changed during writeback; return to ANALYSIS.")
+        if int(refreshed.get("execution_revision", -1)) < int(source["execution_revision"]):
+            progress["status"] = "conflict"
+            progress["updated_at"] = now_iso()
+            write_task(root, harness_task_id, task)
+            raise StateError("Canonical Spec execution revision moved backwards during writeback.")
+        try:
+            execution = call_writer(refreshed)
+        except (ExecutionStateError, ExecutionConflictError) as exc:
+            terminal_conflict = isinstance(
+                exc, ExecutionConflictError
+            ) and _is_idempotency_key_conflict(exc)
+            progress["status"] = "error" if terminal_conflict else "conflict"
+            progress["updated_at"] = now_iso()
+            if terminal_conflict:
+                progress.pop("pending_action", None)
+            write_task(root, harness_task_id, task)
+            raise StateError(f"Canonical Spec CAS retry failed: {exc}") from exc
+    except ExecutionStateError as exc:
+        progress["status"] = "error"
+        progress["updated_at"] = now_iso()
+        progress.pop("pending_action", None)
+        write_task(root, harness_task_id, task)
+        raise StateError(f"Canonical Spec writeback failed: {exc}") from exc
+
+    event = _spec_event(execution, idempotency_key)
+    try:
+        details = show_execution(stored_spec_path(root, task))
+    except ExecutionStateError as exc:
+        raise StateError(f"Canonical Spec writeback cannot be verified: {exc}") from exc
+    source.update(
+        {
+            "revision": details["design_revision"],
+            "design_sha256": details["design_sha256"],
+            "document_sha256": details["document_sha256"],
+            "execution_revision": execution["execution_revision"],
+        }
+    )
+    inspect_task_spec(root, task)
+    progress.update(
+        {
+            "last_execution_revision": execution["execution_revision"],
+            "last_event_id": event["event_id"],
+            "last_idempotency_key": idempotency_key,
+            "status": "ok",
+            "updated_at": now_iso(),
+        }
+    )
+    progress.pop("pending_action", None)
+    acknowledgment = {
+        "type": "spec-writeback",
+        "action": action,
+        "event_id": event["event_id"],
+        "execution_revision": execution["execution_revision"],
+        "idempotency_key": idempotency_key,
+        "timestamp": now_iso(),
+    }
+    already_acknowledged = any(
+        record.get("type") == "spec-writeback"
+        and record.get("idempotency_key") == idempotency_key
+        for record in execution_records(root, harness_task_id)
+    )
+    if not already_acknowledged:
+        append_execution_record(root, harness_task_id, acknowledgment)
+    write_task(root, harness_task_id, task)
+    return acknowledgment
+
+
+def writeback_spec_task(
+    root: Path,
+    source_task_id: str,
+    status_value: str,
+    summary: str,
+    evidence: list[dict],
+    idempotency_key: str,
+    agent: str,
+    task_id: str | None = None,
+    session_file: str | Path | None = None,
+) -> dict:
+    session, resolved_task_id, task = resolve_current_task(root, task_id, session_file)
+    if source_task_id not in set(task.get("selected_spec_tasks") or []):
+        raise StateError("Canonical source task is outside the Harness task selection.")
+    action = {
+        "kind": "task",
+        "source_task_id": source_task_id,
+        "status": status_value,
+        "summary": summary,
+        "evidence": evidence,
+        "idempotency_key": idempotency_key,
+        "agent": agent,
+    }
+    acknowledgment = _execute_spec_writeback(
+        root,
+        resolved_task_id,
+        task,
+        action,
+        idempotency_key,
+        lambda design_digest, execution_revision: record_task_status(
+            stored_spec_path(root, task),
+            source_task_id,
+            status_value,
+            summary,
+            SPEC_WRITEBACK_APP,
+            spec_writeback_agent(agent),
+            design_digest,
+            execution_revision,
+            evidence=evidence,
+            run_id=resolved_task_id,
+            idempotency_key=idempotency_key,
+        ),
+    )
+    snapshot = snapshot_state(root, session_file, session)
+    snapshot["spec_writeback"] = acknowledgment
+    snapshot["action"] = "writeback-spec-task"
+    return snapshot
+
+
+def writeback_spec_step(
+    root: Path,
+    source_task_id: str,
+    step_id: str,
+    status_value: str,
+    summary: str,
+    evidence: list[dict],
+    idempotency_key: str,
+    agent: str,
+    task_id: str | None = None,
+    session_file: str | Path | None = None,
+) -> dict:
+    session, resolved_task_id, task = resolve_current_task(root, task_id, session_file)
+    if source_task_id not in set(task.get("selected_spec_tasks") or []):
+        raise StateError("Canonical source task is outside the Harness task selection.")
+    action = {
+        "kind": "step",
+        "source_task_id": source_task_id,
+        "step_id": step_id,
+        "status": status_value,
+        "summary": summary,
+        "evidence": evidence,
+        "idempotency_key": idempotency_key,
+        "agent": agent,
+    }
+    acknowledgment = _execute_spec_writeback(
+        root,
+        resolved_task_id,
+        task,
+        action,
+        idempotency_key,
+        lambda design_digest, execution_revision: record_step_status(
+            stored_spec_path(root, task),
+            source_task_id,
+            step_id,
+            status_value,
+            summary,
+            SPEC_WRITEBACK_APP,
+            spec_writeback_agent(agent),
+            design_digest,
+            execution_revision,
+            evidence=evidence,
+            run_id=resolved_task_id,
+            idempotency_key=idempotency_key,
+        ),
+    )
+    snapshot = snapshot_state(root, session_file, session)
+    snapshot["spec_writeback"] = acknowledgment
+    snapshot["action"] = "writeback-spec-step"
+    return snapshot
+
+
+def writeback_spec_dependency(
+    root: Path,
+    source_task_id: str,
+    dependency_task_id: str,
+    status_value: str,
+    summary: str,
+    evidence: list[dict],
+    idempotency_key: str,
+    agent: str,
+    task_id: str | None = None,
+    session_file: str | Path | None = None,
+) -> dict:
+    session, resolved_task_id, task = resolve_current_task(root, task_id, session_file)
+    if source_task_id not in set(task.get("selected_spec_tasks") or []):
+        raise StateError("Canonical source task is outside the Harness task selection.")
+    action = {
+        "kind": "dependency",
+        "source_task_id": source_task_id,
+        "dependency_task_id": dependency_task_id,
+        "status": status_value,
+        "summary": summary,
+        "evidence": evidence,
+        "idempotency_key": idempotency_key,
+        "agent": agent,
+    }
+    acknowledgment = _execute_spec_writeback(
+        root,
+        resolved_task_id,
+        task,
+        action,
+        idempotency_key,
+        lambda design_digest, execution_revision: record_dependency_status(
+            stored_spec_path(root, task),
+            source_task_id,
+            dependency_task_id,
+            status_value,
+            summary,
+            SPEC_WRITEBACK_APP,
+            spec_writeback_agent(agent),
+            design_digest,
+            execution_revision,
+            evidence=evidence,
+            run_id=resolved_task_id,
+            idempotency_key=idempotency_key,
+        ),
+    )
+    snapshot = snapshot_state(root, session_file, session)
+    snapshot["spec_writeback"] = acknowledgment
+    snapshot["action"] = "writeback-spec-dependency"
+    return snapshot
+
+
+def rebind_spec_source(
+    root: Path,
+    spec_path: str,
+    agent: str,
+    task_id: str | None = None,
+    session_file: str | Path | None = None,
+) -> dict:
+    session, resolved_task_id, task = resolve_current_task(root, task_id, session_file)
+    source = task.get("spec_source")
+    if not isinstance(source, dict):
+        raise StateError("Current task is not backed by a Canonical Spec.")
+    raw_path = Path(spec_path).expanduser()
+    resolved = raw_path.resolve() if raw_path.is_absolute() else (root / raw_path).resolve()
+    try:
+        inspection = inspect_spec(
+            resolved,
+            root,
+            task.get("repo_paths") if isinstance(task.get("repo_paths"), dict) else {},
+            task.get("selected_spec_tasks") or [],
+        )
+    except EasyDevSpecError as exc:
+        raise StateError(f"Cannot rebind Canonical Spec: {exc}") from exc
+    for field in ("schema", "spec_id", "revision", "design_sha256"):
+        expected = source.get(field)
+        if field == "design_sha256" and expected is None and source.get("sha256") == inspection.get("source_sha256"):
+            expected = inspection.get("design_sha256")
+        if expected != inspection.get(field):
+            raise StateError(f"Rebind rejected because Canonical Spec {field} does not match.")
+    previous_execution_revision = source.get("execution_revision", 0)
+    if int(inspection.get("execution_revision", -1)) < int(previous_execution_revision):
+        raise StateError("Rebind rejected because Canonical execution revision moved backwards.")
+    try:
+        source_path = resolved.relative_to(root.resolve()).as_posix()
+        path_mode = "project-relative"
+    except ValueError:
+        source_path = str(resolved)
+        path_mode = "absolute"
+    source.update({"path": source_path, "path_mode": path_mode})
+    inspect_task_spec(root, task)
+    task["last_agent"] = agent
+    write_task(root, resolved_task_id, task)
+    snapshot = snapshot_state(root, session_file, session)
+    snapshot["action"] = "rebind-spec-source"
+    return snapshot
+
+
+def reconcile_local_result_evidence(
+    root: Path,
+    resolved_task_id: str,
+    task: dict,
+    agent: str,
+    session_file: str | Path | None,
+) -> tuple[int, list[str]]:
+    plan = latest_execution_plan(root, resolved_task_id)
+    if not isinstance(plan, dict):
+        return 0, []
+    inspection, selection = inspect_task_spec(root, task)
+    snapshots = _selected_execution_snapshots(inspection, task)
+    units = {
+        str(unit.get("id")): unit
+        for unit in plan.get("units", [])
+        if isinstance(unit, dict) and is_non_empty_string(unit.get("id"))
+    }
+    records = execution_records(root, resolved_task_id)
+    last_plan_index = max(
+        (index for index, record in enumerate(records) if record.get("type") == "plan"),
+        default=-1,
+    )
+    lifecycle_by_unit: dict[str, list[tuple[int, dict]]] = {
+        unit_id: [] for unit_id in units
+    }
+    for record_index, record in enumerate(records[last_plan_index + 1 :], last_plan_index + 1):
+        unit_id = str(record.get("unit_id") or "")
+        if record.get("type") in {"dispatch", "result"} and unit_id in lifecycle_by_unit:
+            lifecycle_by_unit[unit_id].append((record_index, record))
+    latest_results = {
+        unit_id: lifecycle[-1]
+        for unit_id, lifecycle in lifecycle_by_unit.items()
+        if lifecycle and lifecycle[-1][1].get("type") == "result"
+    }
+    step_by_id = {
+        str(step.get("step_id")): step
+        for step in selection.get("selected_steps", [])
+        if isinstance(step, dict)
+    }
+    test_by_id = {
+        str(test.get("test_id")): test
+        for test in selection.get("selected_tests", [])
+        if isinstance(test, dict)
+    }
+    reconciled = 0
+    unresolved: list[str] = []
+    for unit_id, (result_index, result) in latest_results.items():
+        unit = units.get(unit_id)
+        if not unit:
+            continue
+        lifecycle = lifecycle_by_unit.get(unit_id, [])
+        if len(lifecycle) < 2 or lifecycle[-2][1].get("type") != "dispatch":
+            unresolved.append(f"{unit_id}:missing-matching-dispatch")
+            continue
+        dispatch_index, dispatch = lifecycle[-2]
+        source_task_id = str(unit.get("source_task_id") or "")
+        source_steps = [str(value) for value in unit.get("source_step_ids", [])]
+        if source_task_id not in snapshots or not source_steps:
+            continue
+        if (
+            dispatch.get("source_task_id") != source_task_id
+            or dispatch.get("repo_id") != unit.get("repo_id")
+            or result.get("source_task_id") != source_task_id
+            or result.get("repo_id") != unit.get("repo_id")
+            or not isinstance(result.get("changed_files"), list)
+            or not set(result.get("changed_files", [])).issubset(set(unit.get("files", [])))
+            or not is_non_empty_string(result.get("summary"))
+        ):
+            unresolved.append(f"{unit_id}:source-ownership-mismatch")
+            continue
+        current_status = snapshots[source_task_id].get("status")
+        if current_status != "in_progress":
+            unresolved.append(
+                f"{unit_id}:shared-task-status={current_status or 'missing'}"
+            )
+            continue
+        attempt_id, attempt_completed_steps = _shared_attempt_projection(
+            inspection, source_task_id
+        )
+        if not attempt_id:
+            unresolved.append(f"{unit_id}:missing-in-progress-attempt")
+            continue
+        attempt_ack_index = max(
+            (
+                index
+                for index, record in enumerate(records)
+                if record.get("type") == "spec-writeback"
+                and record.get("event_id") == attempt_id
+                and isinstance(record.get("action"), dict)
+                and record["action"].get("kind") == "task"
+                and record["action"].get("source_task_id") == source_task_id
+                and record["action"].get("status") == "in_progress"
+            ),
+            default=-1,
+        )
+        if attempt_ack_index < 0:
+            unresolved.append(f"{unit_id}:missing-in-progress-acknowledgment")
+            continue
+        if dispatch_index <= attempt_ack_index or result_index <= attempt_ack_index:
+            unresolved.append(f"{unit_id}:no-result-for-current-attempt")
+            continue
+        result_status = result.get("status")
+        successful = (
+            result_status == "completed"
+            and result.get("issues") == []
+            and result.get("needs_attention") == []
+        )
+        failed = result_status == "failed"
+        if not successful and not failed:
+            unresolved.append(f"{unit_id}:invalid-result-status-or-issues")
+            continue
+        if failed:
+            if len(source_steps) != 1:
+                unresolved.append(f"{unit_id}:ambiguous-failed-source-step")
+                continue
+            step_id = source_steps[0]
+            key = f"{resolved_task_id}:{unit_id}:{step_id}:{attempt_id}:result-failed"
+            writeback_spec_step(
+                root,
+                source_task_id,
+                step_id,
+                "failed",
+                str(result.get("summary") or f"Unit {unit_id} failed"),
+                [
+                    {
+                        "kind": "result",
+                        "status": "failed",
+                        "ref": f"execution.jsonl#unit={unit_id}",
+                    }
+                ],
+                key,
+                agent,
+                resolved_task_id,
+                session_file,
+            )
+            reconciled += 1
+            unresolved.extend(
+                f"{unit_id}:{remaining_step}:blocked-after-unit-failure"
+                for remaining_step in source_steps[1:]
+            )
+            task = load_task(root, resolved_task_id) or task
+            inspection, selection = inspect_task_spec(root, task)
+            snapshots = _selected_execution_snapshots(inspection, task)
+            continue
+        passed_commands = {
+            str(check.get("command"))
+            for check in result.get("checks", [])
+            if isinstance(check, dict)
+            and check.get("passed") is True
+            and is_non_empty_string(check.get("command"))
+        }
+        missing_unit_commands = sorted(set(unit.get("test_commands", [])) - passed_commands)
+        if missing_unit_commands:
+            unresolved.append(
+                f"{unit_id}:missing-passed-command=" + ",".join(missing_unit_commands)
+            )
+            continue
+        pending_steps = list(dict.fromkeys(source_steps))
+        while pending_steps:
+            ready_step_id = next(
+                (
+                    step_id
+                    for step_id in pending_steps
+                    if step_id in attempt_completed_steps
+                    or set((step_by_id.get(step_id) or {}).get("depends_on_step_ids", []))
+                    .issubset(attempt_completed_steps)
+                ),
+                None,
+            )
+            if ready_step_id is None:
+                unresolved.extend(
+                    f"{unit_id}:{step_id}:dependency-pending" for step_id in pending_steps
+                )
+                break
+            step_id = ready_step_id
+            pending_steps.remove(step_id)
+            if step_id in attempt_completed_steps:
+                continue
+            step = step_by_id.get(step_id)
+            if not step:
+                unresolved.append(f"{unit_id}:{step_id}:missing-step")
+                continue
+            tests = [test_by_id.get(str(test_id)) for test_id in step.get("test_ids", [])]
+            if any(not isinstance(test, dict) for test in tests):
+                unresolved.append(f"{unit_id}:{step_id}:missing-test")
+                continue
+            missing_commands = [
+                str(test.get("command"))
+                for test in tests
+                if str(test.get("command")) not in passed_commands
+            ]
+            if missing_commands:
+                unresolved.append(
+                    f"{unit_id}:{step_id}:missing-passed-command=" + ",".join(missing_commands)
+                )
+                continue
+            evidence = [
+                {
+                    "kind": "test",
+                    "status": "passed",
+                    "ref": f"execution.jsonl#unit={unit_id};command={test.get('command')}",
+                    "test_id": str(test.get("test_id")),
+                }
+                for test in tests
+            ]
+            key = f"{resolved_task_id}:{unit_id}:{step_id}:{attempt_id}:result-completed"
+            writeback_spec_step(
+                root,
+                source_task_id,
+                step_id,
+                "completed",
+                str(result.get("summary") or f"Unit {unit_id} completed"),
+                evidence,
+                key,
+                agent,
+                resolved_task_id,
+                session_file,
+            )
+            reconciled += 1
+            task = load_task(root, resolved_task_id) or task
+            inspection, selection = inspect_task_spec(root, task)
+            snapshots = _selected_execution_snapshots(inspection, task)
+            _, attempt_completed_steps = _shared_attempt_projection(
+                inspection, source_task_id
+            )
+    task = load_task(root, resolved_task_id) or task
+    inspection, _ = inspect_task_spec(root, task)
+    snapshots = _selected_execution_snapshots(inspection, task)
+    selected_tasks = {
+        str(item.get("task_id")): item
+        for item in selection.get("selected_tasks", [])
+        if isinstance(item, dict)
+    }
+    for source_task_id, snapshot in snapshots.items():
+        if snapshot.get("status") != "in_progress":
+            continue
+        expected_steps = set(selected_tasks.get(source_task_id, {}).get("step_ids", []))
+        attempt_id, attempt_completed_steps = _shared_attempt_projection(
+            inspection, source_task_id
+        )
+        if attempt_id and expected_steps and attempt_completed_steps == expected_steps:
+            key = (
+                f"{resolved_task_id}:{source_task_id}:{attempt_id}:"
+                "implemented-from-results"
+            )
+            writeback_spec_task(
+                root,
+                source_task_id,
+                "implemented",
+                "All Canonical Steps have passed local implementation evidence",
+                [],
+                key,
+                agent,
+                resolved_task_id,
+                session_file,
+            )
+            reconciled += 1
+    return reconciled, unresolved
+
+
+def reconcile_spec_execution(
+    root: Path,
+    agent: str,
+    task_id: str | None = None,
+    session_file: str | Path | None = None,
+) -> dict:
+    session, resolved_task_id, task = resolve_current_task(root, task_id, session_file)
+    progress = _writeback_progress(task)
+    pending = progress.get("pending_action")
+    if not isinstance(pending, str) or not pending.strip():
+        reconciled, unresolved = reconcile_local_result_evidence(
+            root,
+            resolved_task_id,
+            task,
+            agent,
+            session_file,
+        )
+        task = load_task(root, resolved_task_id) or task
+        inspect_task_spec(root, task)
+        progress.update(
+            {
+                "last_execution_revision": task["spec_source"]["execution_revision"],
+                "status": "ok",
+                "updated_at": now_iso(),
+            }
+        )
+        write_task(root, resolved_task_id, task)
+        snapshot = snapshot_state(root, session_file, session)
+        snapshot["action"] = "reconcile-spec-execution"
+        snapshot["reconciled"] = reconciled > 0
+        snapshot["reconciled_actions"] = reconciled
+        snapshot["unresolved_local_evidence"] = unresolved
+        return snapshot
+    try:
+        action = json.loads(pending)
+    except json.JSONDecodeError as exc:
+        raise StateError("Pending Canonical Spec writeback metadata is invalid JSON.") from exc
+    kind = action.get("kind")
+    if kind == "sync-design":
+        affected_task_ids = action.get("affected_task_ids")
+        if not is_string_list(affected_task_ids):
+            raise StateError("Pending Canonical Spec design sync has invalid affected tasks.")
+        result = sync_spec_design_state(
+            root,
+            affected_task_ids,
+            str(action.get("summary") or "Reconciled Canonical Spec design sync"),
+            str(action.get("idempotency_key") or ""),
+            str(action.get("agent") or agent),
+            resolved_task_id,
+            session_file,
+        )
+        result["action"] = "reconcile-spec-execution"
+        result["reconciled"] = True
+        return result
+    try:
+        design_text, _ = split_execution_region(
+            stored_spec_path(root, task).read_text(encoding="utf-8")
+        )
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise StateError(f"Cannot inspect pending Canonical Spec writeback: {exc}") from exc
+    current_design_sha256 = hashlib.sha256(design_text.encode("utf-8")).hexdigest()
+    source = task.get("spec_source")
+    if not isinstance(source, dict):
+        raise StateError("Current task is not backed by a Canonical Spec.")
+    if current_design_sha256 != source.get("design_sha256"):
+        # 旧设计上的进度事件不能重放到新设计；清除单槽 pending，允许后续 sync-design。
+        progress["status"] = "error"
+        progress["updated_at"] = now_iso()
+        progress.pop("pending_action", None)
+        write_task(root, resolved_task_id, task)
+        raise StateError(
+            "Pending Canonical Spec writeback belongs to an obsolete design and was "
+            "discarded; return to ANALYSIS and run sync-spec-design."
+        )
+    common = {
+        "root": root,
+        "summary": str(action.get("summary") or "Reconciled shared Spec writeback"),
+        "evidence": action.get("evidence") if isinstance(action.get("evidence"), list) else [],
+        "idempotency_key": str(action.get("idempotency_key") or ""),
+        "agent": str(action.get("agent") or agent),
+        "task_id": resolved_task_id,
+        "session_file": session_file,
+    }
+    if not common["idempotency_key"]:
+        raise StateError("Pending Canonical Spec writeback has no idempotency key.")
+    if kind == "task":
+        result = writeback_spec_task(
+            source_task_id=str(action.get("source_task_id") or ""),
+            status_value=str(action.get("status") or ""),
+            **common,
+        )
+    elif kind == "step":
+        result = writeback_spec_step(
+            source_task_id=str(action.get("source_task_id") or ""),
+            step_id=str(action.get("step_id") or ""),
+            status_value=str(action.get("status") or ""),
+            **common,
+        )
+    elif kind == "dependency":
+        result = writeback_spec_dependency(
+            source_task_id=str(action.get("source_task_id") or ""),
+            dependency_task_id=str(action.get("dependency_task_id") or ""),
+            status_value=str(action.get("status") or ""),
+            **common,
+        )
+    else:
+        raise StateError("Pending Canonical Spec writeback kind is unsupported.")
+    result["action"] = "reconcile-spec-execution"
+    result["reconciled"] = True
+    return result
+
+
+def sync_spec_design_state(
+    root: Path,
+    affected_task_ids: list[str],
+    summary: str,
+    idempotency_key: str,
+    agent: str,
+    task_id: str | None = None,
+    session_file: str | Path | None = None,
+) -> dict:
+    session, resolved_task_id, task = resolve_current_task(root, task_id, session_file)
+    source = task.get("spec_source")
+    if not isinstance(source, dict):
+        raise StateError("Current task is not backed by a Canonical Spec.")
+    spec_path = stored_spec_path(root, task)
+    requested_task_ids = sorted(set(affected_task_ids))
+
+    def current_execution_envelope() -> dict:
+        try:
+            from easy_dev_spec_protocol import split_execution_region
+
+            _, execution = split_execution_region(spec_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, ValueError) as exc:
+            raise StateError(f"Cannot inspect pre-sync Canonical execution state: {exc}") from exc
+        if not isinstance(execution, dict):
+            raise StateError("Canonical Spec shared execution is missing before sync-design.")
+        if execution.get("design_sha256") != source.get("design_sha256"):
+            matching_events = [
+                event
+                for event in execution.get("events", [])
+                if isinstance(event, dict)
+                and event.get("type") == "spec_revised"
+                and event.get("idempotency_key") == idempotency_key
+                and event.get("requested_task_ids") == requested_task_ids
+                and event.get("run_id") == resolved_task_id
+            ]
+            if len(matching_events) != 1:
+                raise StateError(
+                    "Canonical Spec execution baseline no longer matches the bound design."
+                )
+        return execution
+
+    current_revision = int(current_execution_envelope().get("execution_revision", -1))
+    progress = _writeback_progress(task)
+    pending_action = {
+        "kind": "sync-design",
+        "affected_task_ids": requested_task_ids,
+        "summary": summary,
+        "idempotency_key": idempotency_key,
+        "agent": agent,
+    }
+    serialized_pending_action = json.dumps(
+        pending_action, ensure_ascii=False, sort_keys=True
+    )
+    existing_pending = progress.get("pending_action")
+    if isinstance(existing_pending, str) and existing_pending.strip():
+        try:
+            existing_action = json.loads(existing_pending)
+        except json.JSONDecodeError as exc:
+            raise StateError("Pending Canonical Spec writeback metadata is invalid JSON.") from exc
+        if existing_action != pending_action:
+            raise StateError(
+                "A different Canonical Spec writeback is pending; run "
+                "reconcile-spec-execution before sync-design."
+            )
+    progress.update(
+        {
+            "last_execution_revision": current_revision,
+            "pending_action": serialized_pending_action,
+            "status": "pending",
+            "updated_at": now_iso(),
+        }
+    )
+    write_task(root, resolved_task_id, task)
+
+    def invoke_sync(execution_revision: int) -> dict:
+        return sync_design(
+            spec_path,
+            requested_task_ids,
+            summary,
+            SPEC_WRITEBACK_APP,
+            spec_writeback_agent(agent),
+            str(source.get("design_sha256")),
+            execution_revision,
+            run_id=resolved_task_id,
+            idempotency_key=idempotency_key,
+        )
+
+    try:
+        execution = invoke_sync(current_revision)
+    except ExecutionConflictError:
+        try:
+            execution = invoke_sync(
+                int(current_execution_envelope().get("execution_revision", -1))
+            )
+        except ExecutionStateError as exc:
+            progress["status"] = "error"
+            progress["updated_at"] = now_iso()
+            progress.pop("pending_action", None)
+            write_task(root, resolved_task_id, task)
+            raise StateError(f"Cannot synchronize Canonical Spec design: {exc}") from exc
+        except ExecutionConflictError as exc:
+            terminal_conflict = _is_idempotency_key_conflict(exc)
+            progress["status"] = "error" if terminal_conflict else "conflict"
+            progress["updated_at"] = now_iso()
+            if terminal_conflict:
+                progress.pop("pending_action", None)
+            write_task(root, resolved_task_id, task)
+            raise StateError(f"Cannot synchronize Canonical Spec design after CAS retry: {exc}") from exc
+    except ExecutionStateError as exc:
+        progress["status"] = "error"
+        progress["updated_at"] = now_iso()
+        progress.pop("pending_action", None)
+        write_task(root, resolved_task_id, task)
+        raise StateError(f"Cannot synchronize Canonical Spec design: {exc}") from exc
+    try:
+        details = show_execution(spec_path)
+        inspection = inspect_spec(
+            spec_path,
+            root,
+            task.get("repo_paths") if isinstance(task.get("repo_paths"), dict) else {},
+            task.get("selected_spec_tasks") or [],
+        )
+    except (ExecutionStateError, EasyDevSpecError) as exc:
+        raise StateError(f"Cannot synchronize Canonical Spec design: {exc}") from exc
+    if inspection.get("spec_id") != source.get("spec_id"):
+        raise StateError("Synchronized Canonical Spec identity changed unexpectedly.")
+    binding_was_synchronized = (
+        source.get("revision") == inspection.get("revision")
+        and source.get("design_sha256") == inspection.get("design_sha256")
+    )
+    source.update(
+        {
+            "revision": inspection["revision"],
+            "design_sha256": inspection["design_sha256"],
+            "document_sha256": inspection["document_sha256"],
+            "execution_revision": execution["execution_revision"],
+        }
+    )
+    event = _spec_event(execution, idempotency_key)
+    if not binding_was_synchronized:
+        reset_task_ids = set(event.get("task_ids", []))
+        refreshed_dependencies: list[dict] = []
+        for dependency in task.get("spec_dependency_evidence", []):
+            if not isinstance(dependency, dict):
+                continue
+            refreshed = dict(dependency)
+            if refreshed.get("source_task_id") in reset_task_ids:
+                refreshed["status"] = "pending"
+                refreshed["shared_status"] = "pending"
+                for field in ("evidence", "satisfied_at", "satisfied_by"):
+                    refreshed.pop(field, None)
+            refreshed_dependencies.append(refreshed)
+        task["spec_dependency_evidence"] = refreshed_dependencies
+        inspect_task_spec(root, task)
+    progress.update(
+        {
+            "last_execution_revision": execution["execution_revision"],
+            "last_event_id": event["event_id"],
+            "last_idempotency_key": idempotency_key,
+            "status": "ok",
+            "updated_at": now_iso(),
+        }
+    )
+    progress.pop("pending_action", None)
+    if task.get("status") not in {"INIT", "ANALYSIS"}:
+        task["status"] = "ANALYSIS"
+        append_stage_history(task, "ANALYSIS", agent)
+    task.pop("pending_transition", None)
+    task["last_agent"] = agent
+    already_acknowledged = any(
+        record.get("type") == "spec-design-sync"
+        and record.get("idempotency_key") == idempotency_key
+        for record in execution_records(root, resolved_task_id)
+    )
+    if not already_acknowledged:
+        append_execution_record(
+            root,
+            resolved_task_id,
+            {
+                "type": "spec-design-sync",
+                "affected_task_ids": requested_task_ids,
+                "event_id": event["event_id"],
+                "design_sha256": details["design_sha256"],
+                "execution_revision": execution["execution_revision"],
+                "idempotency_key": idempotency_key,
+                "timestamp": now_iso(),
+            },
+        )
+    write_task(root, resolved_task_id, task)
+    snapshot = snapshot_state(root, session_file, session)
+    snapshot["action"] = "sync-spec-design"
+    return snapshot
+
+
+def _selected_execution_snapshots(inspection: dict, task: dict) -> dict[str, dict]:
+    selected = set(task.get("selected_spec_tasks") or [])
+    execution = inspection.get("execution")
+    if not isinstance(execution, dict):
+        raise StateError("Canonical Spec shared execution is unavailable.")
+    return {
+        str(snapshot.get("task_id")): snapshot
+        for snapshot in execution.get("tasks", [])
+        if isinstance(snapshot, dict) and snapshot.get("task_id") in selected
+    }
+
+
+def _shared_attempt_projection(
+    inspection: dict, source_task_id: str
+) -> tuple[str | None, set[str]]:
+    execution = inspection.get("execution")
+    if not isinstance(execution, dict):
+        return None, set()
+    events = [event for event in execution.get("events", []) if isinstance(event, dict)]
+    start_index = next(
+        (
+            index
+            for index in range(len(events) - 1, -1, -1)
+            if events[index].get("type") == "task_status_changed"
+            and events[index].get("task_id") == source_task_id
+            and events[index].get("to_status") == "in_progress"
+        ),
+        None,
+    )
+    if start_index is None:
+        return None, set()
+    start_event = events[start_index]
+    completed_steps: set[str] = set()
+    for event in events[start_index + 1 :]:
+        if event.get("type") != "step_status_changed" or event.get("task_id") != source_task_id:
+            continue
+        step_id = str(event.get("step_id") or "")
+        if not step_id:
+            continue
+        if event.get("step_status") == "completed":
+            completed_steps.add(step_id)
+        elif event.get("step_status") == "failed":
+            completed_steps.discard(step_id)
+    return str(start_event.get("event_id") or "") or None, completed_steps
+
+
+def _snapshot_dependencies_ready(snapshot: dict, all_snapshots: dict[str, dict]) -> bool:
+    for dependency in snapshot.get("dependencies", []):
+        if not isinstance(dependency, dict) or dependency.get("type") not in {"hard", "contract"}:
+            continue
+        if dependency.get("status") == "satisfied":
+            continue
+        if dependency.get("type") == "hard" and all_snapshots.get(
+            str(dependency.get("task_id")), {}
+        ).get("status") == "completed":
+            continue
+        return False
+    return True
+
+
+def writeback_ready_tasks_for_implement(
+    root: Path,
+    harness_task_id: str,
+    task: dict,
+    agent: str,
+    restart_statuses: set[str] | None = None,
+) -> None:
+    inspection, _ = inspect_task_spec(root, task)
+    implement_attempt = 1 + sum(
+        1
+        for entry in task.get("stage_history", [])
+        if isinstance(entry, dict) and entry.get("stage") == "IMPLEMENT"
+    )
+    all_snapshots = {
+        str(snapshot.get("task_id")): snapshot
+        for snapshot in inspection["execution"].get("tasks", [])
+        if isinstance(snapshot, dict)
+    }
+    selected_snapshots = _selected_execution_snapshots(inspection, task)
+    for source_task_id in task.get("selected_spec_tasks") or []:
+        snapshot = selected_snapshots.get(str(source_task_id))
+        if not snapshot or snapshot.get("status") == "in_progress":
+            continue
+        if restart_statuses is not None and snapshot.get("status") not in restart_statuses:
+            continue
+        if not _snapshot_dependencies_ready(snapshot, all_snapshots):
+            continue
+        key = (
+            f"{harness_task_id}:{source_task_id}:enter-implement:"
+            f"{task['spec_source']['revision']}:attempt-{implement_attempt}"
+        )
+        action = {
+            "kind": "task",
+            "source_task_id": source_task_id,
+            "status": "in_progress",
+            "summary": "Harness entered IMPLEMENT for a dependency-ready Canonical task",
+            "evidence": [],
+            "idempotency_key": key,
+            "agent": agent,
+        }
+        _execute_spec_writeback(
+            root,
+            harness_task_id,
+            task,
+            action,
+            key,
+            lambda design_digest, execution_revision, source_task_id=source_task_id: record_task_status(
+                stored_spec_path(root, task),
+                str(source_task_id),
+                "in_progress",
+                "Harness entered IMPLEMENT for a dependency-ready Canonical task",
+                SPEC_WRITEBACK_APP,
+                spec_writeback_agent(agent),
+                design_digest,
+                execution_revision,
+                run_id=harness_task_id,
+                idempotency_key=key,
+            ),
+        )
+
+
+def require_shared_task_statuses(root: Path, task: dict, allowed: set[str]) -> None:
+    inspection, _ = inspect_task_spec(root, task)
+    snapshots = _selected_execution_snapshots(inspection, task)
+    invalid = [
+        f"{task_id}:{snapshots.get(str(task_id), {}).get('status', 'missing')}"
+        for task_id in task.get("selected_spec_tasks") or []
+        if snapshots.get(str(task_id), {}).get("status") not in allowed
+    ]
+    if invalid:
+        raise StateError(
+            "Canonical Spec writeback is incomplete for selected tasks: " + ", ".join(invalid)
+        )
+
+
+def writeback_completed_tasks(
+    root: Path,
+    harness_task_id: str,
+    task: dict,
+    agent: str,
+) -> None:
+    inspection, _ = inspect_task_spec(root, task)
+    snapshots = _selected_execution_snapshots(inspection, task)
+    for source_task_id in task.get("selected_spec_tasks") or []:
+        status_value = snapshots.get(str(source_task_id), {}).get("status")
+        if status_value == "completed":
+            continue
+        if status_value != "verified":
+            raise StateError(
+                f"Canonical task {source_task_id} must be verified before Harness COMPLETE."
+            )
+        key = f"{harness_task_id}:{source_task_id}:complete:{task['spec_source']['revision']}"
+        action = {
+            "kind": "task",
+            "source_task_id": source_task_id,
+            "status": "completed",
+            "summary": "Harness MEMORY completed and the Canonical task is complete",
+            "evidence": [],
+            "idempotency_key": key,
+            "agent": agent,
+        }
+        _execute_spec_writeback(
+            root,
+            harness_task_id,
+            task,
+            action,
+            key,
+            lambda design_digest, execution_revision, source_task_id=source_task_id: record_task_status(
+                stored_spec_path(root, task),
+                str(source_task_id),
+                "completed",
+                "Harness MEMORY completed and the Canonical task is complete",
+                SPEC_WRITEBACK_APP,
+                spec_writeback_agent(agent),
+                design_digest,
+                execution_revision,
+                run_id=harness_task_id,
+                idempotency_key=key,
+            ),
+        )
+
+
+def cancel_shared_tasks(
+    root: Path,
+    harness_task_id: str,
+    task: dict,
+    reason: str,
+    agent: str,
+) -> None:
+    inspection, _ = inspect_task_spec(root, task)
+    snapshots = _selected_execution_snapshots(inspection, task)
+    for source_task_id in task.get("selected_spec_tasks") or []:
+        current = snapshots.get(str(source_task_id), {}).get("status")
+        if current in {"completed", "cancelled"}:
+            continue
+        if current in {"implemented", "verified"}:
+            blocked_key = f"{harness_task_id}:{source_task_id}:close-blocked"
+            blocked_action = {
+                "kind": "task",
+                "source_task_id": source_task_id,
+                "status": "blocked",
+                "summary": reason,
+                "evidence": [],
+                "idempotency_key": blocked_key,
+                "agent": agent,
+            }
+            _execute_spec_writeback(
+                root,
+                harness_task_id,
+                task,
+                blocked_action,
+                blocked_key,
+                lambda design_digest, execution_revision, source_task_id=source_task_id: record_task_status(
+                    stored_spec_path(root, task),
+                    str(source_task_id),
+                    "blocked",
+                    reason,
+                    SPEC_WRITEBACK_APP,
+                    spec_writeback_agent(agent),
+                    design_digest,
+                    execution_revision,
+                    run_id=harness_task_id,
+                    idempotency_key=blocked_key,
+                ),
+            )
+        cancel_key = f"{harness_task_id}:{source_task_id}:cancel"
+        cancel_action = {
+            "kind": "task",
+            "source_task_id": source_task_id,
+            "status": "cancelled",
+            "summary": reason,
+            "evidence": [],
+            "idempotency_key": cancel_key,
+            "agent": agent,
+        }
+        _execute_spec_writeback(
+            root,
+            harness_task_id,
+            task,
+            cancel_action,
+            cancel_key,
+            lambda design_digest, execution_revision, source_task_id=source_task_id: record_task_status(
+                stored_spec_path(root, task),
+                str(source_task_id),
+                "cancelled",
+                reason,
+                SPEC_WRITEBACK_APP,
+                spec_writeback_agent(agent),
+                design_digest,
+                execution_revision,
+                run_id=harness_task_id,
+                idempotency_key=cancel_key,
+            ),
+        )
 
 
 def satisfy_spec_dependency(
@@ -4339,7 +5952,42 @@ def satisfy_spec_dependency(
     record["satisfied_at"] = now_iso()
     record["satisfied_by"] = agent
     task["last_agent"] = agent
-    write_task(root, resolved_task_id, task)
+    evidence_digest = hashlib.sha256(evidence.strip().encode("utf-8")).hexdigest()[:16]
+    idempotency_key = (
+        f"{resolved_task_id}:{record.get('source_task_id')}:{dependency_task_id}:"
+        f"dependency-satisfied:revision-{task['spec_source']['revision']}:{evidence_digest}"
+    )
+    action = {
+        "kind": "dependency",
+        "source_task_id": str(record.get("source_task_id")),
+        "dependency_task_id": dependency_task_id,
+        "status": "satisfied",
+        "summary": evidence.strip(),
+        "evidence": [{"kind": "dependency", "status": "passed", "ref": evidence.strip()}],
+        "idempotency_key": idempotency_key,
+        "agent": agent,
+    }
+    _execute_spec_writeback(
+        root,
+        resolved_task_id,
+        task,
+        action,
+        idempotency_key,
+        lambda design_digest, execution_revision: record_dependency_status(
+            stored_spec_path(root, task),
+            str(record.get("source_task_id")),
+            dependency_task_id,
+            "satisfied",
+            evidence.strip(),
+            SPEC_WRITEBACK_APP,
+            spec_writeback_agent(agent),
+            design_digest,
+            execution_revision,
+            evidence=[{"kind": "dependency", "status": "passed", "ref": evidence.strip()}],
+            run_id=resolved_task_id,
+            idempotency_key=idempotency_key,
+        ),
+    )
     snapshot = snapshot_state(root, session_file, session)
     snapshot["action"] = "satisfy-spec-dependency"
     return snapshot
@@ -4680,14 +6328,27 @@ def apply_transition(
         if task.get("workflow_mode_legacy") is not True:
             freeze_workflow_mode(root, session, resolved_task_id, task, agent)
         freeze_tdd_mode(root, session, resolved_task_id, task, agent)
+    if stage == "IMPLEMENT" and previous != "IMPLEMENT":
+        if isinstance(task.get("spec_source"), dict):
+            writeback_ready_tasks_for_implement(
+                root,
+                resolved_task_id,
+                task,
+                agent,
+                {"blocked"} if previous in {"REVIEW", "VERIFICATION"} else None,
+            )
     if previous == "REVIEW" and stage == "VERIFICATION":
         validate_review_readiness(root, resolved_task_id, task)
     if previous == "VERIFICATION" and stage == "MEMORY":
         validate_verification_readiness(root, resolved_task_id, task)
+        if isinstance(task.get("spec_source"), dict):
+            require_shared_task_statuses(root, task, {"verified", "completed"})
     if previous == "MEMORY" and stage == "COMPLETE":
         progress = task.get("memory_progress")
         if not isinstance(progress, dict) or progress.get("completed") is not True:
             raise StateError("MEMORY cannot advance to COMPLETE before memory processing completes.")
+        if isinstance(task.get("spec_source"), dict):
+            writeback_completed_tasks(root, resolved_task_id, task, agent)
     if (previous, stage) == READ_ONLY_COMPLETION_TRANSITION:
         validate_read_only_completion(root, resolved_task_id)
     if previous != stage:
@@ -4914,6 +6575,7 @@ def memory_complete(
             action == "distill" and instruction.get("checkpoint_disposition") == "candidate"
         ),
     )
+    validate_recorded_architecture_assessment(root, progress, instruction)
     if action == "distill":
         validate_distillation_file_sets(root, instruction)
     progress["long_memory_action"] = action
@@ -4941,6 +6603,8 @@ def close_current_task(
     task = load_task(root, str(task_id))
     if task is None:
         raise StateError(f"Task not found: {task_id}")
+    if isinstance(task.get("spec_source"), dict) and task.get("status") not in TERMINAL_STATUSES:
+        cancel_shared_tasks(root, str(task_id), task, reason, agent)
     if task.get("status") != "CLOSED":
         task["status"] = "CLOSED"
         append_stage_history(task, "CLOSED", agent)
@@ -5042,6 +6706,19 @@ def parse_mapping_args(values: list[str], label: str) -> dict[str, str]:
     return mappings
 
 
+def parse_evidence_args(values: list[str]) -> list[dict]:
+    evidence: list[dict] = []
+    for value in values:
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise StateError(f"--evidence must be a JSON object: {exc}") from exc
+        if not isinstance(parsed, dict):
+            raise StateError("--evidence must be a JSON object.")
+        evidence.append(parsed)
+    return evidence
+
+
 def main() -> int:
     configure_stdio()
     common = argparse.ArgumentParser(add_help=False)
@@ -5058,6 +6735,9 @@ def main() -> int:
     inspect_spec_parser = subcommands.add_parser("inspect-dev-spec", parents=[common])
     inspect_spec_parser.add_argument("--spec", required=True)
     inspect_spec_parser.add_argument("--repo-path", action="append", default=[])
+
+    initialize_spec = subcommands.add_parser("initialize-spec-execution", parents=[common])
+    initialize_spec.add_argument("--spec", required=True)
 
     select_spec_scope = subcommands.add_parser("select-dev-spec-scope", parents=[common])
     select_spec_scope.add_argument("--spec", required=True)
@@ -5080,6 +6760,66 @@ def main() -> int:
     create_from_spec.add_argument("--dependency-evidence", action="append", default=[])
     create_from_spec.add_argument("--agent", required=True)
     create_from_spec.add_argument("--no-set-current", action="store_true")
+
+    rebind_spec = subcommands.add_parser("rebind-spec-source", parents=[common])
+    rebind_spec.add_argument("--spec", required=True)
+    rebind_spec.add_argument("--agent", required=True)
+    rebind_spec.add_argument("--task-id")
+
+    writeback_task = subcommands.add_parser("writeback-spec-task", parents=[common])
+    writeback_task.add_argument("--spec-task", required=True)
+    writeback_task.add_argument(
+        "--status",
+        required=True,
+        choices=[
+            "in_progress",
+            "blocked",
+            "implemented",
+            "verified",
+            "completed",
+            "cancelled",
+        ],
+    )
+    writeback_task.add_argument("--summary", required=True)
+    writeback_task.add_argument("--evidence", action="append", default=[])
+    writeback_task.add_argument("--idempotency-key", required=True)
+    writeback_task.add_argument("--agent", required=True)
+    writeback_task.add_argument("--task-id")
+
+    writeback_step = subcommands.add_parser("writeback-spec-step", parents=[common])
+    writeback_step.add_argument("--spec-task", required=True)
+    writeback_step.add_argument("--step", required=True)
+    writeback_step.add_argument("--status", required=True, choices=["completed", "failed"])
+    writeback_step.add_argument("--summary", required=True)
+    writeback_step.add_argument("--evidence", action="append", default=[])
+    writeback_step.add_argument("--idempotency-key", required=True)
+    writeback_step.add_argument("--agent", required=True)
+    writeback_step.add_argument("--task-id")
+
+    writeback_dependency = subcommands.add_parser(
+        "writeback-spec-dependency", parents=[common]
+    )
+    writeback_dependency.add_argument("--source-task", required=True)
+    writeback_dependency.add_argument("--dependency-task", required=True)
+    writeback_dependency.add_argument(
+        "--status", required=True, choices=["pending", "satisfied"]
+    )
+    writeback_dependency.add_argument("--summary", required=True)
+    writeback_dependency.add_argument("--evidence", action="append", default=[])
+    writeback_dependency.add_argument("--idempotency-key", required=True)
+    writeback_dependency.add_argument("--agent", required=True)
+    writeback_dependency.add_argument("--task-id")
+
+    sync_spec = subcommands.add_parser("sync-spec-design", parents=[common])
+    sync_spec.add_argument("--affected-task", action="append", default=[])
+    sync_spec.add_argument("--summary", required=True)
+    sync_spec.add_argument("--idempotency-key", required=True)
+    sync_spec.add_argument("--agent", required=True)
+    sync_spec.add_argument("--task-id")
+
+    reconcile_spec = subcommands.add_parser("reconcile-spec-execution", parents=[common])
+    reconcile_spec.add_argument("--agent", required=True)
+    reconcile_spec.add_argument("--task-id")
 
     set_current = subcommands.add_parser("set-current", parents=[common])
     set_current.add_argument("--task-id", required=True)
@@ -5210,6 +6950,18 @@ def main() -> int:
     memory_instruction_parser.add_argument("--agent")
     memory_instruction_parser.add_argument("--task-id")
 
+    memory_architecture_parser = subcommands.add_parser(
+        "memory-architecture-assessment", parents=[common]
+    )
+    memory_architecture_parser.add_argument(
+        "--action", required=True, choices=sorted(ARCHITECTURE_ACTIONS)
+    )
+    memory_architecture_parser.add_argument("--reason", required=True)
+    memory_architecture_parser.add_argument("--evidence", action="append", default=[])
+    memory_architecture_parser.add_argument("--affected-section", action="append", default=[])
+    memory_architecture_parser.add_argument("--agent", required=True)
+    memory_architecture_parser.add_argument("--task-id")
+
     memory_complete_parser = subcommands.add_parser("memory-complete", parents=[common])
     memory_complete_parser.add_argument("--action", required=True, choices=["no-op", "distill"])
     memory_complete_parser.add_argument("--agent", required=True)
@@ -5251,6 +7003,7 @@ def main() -> int:
             )
         if session_file is None and command not in {
             "inspect-dev-spec",
+            "initialize-spec-execution",
             "select-dev-spec-scope",
             "list-tasks",
             "memory-new-id",
@@ -5263,7 +7016,7 @@ def main() -> int:
         if command == "snapshot":
             emit(snapshot_state(root, session_file))
         elif command == "inspect-dev-spec":
-            spec_path = Path(args.spec)
+            spec_path = Path(args.spec).expanduser()
             emit(
                 inspection_summary(
                     inspect_spec(
@@ -5273,8 +7026,10 @@ def main() -> int:
                     )
                 )
             )
+        elif command == "initialize-spec-execution":
+            emit(initialize_spec_execution_state(root, args.spec))
         elif command == "select-dev-spec-scope":
-            spec_path = Path(args.spec)
+            spec_path = Path(args.spec).expanduser()
             emit(
                 select_consumption_scopes(
                     spec_path if spec_path.is_absolute() else root / spec_path,
@@ -5321,6 +7076,100 @@ def main() -> int:
                         not args.no_set_current,
                         session_file,
                     ),
+                    agent,
+                    session_file,
+                )
+            )
+        elif command == "rebind-spec-source":
+            emit(
+                attach_status_context(
+                    root,
+                    rebind_spec_source(root, args.spec, agent, args.task_id, session_file),
+                    agent,
+                    session_file,
+                )
+            )
+        elif command == "writeback-spec-task":
+            emit(
+                attach_status_context(
+                    root,
+                    writeback_spec_task(
+                        root,
+                        args.spec_task,
+                        args.status,
+                        args.summary,
+                        parse_evidence_args(args.evidence),
+                        args.idempotency_key,
+                        agent,
+                        args.task_id,
+                        session_file,
+                    ),
+                    agent,
+                    session_file,
+                )
+            )
+        elif command == "writeback-spec-step":
+            emit(
+                attach_status_context(
+                    root,
+                    writeback_spec_step(
+                        root,
+                        args.spec_task,
+                        args.step,
+                        args.status,
+                        args.summary,
+                        parse_evidence_args(args.evidence),
+                        args.idempotency_key,
+                        agent,
+                        args.task_id,
+                        session_file,
+                    ),
+                    agent,
+                    session_file,
+                )
+            )
+        elif command == "writeback-spec-dependency":
+            emit(
+                attach_status_context(
+                    root,
+                    writeback_spec_dependency(
+                        root,
+                        args.source_task,
+                        args.dependency_task,
+                        args.status,
+                        args.summary,
+                        parse_evidence_args(args.evidence),
+                        args.idempotency_key,
+                        agent,
+                        args.task_id,
+                        session_file,
+                    ),
+                    agent,
+                    session_file,
+                )
+            )
+        elif command == "sync-spec-design":
+            emit(
+                attach_status_context(
+                    root,
+                    sync_spec_design_state(
+                        root,
+                        args.affected_task,
+                        args.summary,
+                        args.idempotency_key,
+                        agent,
+                        args.task_id,
+                        session_file,
+                    ),
+                    agent,
+                    session_file,
+                )
+            )
+        elif command == "reconcile-spec-execution":
+            emit(
+                attach_status_context(
+                    root,
+                    reconcile_spec_execution(root, agent, args.task_id, session_file),
                     agent,
                     session_file,
                 )
@@ -5588,6 +7437,24 @@ def main() -> int:
                     root,
                     memory_instruction(root, args.task_id, session_file),
                     None,
+                    session_file,
+                )
+            )
+        elif command == "memory-architecture-assessment":
+            emit(
+                attach_status_context(
+                    root,
+                    record_architecture_assessment(
+                        root,
+                        args.action,
+                        args.reason,
+                        args.evidence,
+                        args.affected_section,
+                        agent,
+                        args.task_id,
+                        session_file,
+                    ),
+                    agent,
                     session_file,
                 )
             )

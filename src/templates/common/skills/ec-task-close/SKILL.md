@@ -22,6 +22,9 @@ when you recognize abandonment intent in the user's message.
    `{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py close-current --session-file <P> --reason "<reason>" --agent <agent-id>`.
    This sets `task.json.status` to `CLOSED`, records `closed_reason`, updates history, and
    clears session `current_task` so the next hook injection returns to Ready.
+   For Canonical-backed work, the same command first projects every unfinished selected task to
+   shared `cancelled` (using an intermediate `blocked` transition when required). A shared writer
+   failure leaves the Harness task open; never close only the local side.
    Use the returned `status_context` as the authoritative status source for the rest of the
    current turn.
 4. **No memory flow.** Do not run MEMORY. An incomplete task's memory is dirty data.
@@ -34,6 +37,7 @@ when you recognize abandonment intent in the user's message.
 
 - Never delete task folders — CLOSED tasks stay as a record.
 - Never run the memory/archive flow.
+- Never hand-edit the Canonical execution region to force cancellation.
 - This skill closes the `current_task`. If the user wants to close a different (suspended)
   task, they should first switch to it via ec-workflow, then invoke ec-task-close.
 - Division of labor: ec-task-management lists/creates (read-only panel), ec-workflow runs the

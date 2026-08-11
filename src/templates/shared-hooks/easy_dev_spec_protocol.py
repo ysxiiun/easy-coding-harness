@@ -16,8 +16,11 @@ from typing import Any, Iterable
 
 
 SCHEMA = "easy-dev-spec/v1"
+EXECUTION_SCHEMA = "easy-dev-spec-execution/v1"
 MANIFEST_BEGIN = "<!-- EDS:MANIFEST:BEGIN -->"
 MANIFEST_END = "<!-- EDS:MANIFEST:END -->"
+EXECUTION_BEGIN = "<!-- EDS:EXECUTION:BEGIN -->"
+EXECUTION_END = "<!-- EDS:EXECUTION:END -->"
 SECTION_BEGIN_RE = re.compile(r"^<!-- EDS:SECTION:BEGIN id=([a-z0-9][a-z0-9-]*) -->$")
 SECTION_END_RE = re.compile(r"^<!-- EDS:SECTION:END id=([a-z0-9][a-z0-9-]*) -->$")
 ID_PATTERNS = {
@@ -31,6 +34,32 @@ ID_PATTERNS = {
 VALID_STATUSES = {"DRAFT", "BLOCKED", "READY"}
 VALID_DEPENDENCY_TYPES = {"hard", "contract", "integration"}
 VALID_ACTIONS = {"add", "modify", "delete"}
+VALID_EXECUTION_TASK_STATUSES = {
+    "not_started",
+    "in_progress",
+    "blocked",
+    "implemented",
+    "verified",
+    "completed",
+    "cancelled",
+}
+VALID_EXECUTION_DEPENDENCY_STATUSES = {"pending", "satisfied"}
+VALID_EXECUTION_EVIDENCE_STATUSES = {"passed", "failed", "recorded"}
+VALID_EXECUTION_EVENT_TYPES = {
+    "task_status_changed",
+    "step_status_changed",
+    "dependency_status_changed",
+    "spec_revised",
+}
+VALID_EXECUTION_TASK_TRANSITIONS = {
+    "not_started": {"in_progress", "cancelled"},
+    "in_progress": {"in_progress", "blocked", "implemented", "cancelled"},
+    "blocked": {"blocked", "in_progress", "cancelled"},
+    "implemented": {"in_progress", "blocked", "verified"},
+    "verified": {"in_progress", "blocked", "completed"},
+    "completed": {"in_progress"},
+    "cancelled": {"in_progress"},
+}
 REQUIRED_TASK_HEADINGS = (
     "目标、交付物与非目标",
     "文件与符号级改动",
@@ -54,6 +83,13 @@ FORBIDDEN_READY_PATTERNS = {
         r"实施时检查|复用现有机制|在合适位置|新增相关组件|以目标分支为准|接入所有\s*Ability"
     ),
 }
+BLOCKED_EVIDENCE_FIELDS = (
+    "已问问题",
+    "用户原始回答",
+    "落入 Spec 的结论与影响范围",
+    "剩余阻塞",
+    "解除条件与责任方",
+)
 
 
 class CanonicalSpecError(ValueError):
@@ -89,6 +125,9 @@ class ValidationReport:
     warnings: list[ValidationIssue] = field(default_factory=list)
     manifest: dict[str, Any] | None = None
     sections: dict[str, Section] = field(default_factory=dict)
+    execution: dict[str, Any] | None = None
+    design_sha256: str | None = None
+    document_sha256: str | None = None
 
     @property
     def ok(self) -> bool:
@@ -99,6 +138,11 @@ class ValidationReport:
             "protocol": self.protocol,
             "status": self.status,
             "ok": self.ok,
+            "design_sha256": self.design_sha256,
+            "document_sha256": self.document_sha256,
+            "execution_revision": (
+                self.execution.get("execution_revision") if self.execution else None
+            ),
             "issues": [issue.to_dict() for issue in self.issues],
             "warnings": [warning.to_dict() for warning in self.warnings],
         }
@@ -145,6 +189,51 @@ def parse_manifest(text: str) -> dict[str, Any] | None:
     if not isinstance(manifest, dict):
         raise CanonicalSpecError("manifest 顶层必须是 JSON object")
     return manifest
+
+
+def split_execution_region(text: str) -> tuple[str, dict[str, Any] | None]:
+    """Return design-only text and the optional shared execution ledger.
+
+    The execution block is deliberately excluded from the design digest. Runtime
+    progress can therefore change without invalidating a previously selected
+    design scope.
+    """
+
+    begin_count = text.count(EXECUTION_BEGIN)
+    end_count = text.count(EXECUTION_END)
+    if begin_count == 0 and end_count == 0:
+        design_text = text.rstrip() + "\n"
+        return design_text, None
+    if begin_count != 1 or end_count != 1:
+        raise CanonicalSpecError("文档必须包含零组或一组 execution 边界")
+    begin = text.find(EXECUTION_BEGIN)
+    end = text.find(EXECUTION_END)
+    if end < begin:
+        raise CanonicalSpecError("execution 结束标记位于开始标记之前")
+    trailing = text[end + len(EXECUTION_END) :]
+    if trailing.strip():
+        raise CanonicalSpecError("execution 区域必须是文档最后一个非空区域")
+    inner = text[begin + len(EXECUTION_BEGIN) : end]
+    fenced = re.fullmatch(r"\s*```json\s*\n(.*?)\n```\s*", inner, re.DOTALL)
+    if not fenced:
+        raise CanonicalSpecError("execution 必须是边界内唯一的 ```json 代码块")
+    try:
+        execution = json.loads(fenced.group(1))
+    except json.JSONDecodeError as exc:
+        raise CanonicalSpecError(
+            f"execution 不是合法 JSON：第 {exc.lineno} 行第 {exc.colno} 列 {exc.msg}"
+        ) from exc
+    if not isinstance(execution, dict):
+        raise CanonicalSpecError("execution 顶层必须是 JSON object")
+    design_text = text[:begin].rstrip() + "\n"
+    return design_text, execution
+
+
+def design_sha256(text: str) -> str:
+    """Hash only design-bearing content, excluding the execution ledger."""
+
+    design_text, _ = split_execution_region(text)
+    return hashlib.sha256(design_text.encode("utf-8")).hexdigest()
 
 
 def _parse_section_objects(text: str) -> dict[str, Section]:
@@ -959,6 +1048,34 @@ def _validate_ready_manifest_values(
             )
 
 
+def _validate_blocked_evidence(
+    section_objects: dict[str, Section],
+    issues: list[ValidationIssue],
+) -> None:
+    """Require proof that BLOCKED was chosen only after a user answer."""
+
+    global_section = section_objects.get("global-context")
+    if not global_section:
+        return
+    content = global_section.content
+    if "用户判断与剩余阻塞" not in content:
+        _issue(
+            issues,
+            "blocked.evidence",
+            "BLOCKED 文档必须包含“用户判断与剩余阻塞”记录，证明已提问并收到回答",
+            "global-context",
+        )
+        return
+    for marker in BLOCKED_EVIDENCE_FIELDS:
+        if not _has_labeled_value(content, marker):
+            _issue(
+                issues,
+                "blocked.evidence",
+                f"BLOCKED 文档缺少 {marker} 的具体值",
+                "global-context",
+            )
+
+
 def _validate_ready_non_task_sections(
     repo_by_id: dict[str, dict[str, Any]],
     contract_by_id: dict[str, dict[str, Any]],
@@ -1375,6 +1492,1176 @@ def _check_dag(
         visit(node)
 
 
+def _validate_execution_evidence(
+    values: Any,
+    issues: list[ValidationIssue],
+    item_id: str,
+    event_ids: set[str] | None = None,
+    valid_test_ids: set[str] | None = None,
+) -> None:
+    if not isinstance(values, list):
+        _issue(issues, "execution.evidence", f"{item_id}.evidence 必须是数组", item_id)
+        return
+    for index, value in enumerate(values):
+        label = f"{item_id}.evidence[{index}]"
+        if not isinstance(value, dict):
+            _issue(issues, "execution.evidence", f"{label} 必须是 object", item_id)
+            continue
+        for field_name in ("kind", "ref"):
+            if not isinstance(value.get(field_name), str) or not value[field_name].strip():
+                _issue(
+                    issues,
+                    "execution.evidence",
+                    f"{label}.{field_name} 必须是非空字符串",
+                    item_id,
+                )
+        if value.get("status") not in VALID_EXECUTION_EVIDENCE_STATUSES:
+            _issue(
+                issues,
+                "execution.evidence",
+                f"{label}.status 必须是 passed、failed 或 recorded",
+                item_id,
+            )
+        evidence_event_id = value.get("event_id")
+        if evidence_event_id is not None and (
+            not isinstance(evidence_event_id, str)
+            or (event_ids is not None and evidence_event_id not in event_ids)
+        ):
+            _issue(
+                issues,
+                "execution.evidence",
+                f"{label}.event_id 必须引用存在的执行事件",
+                item_id,
+            )
+        if value.get("kind") == "test" and (
+            not isinstance(value.get("test_id"), str) or not value["test_id"].strip()
+        ):
+            _issue(
+                issues,
+                "execution.evidence",
+                f"{label} 的 test 证据必须声明 test_id",
+                item_id,
+            )
+        elif (
+            value.get("kind") == "test"
+            and valid_test_ids is not None
+            and value.get("test_id") not in valid_test_ids
+        ):
+            _issue(
+                issues,
+                "execution.evidence",
+                f"{label}.test_id 未引用当前 manifest Test",
+                item_id,
+            )
+        evidence_sha256 = value.get("sha256")
+        if evidence_sha256 is not None and (
+            not isinstance(evidence_sha256, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", evidence_sha256)
+        ):
+            _issue(
+                issues,
+                "execution.evidence",
+                f"{label}.sha256 必须是 64 位小写 SHA-256",
+                item_id,
+            )
+
+
+def _validate_execution_state(
+    manifest: dict[str, Any],
+    execution: dict[str, Any],
+    current_design_sha256: str,
+    issues: list[ValidationIssue],
+) -> None:
+    """Validate the additive shared execution ledger."""
+
+    if execution.get("schema") != EXECUTION_SCHEMA:
+        _issue(
+            issues,
+            "execution.schema",
+            f"execution.schema 必须是 {EXECUTION_SCHEMA}",
+            "execution",
+        )
+    if execution.get("spec_id") != manifest.get("spec_id"):
+        _issue(issues, "execution.spec_id", "execution.spec_id 必须与 manifest 一致", "execution")
+    if execution.get("design_revision") != manifest.get("revision"):
+        _issue(
+            issues,
+            "execution.design_revision",
+            "execution.design_revision 必须与 manifest.revision 一致；设计改动后应执行 sync-design",
+            "execution",
+        )
+    if execution.get("design_sha256") != current_design_sha256:
+        _issue(
+            issues,
+            "execution.design_sha256",
+            "execution.design_sha256 与当前静态设计不一致；设计改动后应执行 sync-design",
+            "execution",
+        )
+    execution_revision = execution.get("execution_revision")
+    if (
+        not isinstance(execution_revision, int)
+        or isinstance(execution_revision, bool)
+        or execution_revision < 0
+    ):
+        _issue(
+            issues,
+            "execution.revision",
+            "execution.execution_revision 必须是大于等于 0 的整数",
+            "execution",
+        )
+    updated_at = execution.get("updated_at")
+    if updated_at is not None and (
+        not isinstance(updated_at, str)
+        or not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})", updated_at)
+    ):
+        _issue(issues, "execution.timestamp", "execution.updated_at 必须是 ISO-8601 时间或 null", "execution")
+
+    manifest_tasks = {
+        str(task.get("task_id")): task
+        for task in manifest.get("tasks", [])
+        if isinstance(task, dict) and isinstance(task.get("task_id"), str)
+    }
+    manifest_steps = {
+        str(step.get("step_id")): step
+        for step in manifest.get("steps", [])
+        if isinstance(step, dict) and isinstance(step.get("step_id"), str)
+    }
+    manifest_test_ids = {
+        str(test.get("test_id"))
+        for test in manifest.get("tests", [])
+        if isinstance(test, dict) and isinstance(test.get("test_id"), str)
+    }
+
+    events = execution.get("events")
+    if not isinstance(events, list):
+        _issue(issues, "execution.events", "execution.events 必须是数组", "execution")
+        events = []
+    event_ids: set[str] = set()
+    event_by_id: dict[str, dict[str, Any]] = {}
+    idempotency_keys: set[str] = set()
+    for index, event in enumerate(events):
+        label = f"execution.events[{index}]"
+        if not isinstance(event, dict):
+            _issue(issues, "execution.event", f"{label} 必须是 object", "execution")
+            continue
+        event_id = event.get("event_id")
+        if not isinstance(event_id, str) or not re.fullmatch(r"EV-[0-9a-fA-F-]{36}", event_id):
+            _issue(issues, "execution.event", f"{label}.event_id 非法", "execution")
+        elif event_id in event_ids:
+            _issue(issues, "execution.event", f"执行事件 ID 重复：{event_id}", "execution")
+        else:
+            event_ids.add(event_id)
+            event_by_id[event_id] = event
+        idempotency_key = event.get("idempotency_key")
+        if idempotency_key is not None:
+            if not isinstance(idempotency_key, str) or not idempotency_key.strip():
+                _issue(issues, "execution.event", f"{label}.idempotency_key 非法", "execution")
+            elif idempotency_key in idempotency_keys:
+                _issue(
+                    issues,
+                    "execution.event",
+                    f"执行事件幂等键重复：{idempotency_key}",
+                    "execution",
+                )
+            else:
+                idempotency_keys.add(idempotency_key)
+        if event.get("type") not in VALID_EXECUTION_EVENT_TYPES:
+            _issue(issues, "execution.event", f"{label}.type 非法", "execution")
+        for field_name in ("app", "agent", "timestamp", "summary"):
+            if not isinstance(event.get(field_name), str) or not event[field_name].strip():
+                _issue(
+                    issues,
+                    "execution.event",
+                    f"{label}.{field_name} 必须是非空字符串",
+                    "execution",
+                )
+        event_timestamp = event.get("timestamp")
+        if isinstance(event_timestamp, str):
+            if not re.fullmatch(
+                r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})",
+                event_timestamp,
+            ):
+                _issue(
+                    issues,
+                    "execution.timestamp",
+                    f"{label}.timestamp 必须是 ISO-8601 时间",
+                    "execution",
+                )
+        event_design_revision = event.get("design_revision")
+        manifest_revision = manifest.get("revision")
+        if (
+            not isinstance(event_design_revision, int)
+            or isinstance(event_design_revision, bool)
+            or not isinstance(manifest_revision, int)
+            or event_design_revision < 1
+            or event_design_revision > manifest_revision
+        ):
+            _issue(
+                issues,
+                "execution.event",
+                f"{label}.design_revision 必须引用当前或历史静态 revision",
+                "execution",
+            )
+        if event.get("type") == "spec_revised":
+            task_ids = event.get("task_ids")
+            if not isinstance(task_ids, list) or not task_ids or not all(
+                isinstance(task_id, str) and task_id for task_id in task_ids
+            ):
+                _issue(
+                    issues,
+                    "execution.event",
+                    f"{label}.task_ids 必须列出受设计修订影响的任务",
+                    "execution",
+                )
+            elif len(task_ids) != len(set(task_ids)):
+                _issue(
+                    issues,
+                    "execution.event",
+                    f"{label}.task_ids 不得重复",
+                    "execution",
+                )
+            elif event_design_revision == manifest.get("revision") and not set(task_ids).issubset(
+                manifest_tasks
+            ):
+                _issue(
+                    issues,
+                    "execution.event",
+                    f"{label}.task_ids 含当前 manifest 不存在的任务",
+                    "execution",
+                )
+            requested_task_ids = event.get("requested_task_ids")
+            if not isinstance(requested_task_ids, list) or not all(
+                isinstance(task_id, str) and task_id for task_id in requested_task_ids
+            ):
+                _issue(
+                    issues,
+                    "execution.event",
+                    f"{label}.requested_task_ids 必须是字符串数组",
+                    "execution",
+                )
+            elif len(requested_task_ids) != len(set(requested_task_ids)):
+                _issue(
+                    issues,
+                    "execution.event",
+                    f"{label}.requested_task_ids 不得重复",
+                    "execution",
+                )
+            from_revision = event.get("from_design_revision")
+            to_revision = event.get("to_design_revision")
+            if (
+                not isinstance(from_revision, int)
+                or not isinstance(to_revision, int)
+                or to_revision != from_revision + 1
+                or event_design_revision != to_revision
+            ):
+                _issue(
+                    issues,
+                    "execution.event",
+                    f"{label} 的设计 revision 迁移必须恰好递增 1",
+                    "execution",
+                )
+        elif not isinstance(event.get("task_id"), str) or not event["task_id"].strip():
+            _issue(issues, "execution.event", f"{label}.task_id 必须是非空字符串", "execution")
+        if event.get("type") == "task_status_changed":
+            from_status = event.get("from_status")
+            to_status = event.get("to_status")
+            if (
+                from_status not in VALID_EXECUTION_TASK_STATUSES
+                or to_status not in VALID_EXECUTION_TASK_STATUSES
+                or to_status not in VALID_EXECUTION_TASK_TRANSITIONS.get(str(from_status), set())
+            ):
+                _issue(issues, "execution.event", f"{label} 的任务状态迁移字段非法", "execution")
+            if (
+                event_design_revision == manifest.get("revision")
+                and event.get("task_id") not in manifest_tasks
+            ):
+                _issue(
+                    issues,
+                    "execution.event",
+                    f"{label}.task_id 未引用当前 manifest task",
+                    "execution",
+                )
+            if event_design_revision == manifest.get("revision"):
+                allowed_test_ids = set(
+                    _string_list(manifest_tasks.get(str(event.get("task_id")), {}), "test_ids")
+                )
+                event_test_ids = {
+                    str(value.get("test_id"))
+                    for value in event.get("evidence", [])
+                    if isinstance(value, dict) and value.get("kind") == "test"
+                } if isinstance(event.get("evidence", []), list) else set()
+                if not event_test_ids.issubset(allowed_test_ids):
+                    _issue(
+                        issues,
+                        "execution.event",
+                        f"{label} 引用了其他任务的 Test",
+                        "execution",
+                    )
+        if event.get("type") == "step_status_changed":
+            if event.get("step_status") not in {"completed", "failed"}:
+                _issue(issues, "execution.event", f"{label}.step_status 非法", "execution")
+            if event_design_revision == manifest.get("revision"):
+                event_task_id = str(event.get("task_id"))
+                event_step_id = str(event.get("step_id"))
+                step = manifest_steps.get(event_step_id)
+                if step is None or step.get("task_id") != event_task_id:
+                    _issue(
+                        issues,
+                        "execution.event",
+                        f"{label}.step_id 未引用当前 task 的 Step",
+                        "execution",
+                    )
+                elif event.get("step_status") == "completed":
+                    event_evidence = (
+                        event.get("evidence", [])
+                        if isinstance(event.get("evidence", []), list)
+                        else []
+                    )
+                    passed_test_ids = {
+                        str(value.get("test_id"))
+                        for value in event_evidence
+                        if isinstance(value, dict)
+                        and value.get("kind") == "test"
+                        and value.get("status") == "passed"
+                    }
+                    missing_test_ids = set(_string_list(step, "test_ids")) - passed_test_ids
+                    if missing_test_ids:
+                        _issue(
+                            issues,
+                            "execution.event",
+                            f"{label} 缺少绑定 Test 的 passed 证据：{', '.join(sorted(missing_test_ids))}",
+                            "execution",
+                        )
+                    event_task_test_ids = set(
+                        _string_list(manifest_tasks.get(event_task_id, {}), "test_ids")
+                    )
+                    unknown_test_ids = passed_test_ids - event_task_test_ids
+                    if unknown_test_ids:
+                        _issue(
+                            issues,
+                            "execution.event",
+                            f"{label} 引用了其他任务或不存在的 Test：{', '.join(sorted(unknown_test_ids))}",
+                            "execution",
+                        )
+                event_task_test_ids = set(
+                    _string_list(manifest_tasks.get(event_task_id, {}), "test_ids")
+                )
+                all_event_test_ids = {
+                    str(value.get("test_id"))
+                    for value in (
+                        event.get("evidence", [])
+                        if isinstance(event.get("evidence", []), list)
+                        else []
+                    )
+                    if isinstance(value, dict) and value.get("kind") == "test"
+                }
+                if not all_event_test_ids.issubset(event_task_test_ids):
+                    _issue(
+                        issues,
+                        "execution.event",
+                        f"{label} 引用了其他任务的 Test",
+                        "execution",
+                    )
+        if event.get("type") == "dependency_status_changed" and (
+            event.get("dependency_type") not in VALID_DEPENDENCY_TYPES
+            or event.get("dependency_status")
+            not in VALID_EXECUTION_DEPENDENCY_STATUSES
+        ):
+            _issue(issues, "execution.event", f"{label} 的依赖状态字段非法", "execution")
+        if (
+            event.get("type") == "dependency_status_changed"
+            and event_design_revision == manifest.get("revision")
+        ):
+            source_task = manifest_tasks.get(str(event.get("task_id")))
+            expected_edge = (
+                source_task is not None
+                and any(
+                    isinstance(dependency, dict)
+                    and dependency.get("task_id") == event.get("dependency_task_id")
+                    and dependency.get("type") == event.get("dependency_type")
+                    for dependency in source_task.get("depends_on", [])
+                )
+            )
+            if not expected_edge:
+                _issue(
+                    issues,
+                    "execution.event",
+                    f"{label} 未引用当前 manifest 的依赖边",
+                    "execution",
+                )
+            source_task_id = str(event.get("task_id"))
+            dependency_task_id = str(event.get("dependency_task_id"))
+            allowed_test_ids = set(
+                _string_list(manifest_tasks.get(source_task_id, {}), "test_ids")
+            ) | set(_string_list(manifest_tasks.get(dependency_task_id, {}), "test_ids"))
+            event_test_ids = {
+                str(value.get("test_id"))
+                for value in (
+                    event.get("evidence", [])
+                    if isinstance(event.get("evidence", []), list)
+                    else []
+                )
+                if isinstance(value, dict) and value.get("kind") == "test"
+            }
+            if not event_test_ids.issubset(allowed_test_ids):
+                _issue(
+                    issues,
+                    "execution.event",
+                    f"{label} 引用了依赖边之外的 Test",
+                    "execution",
+                )
+        _validate_execution_evidence(
+            event.get("evidence", []),
+            issues,
+            label,
+            valid_test_ids=(
+                manifest_test_ids
+                if event_design_revision == manifest.get("revision")
+                else None
+            ),
+        )
+
+    active_design_revision: int | None = None
+    for index, event in enumerate(events):
+        if not isinstance(event, dict):
+            continue
+        event_revision = event.get("design_revision")
+        if not isinstance(event_revision, int) or isinstance(event_revision, bool):
+            continue
+        if active_design_revision is None:
+            active_design_revision = (
+                event.get("from_design_revision")
+                if event.get("type") == "spec_revised"
+                and isinstance(event.get("from_design_revision"), int)
+                else event_revision
+            )
+        if event.get("type") == "spec_revised":
+            if event.get("from_design_revision") != active_design_revision:
+                _issue(
+                    issues,
+                    "execution.revision_chain",
+                    f"execution.events[{index}] 未承接前一设计 revision",
+                    "execution",
+                )
+            if isinstance(event.get("to_design_revision"), int):
+                active_design_revision = event["to_design_revision"]
+        elif event_revision != active_design_revision:
+            _issue(
+                issues,
+                "execution.revision_chain",
+                f"execution.events[{index}].design_revision 与事件链当前 revision 不一致",
+                "execution",
+            )
+    if events and active_design_revision != execution.get("design_revision"):
+        _issue(
+            issues,
+            "execution.revision_chain",
+            "执行事件的设计 revision 链未到达当前 execution.design_revision",
+            "execution",
+        )
+    current_spec_revision_events = [
+        event
+        for event in events
+        if isinstance(event, dict)
+        and event.get("type") == "spec_revised"
+        and event.get("design_revision") == manifest.get("revision")
+    ]
+    for event in current_spec_revision_events:
+        requested = event.get("requested_task_ids", [])
+        if not isinstance(requested, list):
+            continue
+        requested_set = set(requested) if requested else set(manifest_tasks)
+        if not requested_set.issubset(manifest_tasks):
+            continue
+        reverse_dependencies = {task_id: set() for task_id in manifest_tasks}
+        for dependent_task_id, task in manifest_tasks.items():
+            for dependency in task.get("depends_on", []):
+                if isinstance(dependency, dict) and dependency.get("task_id") in manifest_tasks:
+                    reverse_dependencies[str(dependency.get("task_id"))].add(
+                        dependent_task_id
+                    )
+        expected_reset = set(requested_set)
+        pending_reset = list(requested_set)
+        while pending_reset:
+            changed_task_id = pending_reset.pop()
+            for dependent_task_id in reverse_dependencies.get(changed_task_id, set()):
+                if dependent_task_id not in expected_reset:
+                    expected_reset.add(dependent_task_id)
+                    pending_reset.append(dependent_task_id)
+        if set(event.get("task_ids", [])) != expected_reset:
+            _issue(
+                issues,
+                "execution.revision_chain",
+                "当前 spec_revised.task_ids 必须等于显式受影响任务及其全部后继闭包",
+                "execution",
+            )
+
+    if isinstance(execution_revision, int) and execution_revision != len(events):
+        _issue(
+            issues,
+            "execution.revision",
+            "execution.execution_revision 必须等于追加事件数量",
+            "execution",
+        )
+    if events:
+        last_timestamp = events[-1].get("timestamp") if isinstance(events[-1], dict) else None
+        if updated_at != last_timestamp:
+            _issue(
+                issues,
+                "execution.timestamp",
+                "execution.updated_at 必须等于最后一条事件时间",
+                "execution",
+            )
+    elif updated_at is not None:
+        _issue(
+            issues,
+            "execution.timestamp",
+            "没有执行事件时 execution.updated_at 必须是 null",
+            "execution",
+        )
+
+    snapshots = execution.get("tasks")
+    if not isinstance(snapshots, list):
+        _issue(issues, "execution.tasks", "execution.tasks 必须是数组", "execution")
+        snapshots = []
+    snapshot_by_id: dict[str, dict[str, Any]] = {}
+    for index, snapshot in enumerate(snapshots):
+        label = f"execution.tasks[{index}]"
+        if not isinstance(snapshot, dict):
+            _issue(issues, "execution.task", f"{label} 必须是 object", "execution")
+            continue
+        task_id = snapshot.get("task_id")
+        if not isinstance(task_id, str) or task_id not in manifest_tasks:
+            _issue(issues, "execution.task", f"{label}.task_id 未引用当前 manifest task", "execution")
+            continue
+        if task_id in snapshot_by_id:
+            _issue(issues, "execution.task", f"执行任务快照重复：{task_id}", task_id)
+            continue
+        snapshot_by_id[task_id] = snapshot
+        if snapshot.get("status") not in VALID_EXECUTION_TASK_STATUSES:
+            _issue(issues, "execution.task", f"{task_id}.status 非法", task_id)
+        expected_steps = set(_string_list(manifest_tasks[task_id], "step_ids"))
+        completed_steps = snapshot.get("completed_step_ids")
+        failed_steps = snapshot.get("failed_step_ids")
+        for field_name, values in (
+            ("completed_step_ids", completed_steps),
+            ("failed_step_ids", failed_steps),
+        ):
+            if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
+                _issue(issues, "execution.task", f"{task_id}.{field_name} 必须是字符串数组", task_id)
+            elif len(values) != len(set(values)) or not set(values).issubset(expected_steps):
+                _issue(
+                    issues,
+                    "execution.task",
+                    f"{task_id}.{field_name} 必须是本任务 Step 的无重复子集",
+                    task_id,
+                )
+        if isinstance(completed_steps, list) and isinstance(failed_steps, list) and set(
+            completed_steps
+        ).intersection(failed_steps):
+            _issue(issues, "execution.task", f"{task_id} 的完成和失败 Step 不能重叠", task_id)
+        blockers = snapshot.get("blockers")
+        if not isinstance(blockers, list) or not all(
+            isinstance(blocker, str) and blocker.strip() for blocker in blockers
+        ):
+            _issue(issues, "execution.task", f"{task_id}.blockers 必须是非空字符串数组", task_id)
+        last_event_id = snapshot.get("last_event_id")
+        if last_event_id is not None and last_event_id not in event_ids:
+            _issue(issues, "execution.task", f"{task_id}.last_event_id 未引用存在的事件", task_id)
+        snapshot_updated_at = snapshot.get("updated_at")
+        if snapshot_updated_at is not None and (
+            not isinstance(snapshot_updated_at, str)
+            or not re.fullmatch(
+                r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})",
+                snapshot_updated_at,
+            )
+        ):
+            _issue(
+                issues,
+                "execution.timestamp",
+                f"{task_id}.updated_at 必须是 ISO-8601 时间或 null",
+                task_id,
+            )
+        linked_last_event = event_by_id.get(str(last_event_id)) if last_event_id else None
+        if linked_last_event is not None:
+            owns_task = linked_last_event.get("task_id") == task_id or (
+                linked_last_event.get("type") == "spec_revised"
+                and task_id in linked_last_event.get("task_ids", [])
+            )
+            if not owns_task:
+                _issue(
+                    issues,
+                    "execution.task",
+                    f"{task_id}.last_event_id 引用了其他任务的事件",
+                    task_id,
+                )
+            if snapshot_updated_at != linked_last_event.get("timestamp"):
+                _issue(
+                    issues,
+                    "execution.timestamp",
+                    f"{task_id}.updated_at 必须等于 last_event_id 的事件时间",
+                    task_id,
+                )
+        elif last_event_id is None and snapshot_updated_at is not None:
+            _issue(
+                issues,
+                "execution.timestamp",
+                f"{task_id} 没有 last_event_id 时 updated_at 必须是 null",
+                task_id,
+            )
+        snapshot_evidence = snapshot.get("evidence", [])
+        _validate_execution_evidence(
+            snapshot_evidence,
+            issues,
+            task_id,
+            event_ids,
+            manifest_test_ids,
+        )
+        if isinstance(snapshot_evidence, list):
+            for evidence_index, evidence in enumerate(snapshot_evidence):
+                if not isinstance(evidence, dict) or not isinstance(
+                    evidence.get("event_id"), str
+                ):
+                    continue
+                source_event = event_by_id.get(evidence["event_id"])
+                if source_event is None:
+                    continue
+                owns_task = source_event.get("task_id") == task_id
+                event_evidence = source_event.get("evidence", [])
+                projected = {
+                    key: value for key, value in evidence.items() if key != "event_id"
+                }
+                if not owns_task or projected not in event_evidence:
+                    _issue(
+                        issues,
+                        "execution.evidence",
+                        f"{task_id}.evidence[{evidence_index}] 与来源事件不一致",
+                        task_id,
+                    )
+
+        dependencies = snapshot.get("dependencies")
+        if not isinstance(dependencies, list):
+            _issue(issues, "execution.dependency", f"{task_id}.dependencies 必须是数组", task_id)
+            dependencies = []
+        actual_dependencies: dict[tuple[str, str], dict[str, Any]] = {}
+        for dependency in dependencies:
+            if not isinstance(dependency, dict):
+                _issue(issues, "execution.dependency", f"{task_id} 的依赖快照必须是 object", task_id)
+                continue
+            key = (str(dependency.get("task_id")), str(dependency.get("type")))
+            if key in actual_dependencies:
+                _issue(issues, "execution.dependency", f"{task_id} 的依赖快照重复：{key[0]}", task_id)
+            actual_dependencies[key] = dependency
+            if dependency.get("status") not in VALID_EXECUTION_DEPENDENCY_STATUSES:
+                _issue(issues, "execution.dependency", f"{task_id}->{key[0]} 的执行依赖状态非法", task_id)
+            evidence_event_id = dependency.get("evidence_event_id")
+            if evidence_event_id is not None and evidence_event_id not in event_ids:
+                _issue(
+                    issues,
+                    "execution.dependency",
+                    f"{task_id}->{key[0]} 的 evidence_event_id 未引用存在的事件",
+                    task_id,
+                )
+            if dependency.get("status") == "pending" and evidence_event_id is not None:
+                _issue(
+                    issues,
+                    "execution.dependency",
+                    f"{task_id}->{key[0]} 为 pending 时不得保留 evidence_event_id",
+                    task_id,
+                )
+            if evidence_event_id is not None:
+                evidence_event = event_by_id.get(str(evidence_event_id))
+                if evidence_event is not None and not (
+                    evidence_event.get("type") == "dependency_status_changed"
+                    and evidence_event.get("task_id") == task_id
+                    and evidence_event.get("dependency_task_id") == key[0]
+                    and evidence_event.get("dependency_type") == key[1]
+                    and evidence_event.get("dependency_status") == "satisfied"
+                ):
+                    _issue(
+                        issues,
+                        "execution.dependency",
+                        f"{task_id}->{key[0]} 的 evidence_event_id 未引用本依赖的 satisfied 事件",
+                        task_id,
+                    )
+        expected_dependencies = {
+            (str(dependency.get("task_id")), str(dependency.get("type")))
+            for dependency in manifest_tasks[task_id].get("depends_on", [])
+            if isinstance(dependency, dict)
+        }
+        if set(actual_dependencies) != expected_dependencies:
+            _issue(
+                issues,
+                "execution.dependency",
+                f"{task_id}.dependencies 必须与 manifest.depends_on 完全一致",
+                task_id,
+            )
+    if set(snapshot_by_id) != set(manifest_tasks):
+        _issue(
+            issues,
+            "execution.tasks",
+            "execution.tasks 必须为当前 manifest 中每个任务提供且只提供一个快照",
+            "execution",
+        )
+
+    replay_status = {task_id: "not_started" for task_id in manifest_tasks}
+    replay_completed_steps = {task_id: set() for task_id in manifest_tasks}
+    replay_failed_steps = {task_id: set() for task_id in manifest_tasks}
+    replay_passed_test_ids = {task_id: set() for task_id in manifest_tasks}
+    replay_dependencies: dict[str, dict[tuple[str, str], tuple[str, str | None]]] = {
+        task_id: {
+            (str(dependency.get("task_id")), str(dependency.get("type"))): (
+                "satisfied"
+                if dependency.get("type") == "contract" and manifest.get("status") == "READY"
+                else "pending",
+                None,
+            )
+            for dependency in task.get("depends_on", [])
+            if isinstance(dependency, dict)
+        }
+        for task_id, task in manifest_tasks.items()
+    }
+    for event_index, event in enumerate(events):
+        if not isinstance(event, dict):
+            continue
+        event_type = event.get("type")
+        if event_type == "spec_revised":
+            affected_task_ids = event.get("task_ids", [])
+            if not isinstance(affected_task_ids, list):
+                affected_task_ids = []
+            for affected_task_id in affected_task_ids:
+                if affected_task_id not in manifest_tasks:
+                    continue
+                replay_status[affected_task_id] = "not_started"
+                replay_completed_steps[affected_task_id] = set()
+                replay_failed_steps[affected_task_id] = set()
+                replay_passed_test_ids[affected_task_id] = set()
+                replay_dependencies[affected_task_id] = {
+                    (str(dependency.get("task_id")), str(dependency.get("type"))): (
+                        "satisfied"
+                        if dependency.get("type") == "contract"
+                        and manifest.get("status") == "READY"
+                        else "pending",
+                        None,
+                    )
+                    for dependency in manifest_tasks[affected_task_id].get("depends_on", [])
+                    if isinstance(dependency, dict)
+                }
+            continue
+        event_task_id = event.get("task_id")
+        if event_task_id not in manifest_tasks:
+            continue
+        event_evidence = (
+            event.get("evidence", [])
+            if isinstance(event.get("evidence", []), list)
+            else []
+        )
+        event_passed_test_ids = {
+            str(value.get("test_id"))
+            for value in event_evidence
+            if isinstance(value, dict)
+            and value.get("kind") == "test"
+            and value.get("status") == "passed"
+            and isinstance(value.get("test_id"), str)
+        }
+        if event_type == "task_status_changed":
+            if event.get("from_status") != replay_status[event_task_id]:
+                _issue(
+                    issues,
+                    "execution.event_chain",
+                    f"execution.events[{event_index}].from_status 与前一事件状态不一致",
+                    event_task_id,
+                )
+            from_status = replay_status[event_task_id]
+            to_status = event.get("to_status")
+            if to_status == "in_progress" and from_status in {"completed", "cancelled"}:
+                replay_passed_test_ids[event_task_id] = set()
+            replay_passed_test_ids[event_task_id].update(event_passed_test_ids)
+            if event.get("design_revision") == manifest.get("revision") and to_status in {
+                "in_progress",
+                "implemented",
+                "verified",
+                "completed",
+            }:
+                unsatisfied_dependencies: list[str] = []
+                for dependency in manifest_tasks[event_task_id].get("depends_on", []):
+                    if not isinstance(dependency, dict) or dependency.get("type") not in {
+                        "hard",
+                        "contract",
+                    }:
+                        continue
+                    dependency_key = (
+                        str(dependency.get("task_id")),
+                        str(dependency.get("type")),
+                    )
+                    satisfied = replay_dependencies[event_task_id].get(
+                        dependency_key, ("pending", None)
+                    )[0] == "satisfied"
+                    if dependency.get("type") == "contract":
+                        satisfied = manifest.get("status") == "READY"
+                    elif dependency.get("type") == "hard" and not satisfied:
+                        satisfied = (
+                            replay_status.get(str(dependency.get("task_id"))) == "completed"
+                        )
+                    if not satisfied:
+                        unsatisfied_dependencies.append(
+                            f"{dependency.get('type')}:{dependency.get('task_id')}"
+                        )
+                if unsatisfied_dependencies:
+                    _issue(
+                        issues,
+                        "execution.event_chain",
+                        f"execution.events[{event_index}] 执行时前置依赖未满足：{', '.join(unsatisfied_dependencies)}",
+                        event_task_id,
+                    )
+            if event.get("design_revision") == manifest.get("revision") and to_status in {
+                "implemented",
+                "verified",
+                "completed",
+            }:
+                expected_steps = set(_string_list(manifest_tasks[event_task_id], "step_ids"))
+                if (
+                    replay_completed_steps[event_task_id] != expected_steps
+                    or replay_failed_steps[event_task_id]
+                ):
+                    _issue(
+                        issues,
+                        "execution.event_chain",
+                        f"execution.events[{event_index}] 执行时尚未完成全部 Step",
+                        event_task_id,
+                    )
+            if event.get("design_revision") == manifest.get("revision") and to_status in {
+                "verified",
+                "completed",
+            }:
+                expected_tests = set(_string_list(manifest_tasks[event_task_id], "test_ids"))
+                missing_tests = expected_tests - replay_passed_test_ids[event_task_id]
+                if missing_tests:
+                    _issue(
+                        issues,
+                        "execution.event_chain",
+                        f"execution.events[{event_index}] 执行时缺少 Test 证据：{', '.join(sorted(missing_tests))}",
+                        event_task_id,
+                    )
+            if event.get("design_revision") == manifest.get("revision") and to_status == "completed":
+                pending_integration = [
+                    str(dependency.get("task_id"))
+                    for dependency in manifest_tasks[event_task_id].get("depends_on", [])
+                    if isinstance(dependency, dict)
+                    and dependency.get("type") == "integration"
+                    and replay_dependencies[event_task_id].get(
+                        (str(dependency.get("task_id")), "integration"),
+                        ("pending", None),
+                    )[0]
+                    != "satisfied"
+                ]
+                if pending_integration:
+                    _issue(
+                        issues,
+                        "execution.event_chain",
+                        f"execution.events[{event_index}] 执行时 integration 依赖未满足：{', '.join(pending_integration)}",
+                        event_task_id,
+                    )
+            if to_status in VALID_EXECUTION_TASK_STATUSES:
+                replay_status[event_task_id] = str(to_status)
+            continue
+        if event_type == "step_status_changed":
+            event_step_id = str(event.get("step_id"))
+            step = manifest_steps.get(event_step_id)
+            if step is None or step.get("task_id") != event_task_id:
+                continue
+            if event.get("design_revision") == manifest.get("revision"):
+                if replay_status[event_task_id] != "in_progress":
+                    _issue(
+                        issues,
+                        "execution.event_chain",
+                        f"execution.events[{event_index}] 写入 Step 时任务不是 in_progress",
+                        event_task_id,
+                    )
+                missing_predecessors = set(
+                    _string_list(step, "depends_on_step_ids")
+                ) - replay_completed_steps[event_task_id]
+                if missing_predecessors:
+                    _issue(
+                        issues,
+                        "execution.event_chain",
+                        f"execution.events[{event_index}] 越过前置 Step：{', '.join(sorted(missing_predecessors))}",
+                        event_task_id,
+                    )
+            replay_passed_test_ids[event_task_id].update(event_passed_test_ids)
+            if event.get("step_status") == "completed":
+                replay_completed_steps[event_task_id].add(event_step_id)
+                replay_failed_steps[event_task_id].discard(event_step_id)
+            elif event.get("step_status") == "failed":
+                replay_failed_steps[event_task_id].add(event_step_id)
+                replay_completed_steps[event_task_id].discard(event_step_id)
+                replay_status[event_task_id] = "blocked"
+            continue
+        if event_type == "dependency_status_changed":
+            dependency_key = (
+                str(event.get("dependency_task_id")),
+                str(event.get("dependency_type")),
+            )
+            if dependency_key not in replay_dependencies[event_task_id]:
+                continue
+            dependency_status = event.get("dependency_status")
+            if (
+                event.get("design_revision") == manifest.get("revision")
+                and dependency_status == "pending"
+                and replay_status[event_task_id] == "completed"
+            ):
+                _issue(
+                    issues,
+                    "execution.event_chain",
+                    f"execution.events[{event_index}] 不能直接重开 completed 任务的依赖",
+                    event_task_id,
+                )
+            replay_passed_test_ids[event_task_id].update(event_passed_test_ids)
+            if dependency_status in VALID_EXECUTION_DEPENDENCY_STATUSES:
+                replay_dependencies[event_task_id][dependency_key] = (
+                    str(dependency_status),
+                    str(event.get("event_id")) if dependency_status == "satisfied" else None,
+                )
+            if dependency_status == "pending" and replay_status[event_task_id] in {
+                "in_progress",
+                "implemented",
+                "verified",
+            }:
+                replay_status[event_task_id] = "blocked"
+
+    for task_id, snapshot in snapshot_by_id.items():
+        if snapshot.get("status") != replay_status[task_id]:
+            _issue(
+                issues,
+                "execution.event_chain",
+                f"{task_id}.status 与事件链重放结果 {replay_status[task_id]} 不一致",
+                task_id,
+            )
+        if set(_string_list(snapshot, "completed_step_ids")) != replay_completed_steps[task_id]:
+            _issue(
+                issues,
+                "execution.event_chain",
+                f"{task_id}.completed_step_ids 与事件链不一致",
+                task_id,
+            )
+        if set(_string_list(snapshot, "failed_step_ids")) != replay_failed_steps[task_id]:
+            _issue(
+                issues,
+                "execution.event_chain",
+                f"{task_id}.failed_step_ids 与事件链不一致",
+                task_id,
+            )
+        actual_dependency_state = {
+            (str(dependency.get("task_id")), str(dependency.get("type"))): (
+                str(dependency.get("status")),
+                dependency.get("evidence_event_id"),
+            )
+            for dependency in (
+                snapshot.get("dependencies", [])
+                if isinstance(snapshot.get("dependencies", []), list)
+                else []
+            )
+            if isinstance(dependency, dict)
+        }
+        if actual_dependency_state != replay_dependencies[task_id]:
+            _issue(
+                issues,
+                "execution.event_chain",
+                f"{task_id}.dependencies 与事件链重放结果不一致",
+                task_id,
+            )
+    for task_id, snapshot in snapshot_by_id.items():
+        manifest_task = manifest_tasks[task_id]
+        task_status = snapshot.get("status")
+        completed_steps = set(_string_list(snapshot, "completed_step_ids"))
+        failed_steps = set(_string_list(snapshot, "failed_step_ids"))
+        expected_steps = set(_string_list(manifest_task, "step_ids"))
+        if (
+            manifest.get("status") != "READY" or manifest_task.get("status") != "READY"
+        ) and task_status not in {"not_started", "cancelled"}:
+            _issue(
+                issues,
+                "execution.task_state",
+                f"非 READY 设计中的任务 {task_id} 不能保存开发执行状态 {task_status}",
+                task_id,
+            )
+        if task_status == "not_started" and (completed_steps or failed_steps):
+            _issue(
+                issues,
+                "execution.task_state",
+                f"not_started 任务 {task_id} 不能包含 Step 结果",
+                task_id,
+            )
+        blockers = snapshot.get("blockers", [])
+        if task_status == "blocked" and not blockers:
+            _issue(
+                issues,
+                "execution.task_state",
+                f"blocked 任务 {task_id} 必须记录 blocker",
+                task_id,
+            )
+        if task_status != "blocked" and blockers:
+            _issue(
+                issues,
+                "execution.task_state",
+                f"非 blocked 任务 {task_id} 不得保留 blocker",
+                task_id,
+            )
+        if task_status in {"implemented", "verified", "completed"} and (
+            completed_steps != expected_steps or failed_steps
+        ):
+            _issue(
+                issues,
+                "execution.task_state",
+                f"任务 {task_id} 进入 {task_status} 前必须完成全部 Step 且没有失败 Step",
+                task_id,
+            )
+        if task_status in {"implemented", "verified", "completed"}:
+            passed_test_ids = {
+                str(value.get("test_id"))
+                for value in (
+                    snapshot.get("evidence", [])
+                    if isinstance(snapshot.get("evidence", []), list)
+                    else []
+                )
+                if isinstance(value, dict)
+                and value.get("kind") == "test"
+                and value.get("status") == "passed"
+            }
+            missing_test_ids = set(_string_list(manifest_task, "test_ids")) - passed_test_ids
+            if missing_test_ids:
+                _issue(
+                    issues,
+                    "execution.task_state",
+                    f"任务 {task_id} 进入 {task_status} 前缺少 Test 证据：{', '.join(sorted(missing_test_ids))}",
+                    task_id,
+                )
+        dependencies = [
+            dependency
+            for dependency in (
+                snapshot.get("dependencies", [])
+                if isinstance(snapshot.get("dependencies", []), list)
+                else []
+            )
+            if isinstance(dependency, dict)
+        ]
+        if manifest.get("status") == "READY" and any(
+            dependency.get("type") == "contract"
+            and dependency.get("status") != "satisfied"
+            for dependency in dependencies
+        ):
+            _issue(
+                issues,
+                "execution.dependency",
+                f"READY 设计中的 {task_id} contract 依赖必须是 satisfied",
+                task_id,
+            )
+        if task_status == "completed":
+            unsatisfied: list[str] = []
+            for dependency in dependencies:
+                dependency_type = dependency.get("type")
+                dependency_task_id = str(dependency.get("task_id"))
+                satisfied = dependency.get("status") == "satisfied"
+                if dependency_type == "contract":
+                    satisfied = manifest.get("status") == "READY"
+                elif dependency_type == "hard" and not satisfied:
+                    satisfied = (
+                        snapshot_by_id.get(dependency_task_id, {}).get("status")
+                        == "completed"
+                    )
+                if not satisfied:
+                    unsatisfied.append(f"{dependency_type}:{dependency_task_id}")
+            if unsatisfied:
+                _issue(
+                    issues,
+                    "execution.task_state",
+                    f"completed 任务 {task_id} 仍有未满足依赖：{', '.join(unsatisfied)}",
+                    task_id,
+                )
+
+
+def _execution_projection(
+    manifest: dict[str, Any],
+    execution: dict[str, Any] | None,
+    selected_task_ids: set[str],
+    direct_dependency_ids: set[str],
+) -> dict[str, Any]:
+    relevant_task_ids = selected_task_ids | direct_dependency_ids
+    if execution is None:
+        return {
+            "schema": EXECUTION_SCHEMA,
+            "available": False,
+            "execution_revision": None,
+            "updated_at": None,
+            "tasks": [],
+            "dependency_status": [],
+        }
+    snapshot_by_id = {
+        str(snapshot["task_id"]): snapshot
+        for snapshot in execution.get("tasks", [])
+        if isinstance(snapshot, dict) and isinstance(snapshot.get("task_id"), str)
+    }
+    task_by_id = {
+        str(task["task_id"]): task
+        for task in manifest.get("tasks", [])
+        if isinstance(task, dict) and isinstance(task.get("task_id"), str)
+    }
+    dependency_status: list[dict[str, Any]] = []
+    for source_task_id in sorted(selected_task_ids):
+        snapshot = snapshot_by_id.get(source_task_id, {})
+        dependency_snapshot_by_key = {
+            (str(value.get("task_id")), str(value.get("type"))): value
+            for value in snapshot.get("dependencies", [])
+            if isinstance(value, dict)
+        }
+        for dependency in task_by_id.get(source_task_id, {}).get("depends_on", []):
+            dependency_task_id = str(dependency.get("task_id"))
+            dependency_type = str(dependency.get("type"))
+            recorded = dependency_snapshot_by_key.get((dependency_task_id, dependency_type), {})
+            dependency_task_status = snapshot_by_id.get(dependency_task_id, {}).get("status")
+            if dependency_type == "contract":
+                satisfied = manifest.get("status") == "READY"
+                basis = "design-ready" if satisfied else "design-not-ready"
+            elif dependency_type == "hard":
+                satisfied = (
+                    recorded.get("status") == "satisfied"
+                    or dependency_task_status == "completed"
+                )
+                basis = (
+                    "recorded-evidence"
+                    if recorded.get("status") == "satisfied"
+                    else "dependency-task-completed"
+                    if dependency_task_status == "completed"
+                    else "pending"
+                )
+            else:
+                satisfied = recorded.get("status") == "satisfied"
+                basis = "recorded-evidence" if satisfied else "pending-integration"
+            dependency_status.append(
+                {
+                    "source_task_id": source_task_id,
+                    "task_id": dependency_task_id,
+                    "type": dependency_type,
+                    "status": "satisfied" if satisfied else "pending",
+                    "basis": basis,
+                    "required_evidence": dependency.get("required_evidence"),
+                    "evidence_event_id": recorded.get("evidence_event_id"),
+                }
+            )
+    return {
+        "schema": EXECUTION_SCHEMA,
+        "available": True,
+        "execution_revision": execution.get("execution_revision"),
+        "updated_at": execution.get("updated_at"),
+        "tasks": [
+            snapshot_by_id[task_id]
+            for task_id in sorted(relevant_task_ids)
+            if task_id in snapshot_by_id
+        ],
+        "dependency_status": dependency_status,
+    }
+
+
 def validate_model(
     manifest: dict[str, Any],
     sections: dict[str, Section] | dict[str, str],
@@ -1666,16 +2953,32 @@ def validate_model(
                 if not _has_labeled_value(contract_body, marker):
                     _issue(issues, "java.contract", f"{task_id} 的 Java 契约缺少带实际值的字段：{marker}", task_id)
 
+    deliverable_text = "\n".join(
+        (
+            text,
+            json.dumps(manifest, ensure_ascii=False, sort_keys=True),
+            *(section.content for section in section_objects.values()),
+        )
+    )
+    for code, pattern in FORBIDDEN_READY_PATTERNS.items():
+        match = pattern.search(deliverable_text)
+        if match and status in {"DRAFT", "BLOCKED"}:
+            _issue(
+                issues,
+                f"deliverable.{code}",
+                f"{status} 文档也不得包含留白或未展开表达：{match.group(0)}",
+            )
+
+    blocked_requested = status == "BLOCKED" or any(
+        task.get("status") == "BLOCKED" for task in task_by_id.values()
+    )
+    if blocked_requested:
+        _validate_blocked_evidence(section_objects, issues)
+
     if require_ready and status != "READY":
         _issue(issues, "ready.required", f"要求 READY，但文档状态是 {status!r}", "status")
     if ready_requested:
-        ready_text = "\n".join(
-            (
-                text,
-                json.dumps(manifest, ensure_ascii=False, sort_keys=True),
-                *(section.content for section in section_objects.values()),
-            )
-        )
+        ready_text = deliverable_text
         _validate_ready_manifest_values(
             manifest,
             repositories,
@@ -1742,16 +3045,33 @@ def validate_model(
     )
 
 
-def validate_spec(source: str | Path, require_ready: bool = False) -> ValidationReport:
+def validate_spec(
+    source: str | Path,
+    require_ready: bool = False,
+    require_execution: bool = False,
+) -> ValidationReport:
     """Validate a path or document string and return a structured report."""
 
     text, _ = _read_source(source)
+    document_digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
     try:
-        manifest = parse_manifest(text)
+        design_text, execution = split_execution_region(text)
     except CanonicalSpecError as exc:
         return ValidationReport(
             protocol="canonical-invalid",
             status=None,
+            document_sha256=document_digest,
+            issues=[ValidationIssue("execution.parse", str(exc))],
+        )
+    design_digest = hashlib.sha256(design_text.encode("utf-8")).hexdigest()
+    try:
+        manifest = parse_manifest(design_text)
+    except CanonicalSpecError as exc:
+        return ValidationReport(
+            protocol="canonical-invalid",
+            status=None,
+            design_sha256=design_digest,
+            document_sha256=document_digest,
             issues=[ValidationIssue("manifest.parse", str(exc))],
         )
     if manifest is None:
@@ -1760,29 +3080,68 @@ def validate_spec(source: str | Path, require_ready: bool = False) -> Validation
             issues.append(
                 ValidationIssue("ready.legacy", "legacy Dev Spec 不具备 Canonical v1 READY 证明")
             )
-        return ValidationReport(protocol="legacy", status=None, issues=issues)
+        if require_execution:
+            issues.append(
+                ValidationIssue("execution.legacy", "legacy Dev Spec 不支持共享执行状态")
+            )
+        return ValidationReport(
+            protocol="legacy",
+            status=None,
+            design_sha256=design_digest,
+            document_sha256=document_digest,
+            issues=issues,
+        )
     try:
-        sections = _parse_section_objects(text)
+        sections = _parse_section_objects(design_text)
     except CanonicalSpecError as exc:
         return ValidationReport(
             protocol="canonical-v1",
             status=manifest.get("status") if isinstance(manifest.get("status"), str) else None,
             manifest=manifest,
+            execution=execution,
+            design_sha256=design_digest,
+            document_sha256=document_digest,
             issues=[ValidationIssue("section.parse", str(exc))],
         )
-    model_report = validate_model(manifest, sections, text=text, require_ready=require_ready)
+    model_report = validate_model(
+        manifest,
+        sections,
+        text=design_text,
+        require_ready=require_ready,
+    )
     issues = model_report.issues
-    first_section = text.find("<!-- EDS:SECTION:BEGIN")
-    if first_section != -1 and text.find(MANIFEST_BEGIN) > first_section:
+    first_section = design_text.find("<!-- EDS:SECTION:BEGIN")
+    if first_section != -1 and design_text.find(MANIFEST_BEGIN) > first_section:
         issues.append(
             ValidationIssue("manifest.position", "manifest 必须位于所有 EDS 正文区域之前")
         )
+    warnings: list[ValidationIssue] = []
+    if execution is None:
+        warnings.append(
+            ValidationIssue(
+                "execution.missing",
+                "文档未初始化共享执行状态；旧版 Canonical v1 仍可只读消费",
+            )
+        )
+        if require_execution:
+            issues.append(
+                ValidationIssue(
+                    "execution.required",
+                    "要求共享执行状态，但文档缺少 EDS:EXECUTION 区域",
+                )
+            )
+    else:
+        _validate_execution_state(manifest, execution, design_digest, issues)
     return ValidationReport(
         protocol="canonical-v1",
         status=manifest.get("status") if isinstance(manifest.get("status"), str) else None,
         manifest=manifest,
         sections=sections,
+        execution=execution,
+        design_sha256=design_digest,
+        document_sha256=document_digest,
         issues=issues,
+        warnings=warnings,
     )
 
 
@@ -1884,13 +3243,17 @@ def select_scope(
     selected_steps = [item for item in manifest["steps"] if item.get("task_id") in selected_set]
     selected_tests = [item for item in manifest["tests"] if item.get("task_id") in selected_set]
     related_contracts = [contract_by_id[contract_id] for contract_id in related_contract_ids]
-    payload: dict[str, Any] = {
+    execution = _execution_projection(
+        manifest,
+        report.execution,
+        selected_set,
+        direct_dependency_ids,
+    )
+    static_scope: dict[str, Any] = {
         "schema": SCHEMA,
         "spec_id": manifest["spec_id"],
         "revision": manifest["revision"],
         "status": manifest["status"],
-        "source_path": source_path,
-        "source_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
         "repo": repo_by_id[repo_id],
         "selected_task_ids": selected_ids,
         "selected_tasks": selected_tasks,
@@ -1908,6 +3271,32 @@ def select_scope(
             sections["integration-plan"].content, relevant_task_ids
         ),
     }
+    design_scope_digest = hashlib.sha256(
+        json.dumps(
+            static_scope,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    execution_scope_digest = hashlib.sha256(
+        json.dumps(
+            execution,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    payload: dict[str, Any] = {
+        **static_scope,
+        "source_path": source_path,
+        "source_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        "document_sha256": report.document_sha256,
+        "design_sha256": report.design_sha256,
+        "design_scope_sha256": design_scope_digest,
+        "execution_scope_sha256": execution_scope_digest,
+        "execution": execution,
+    }
     if output_format == "json":
         return payload
     if output_format != "markdown":
@@ -1922,6 +3311,10 @@ def select_scope(
             "status",
             "source_path",
             "source_sha256",
+            "document_sha256",
+            "design_sha256",
+            "design_scope_sha256",
+            "execution_scope_sha256",
             "repo",
             "selected_task_ids",
             "selected_tasks",
@@ -1931,6 +3324,7 @@ def select_scope(
             "direct_dependency_summaries",
             "related_contract_ids",
             "related_contracts",
+            "execution",
         )
     }
     manifest_json = json.dumps(routing_manifest, ensure_ascii=False, indent=2)
@@ -1943,7 +3337,10 @@ def select_scope(
         "```",
         "<!-- EDS:CONSUMPTION-SCOPE:END -->",
         "",
-        f"> 来源 SHA-256：`{payload['source_sha256']}`",
+        f"> 文档 SHA-256：`{payload['document_sha256']}`",
+        f"> 设计 SHA-256：`{payload['design_sha256']}`",
+        f"> 设计范围 SHA-256：`{payload['design_scope_sha256']}`",
+        f"> 执行修订：`{payload['execution']['execution_revision']}`",
         f"> 选择任务：{', '.join(selected_ids)}",
         "",
     ]
@@ -1961,6 +3358,17 @@ def select_scope(
             )
     else:
         output.append("- 无直接依赖任务。")
+    execution_json = json.dumps(execution, ensure_ascii=False, indent=2)
+    output.extend(
+        [
+            "",
+            "## 共享执行状态",
+            "",
+            "```json",
+            execution_json,
+            "```",
+        ]
+    )
     integration = Section(
         section_id="integration-plan",
         content=payload["integration_plan"],

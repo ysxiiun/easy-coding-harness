@@ -1,6 +1,6 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -26,6 +26,10 @@ function runState(args: string[]): string {
     cwd: tempDir,
     encoding: "utf8",
   });
+}
+
+function initializeSpecExecution(specPath: string): void {
+  runState(["initialize-spec-execution", "--spec", specPath]);
 }
 
 async function createRepository(
@@ -99,7 +103,7 @@ describe("Canonical Spec v1 runtime integration", () => {
       path.join(process.cwd(), "test", "fixtures", "canonical-v1-valid.md"),
     );
     expect(createHash("sha256").update(protocol).digest("hex")).toBe(
-      "9c01b94771a5d8d760ede748cd98b1dabfa792c168a57d2eea71afc4bc00dfd1",
+      "a6016f04b4ce18794038ebcdbcab6e400a8a08aa2929a3e777c2b35ee3f7e7a1",
     );
     expect(createHash("sha256").update(fixture).digest("hex")).toBe(
       "57171e63a5d2149866999276e10f1aa829c5f92ed77f8db5d8419443002f8022",
@@ -214,6 +218,7 @@ describe("Canonical Spec v1 runtime integration", () => {
 
   it("returns deterministic per-repository consumption closures", async () => {
     const fixture = await writeCanonicalFixture();
+    initializeSpecExecution(fixture.specPath);
     const selected = JSON.parse(
       runState([
         "select-dev-spec-scope",
@@ -247,6 +252,7 @@ describe("Canonical Spec v1 runtime integration", () => {
 
   it("creates one Harness task for a selected task set and tracks dependencies", async () => {
     const fixture = await writeCanonicalFixture();
+    initializeSpecExecution(fixture.specPath);
     const created = JSON.parse(
       runState([
         "create-task-from-spec",
@@ -282,6 +288,11 @@ describe("Canonical Spec v1 runtime integration", () => {
     expect(created.spec_summary.pending_dependencies).toEqual([
       expect.objectContaining({
         source_task_id: "R1-T2",
+        task_id: "R1-T1",
+        dependency_type: "hard",
+      }),
+      expect.objectContaining({
+        source_task_id: "R1-T2",
         task_id: "R2-T1",
         dependency_type: "integration",
       }),
@@ -306,11 +317,18 @@ describe("Canonical Spec v1 runtime integration", () => {
         "codex",
       ]),
     );
-    expect(satisfied.spec_summary.pending_dependencies).toEqual([]);
+    expect(satisfied.spec_summary.pending_dependencies).toEqual([
+      expect.objectContaining({
+        source_task_id: "R1-T2",
+        task_id: "R1-T1",
+        dependency_type: "hard",
+      }),
+    ]);
   });
 
   it("treats an explicit repository path as authoritative", async () => {
     const fixture = await writeCanonicalFixture();
+    initializeSpecExecution(fixture.specPath);
     const result = spawnSync(
       pythonCmd,
       [
@@ -342,6 +360,7 @@ describe("Canonical Spec v1 runtime integration", () => {
 
   it("rejects a selected task that omits its hard dependency", async () => {
     const fixture = await writeCanonicalFixture();
+    initializeSpecExecution(fixture.specPath);
     const result = spawnSync(
       pythonCmd,
       [
@@ -425,6 +444,7 @@ describe("Canonical Spec v1 runtime integration", () => {
 
   it("rejects dependency metadata that no longer matches the source selection", async () => {
     const fixture = await writeCanonicalFixture();
+    initializeSpecExecution(fixture.specPath);
     runState([
       "create-task-from-spec",
       "--spec",
@@ -487,6 +507,7 @@ describe("Canonical Spec v1 runtime integration", () => {
 
   it("rejects stored repository bindings that drift from their resolved checkout", async () => {
     const fixture = await writeCanonicalFixture();
+    initializeSpecExecution(fixture.specPath);
     runState([
       "create-task-from-spec",
       "--spec",
@@ -681,6 +702,7 @@ describe("Canonical Spec v1 runtime integration", () => {
 
   it("requires source-traceable units and blocks MEMORY while integration evidence is pending", async () => {
     const fixture = await writeCanonicalFixture();
+    initializeSpecExecution(fixture.specPath);
     const created = JSON.parse(
       runState([
         "create-task-from-spec",
@@ -719,7 +741,8 @@ describe("Canonical Spec v1 runtime integration", () => {
       created.task.spec_source.path,
       created.task.spec_source.spec_id,
       `revision: ${created.task.spec_source.revision}`,
-      created.task.spec_source.sha256,
+      created.task.spec_source.design_sha256,
+      created.task.spec_source.document_sha256,
       ...created.task.selected_spec_tasks,
       ...created.task.spec_repositories.map(
         (repository: { repo_id: string }) => repository.repo_id,
@@ -1351,5 +1374,1495 @@ describe("Canonical Spec v1 runtime integration", () => {
       runState(["request-transition", "--stage", "MEMORY", "--agent", "codex"]),
     );
     expect(ready.pending_transition).toMatchObject({ from: "VERIFICATION", to: "MEMORY" });
+  }, 40_000);
+
+  it("stores an explicit external Spec locator and rebinds only an identical Canonical design", async () => {
+    const fixture = await writeCanonicalFixture();
+    const externalDir = await mkdtemp(path.join(os.tmpdir(), "ec-shared-spec-"));
+    try {
+      const externalSpec = path.join(externalDir, "shared.md");
+      await writeFile(externalSpec, await readFile(fixture.specPath, "utf8"), "utf8");
+      initializeSpecExecution(externalSpec);
+      const inspected = JSON.parse(
+        runState(["inspect-dev-spec", "--spec", externalSpec]),
+      );
+      expect(inspected).toMatchObject({ status: "READY", execution_revision: 0 });
+      const selected = JSON.parse(
+        runState([
+          "select-dev-spec-scope",
+          "--spec",
+          externalSpec,
+          "--spec-task",
+          "R1-T1",
+        ]),
+      );
+      expect(selected.selected_task_ids).toEqual(["R1-T1"]);
+      const created = JSON.parse(
+        runState([
+          "create-task-from-spec",
+          "--spec",
+          externalSpec,
+          "--spec-task",
+          "R1-T1",
+          "--task-id",
+          "external-spec",
+          "--type",
+          "feature",
+          "--title",
+          "External Spec",
+          "--repo-path",
+          `R1=${fixture.repoA}`,
+          "--agent",
+          "codex",
+        ]),
+      );
+      expect(created.task.spec_source).toMatchObject({
+        path: await realpath(externalSpec),
+        path_mode: "absolute",
+        execution_revision: 0,
+      });
+
+      const reboundSpec = path.join(externalDir, "rebound.md");
+      await writeFile(reboundSpec, await readFile(externalSpec, "utf8"), "utf8");
+      await rm(externalSpec);
+      const rebound = JSON.parse(
+        runState([
+          "rebind-spec-source",
+          "--spec",
+          reboundSpec,
+          "--task-id",
+          "external-spec",
+          "--agent",
+          "codex",
+        ]),
+      );
+      expect(rebound.task.spec_source).toMatchObject({
+        path: await realpath(reboundSpec),
+        path_mode: "absolute",
+      });
+      runState([
+        "writeback-spec-task",
+        "--task-id",
+        "external-spec",
+        "--spec-task",
+        "R1-T1",
+        "--status",
+        "in_progress",
+        "--summary",
+        "External Spec writeback",
+        "--idempotency-key",
+        "external-spec:start",
+        "--agent",
+        "codex",
+      ]);
+      const written = JSON.parse(runState(["inspect-dev-spec", "--spec", reboundSpec]));
+      expect(
+        written.execution.tasks.find((task: { task_id: string }) => task.task_id === "R1-T1"),
+      ).toMatchObject({ status: "in_progress" });
+
+      const changed = (await readFile(reboundSpec, "utf8")).replace(
+        "总目标：订单成功提交后发布事件，通知服务消费同一冻结契约。",
+        "总目标：修改后的静态设计。",
+      );
+      const differentDir = path.join(externalDir, "different");
+      await mkdir(differentDir);
+      const changedSpec = path.join(differentDir, "rebound.md");
+      await writeFile(changedSpec, changed, "utf8");
+      const rejected = spawnSync(
+        pythonCmd,
+        [
+          stateApiPath(),
+          "rebind-spec-source",
+          "--spec",
+          changedSpec,
+          "--task-id",
+          "external-spec",
+          "--agent",
+          "codex",
+          "--cwd",
+          tempDir,
+        ],
+        { cwd: tempDir, encoding: "utf8" },
+      );
+      expect(rejected.status).toBe(1);
+      expect(rejected.stderr).toContain("execution.design_sha256");
+    } finally {
+      await rm(externalDir, { recursive: true, force: true });
+    }
+  });
+
+  it("writes the complete shared task lifecycle idempotently without changing the design digest", async () => {
+    const fixture = await writeCanonicalFixture();
+    initializeSpecExecution(fixture.specPath);
+    const initial = JSON.parse(runState(["inspect-dev-spec", "--spec", fixture.specPath]));
+    runState([
+      "create-task-from-spec",
+      "--spec",
+      fixture.specPath,
+      "--spec-task",
+      "R1-T1",
+      "--task-id",
+      "shared-lifecycle",
+      "--type",
+      "feature",
+      "--title",
+      "Shared lifecycle",
+      "--repo-path",
+      `R1=${fixture.repoA}`,
+      "--agent",
+      "codex",
+    ]);
+    const lifecycleTaskDir = path.join(
+      tempDir,
+      ".easy-coding",
+      "tasks",
+      "shared-lifecycle",
+    );
+    await writeFile(
+      path.join(lifecycleTaskDir, "execution.jsonl"),
+      `${JSON.stringify({
+        type: "plan",
+        strategy: "single",
+        units: [
+          {
+            id: "U1",
+            title: "Publish event",
+            type: "backend",
+            files: ["order-domain/src/main/java/com/example/order/OrderEventPublisher.java"],
+            depends_on: [],
+            repo_id: "R1",
+            source_task_id: "R1-T1",
+            source_step_ids: ["S1"],
+            symbols: ["OrderEventPublisher#publish"],
+            test_commands: ["mvn -Dtest=OrderEventPublisherTest test"],
+          },
+        ],
+      })}\n`,
+      "utf8",
+    );
+    const fingerprintBeforeWriteback = JSON.parse(
+      runState(["evidence-fingerprints", "--task-id", "shared-lifecycle", "--agent", "codex"]),
+    ).implementation_fingerprint;
+    const writeTask = (status: string, key: string, evidence: string[] = []) =>
+      runState([
+        "writeback-spec-task",
+        "--spec-task",
+        "R1-T1",
+        "--status",
+        status,
+        "--summary",
+        `Shared status ${status}`,
+        ...evidence.flatMap((value) => ["--evidence", value]),
+        "--idempotency-key",
+        key,
+        "--agent",
+        "codex",
+      ]);
+    writeTask("in_progress", "shared-lifecycle:start");
+    runState([
+      "writeback-spec-step",
+      "--spec-task",
+      "R1-T1",
+      "--step",
+      "S1",
+      "--status",
+      "completed",
+      "--summary",
+      "Step S1 tests passed",
+      "--evidence",
+      JSON.stringify({ kind: "test", status: "passed", ref: "execution.jsonl#U1", test_id: "T1" }),
+      "--idempotency-key",
+      "shared-lifecycle:step:S1",
+      "--agent",
+      "codex",
+    ]);
+    writeTask("implemented", "shared-lifecycle:implemented");
+    writeTask("verified", "shared-lifecycle:verified");
+    writeTask("completed", "shared-lifecycle:completed");
+    writeTask("completed", "shared-lifecycle:completed");
+
+    const updated = JSON.parse(runState(["inspect-dev-spec", "--spec", fixture.specPath]));
+    expect(updated.design_sha256).toBe(initial.design_sha256);
+    expect(updated.document_sha256).not.toBe(initial.document_sha256);
+    expect(updated.execution_revision).toBe(5);
+    const fingerprintAfterWriteback = JSON.parse(
+      runState(["evidence-fingerprints", "--task-id", "shared-lifecycle", "--agent", "codex"]),
+    ).implementation_fingerprint;
+    expect(fingerprintAfterWriteback).toBe(fingerprintBeforeWriteback);
+    expect(updated.execution.tasks.find((task: { task_id: string }) => task.task_id === "R1-T1"))
+      .toMatchObject({ status: "completed", completed_step_ids: ["S1"] });
+    const records = (await readFile(
+      path.join(tempDir, ".easy-coding", "tasks", "shared-lifecycle", "execution.jsonl"),
+      "utf8",
+    ))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(
+      records.filter(
+        (record) =>
+          record.type === "spec-writeback" &&
+          record.idempotency_key === "shared-lifecycle:completed",
+      ),
+    ).toHaveLength(1);
+    const moduleRoot = path.dirname(stateApiPath());
+    const executionEvents = JSON.parse(
+      execFileSync(
+        pythonCmd,
+        [
+          "-c",
+          [
+            "import json, sys",
+            "sys.path.insert(0, sys.argv[1])",
+            "from easy_dev_spec_execution import show_execution",
+            "print(json.dumps(show_execution(sys.argv[2])['execution']['events']))",
+          ].join("\n"),
+          moduleRoot,
+          fixture.specPath,
+        ],
+        { cwd: tempDir, encoding: "utf8" },
+      ),
+    ) as Array<{ app: string; agent: string }>;
+    expect(executionEvents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ app: "easy-coding", agent: "Codex with Easy Coding" }),
+      ]),
+    );
+  });
+
+  it("allows only one bundled writer to commit from the same execution revision", async () => {
+    const fixture = await writeCanonicalFixture();
+    initializeSpecExecution(fixture.specPath);
+    const moduleRoot = path.dirname(stateApiPath());
+    const result = JSON.parse(
+      execFileSync(
+        pythonCmd,
+        [
+          "-c",
+          [
+            "import json, sys",
+            "from concurrent.futures import ThreadPoolExecutor",
+            "sys.path.insert(0, sys.argv[1])",
+            "from easy_dev_spec_execution import ExecutionConflictError, record_task_status, show_execution",
+            "spec_path = sys.argv[2]",
+            "details = show_execution(spec_path)",
+            "def write(index):",
+            "    try:",
+            "        record_task_status(spec_path, 'R1-T1', 'in_progress', f'writer {index}', 'easy-coding', f'writer-{index}', details['design_sha256'], 0, run_id=f'run-{index}', idempotency_key=f'concurrent-{index}')",
+            "        return 'ok'",
+            "    except ExecutionConflictError:",
+            "        return 'conflict'",
+            "with ThreadPoolExecutor(max_workers=2) as pool:",
+            "    outcomes = list(pool.map(write, [1, 2]))",
+            "after = show_execution(spec_path)['execution']",
+            "print(json.dumps({'outcomes': sorted(outcomes), 'revision': after['execution_revision'], 'events': len(after['events'])}))",
+          ].join("\n"),
+          moduleRoot,
+          fixture.specPath,
+        ],
+        { cwd: tempDir, encoding: "utf8" },
+      ),
+    );
+    expect(result).toEqual({ outcomes: ["conflict", "ok"], revision: 1, events: 1 });
+  }, 20_000);
+
+  it("projects a failed Step as blocked and refuses implemented until a new attempt", async () => {
+    const fixture = await writeCanonicalFixture();
+    initializeSpecExecution(fixture.specPath);
+    runState([
+      "create-task-from-spec",
+      "--spec",
+      fixture.specPath,
+      "--spec-task",
+      "R1-T1",
+      "--task-id",
+      "failed-step",
+      "--type",
+      "bugfix",
+      "--title",
+      "Failed step",
+      "--repo-path",
+      `R1=${fixture.repoA}`,
+      "--agent",
+      "codex",
+    ]);
+    runState([
+      "writeback-spec-task",
+      "--spec-task",
+      "R1-T1",
+      "--status",
+      "in_progress",
+      "--summary",
+      "Implementation started",
+      "--idempotency-key",
+      "failed-step:start",
+      "--agent",
+      "codex",
+    ]);
+    runState([
+      "writeback-spec-step",
+      "--spec-task",
+      "R1-T1",
+      "--step",
+      "S1",
+      "--status",
+      "failed",
+      "--summary",
+      "Targeted test failed",
+      "--evidence",
+      JSON.stringify({ kind: "result", status: "failed", ref: "execution.jsonl#U1" }),
+      "--idempotency-key",
+      "failed-step:S1",
+      "--agent",
+      "codex",
+    ]);
+    const blocked = JSON.parse(runState(["inspect-dev-spec", "--spec", fixture.specPath]));
+    expect(
+      blocked.execution.tasks.find((task: { task_id: string }) => task.task_id === "R1-T1"),
+    ).toMatchObject({ status: "blocked", failed_step_ids: ["S1"] });
+    const rejected = spawnSync(
+      pythonCmd,
+      [
+        stateApiPath(),
+        "writeback-spec-task",
+        "--task-id",
+        "failed-step",
+        "--spec-task",
+        "R1-T1",
+        "--status",
+        "implemented",
+        "--summary",
+        "Must not bypass the failed Step",
+        "--idempotency-key",
+        "failed-step:invalid-implemented",
+        "--agent",
+        "codex",
+        "--cwd",
+        tempDir,
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    expect(rejected.status).toBe(1);
+    expect(rejected.stderr).toContain("blocked -> implemented");
+    const failedTaskPath = path.join(
+      tempDir,
+      ".easy-coding",
+      "tasks",
+      "failed-step",
+      "task.json",
+    );
+    const afterRejectedWrite = JSON.parse(await readFile(failedTaskPath, "utf8"));
+    expect(afterRejectedWrite.spec_writeback_progress).toMatchObject({ status: "error" });
+    expect(afterRejectedWrite.spec_writeback_progress.pending_action).toBeUndefined();
+    runState([
+      "writeback-spec-task",
+      "--task-id",
+      "failed-step",
+      "--spec-task",
+      "R1-T1",
+      "--status",
+      "in_progress",
+      "--summary",
+      "Start corrected repair attempt",
+      "--idempotency-key",
+      "failed-step:repair",
+      "--agent",
+      "codex",
+    ]);
+    const repaired = JSON.parse(runState(["inspect-dev-spec", "--spec", fixture.specPath]));
+    expect(
+      repaired.execution.tasks.find((task: { task_id: string }) => task.task_id === "R1-T1"),
+    ).toMatchObject({ status: "in_progress" });
+  }, 20_000);
+
+  it("refuses to overwrite a different pending shared writeback action", async () => {
+    const fixture = await writeCanonicalFixture();
+    initializeSpecExecution(fixture.specPath);
+    runState([
+      "create-task-from-spec",
+      "--spec",
+      fixture.specPath,
+      "--spec-task",
+      "R1-T1",
+      "--task-id",
+      "pending-writeback",
+      "--type",
+      "feature",
+      "--title",
+      "Pending writeback",
+      "--repo-path",
+      `R1=${fixture.repoA}`,
+      "--agent",
+      "codex",
+    ]);
+    const taskPath = path.join(
+      tempDir,
+      ".easy-coding",
+      "tasks",
+      "pending-writeback",
+      "task.json",
+    );
+    const task = JSON.parse(await readFile(taskPath, "utf8"));
+    const pendingAction = {
+      kind: "task",
+      source_task_id: "R1-T1",
+      status: "in_progress",
+      summary: "Interrupted start",
+      evidence: [],
+      idempotency_key: "pending-writeback:interrupted",
+      agent: "codex",
+    };
+    task.spec_writeback_progress.pending_action = JSON.stringify(pendingAction, Object.keys(pendingAction).sort());
+    task.spec_writeback_progress.status = "pending";
+    await writeFile(taskPath, JSON.stringify(task, null, 2), "utf8");
+
+    const rejected = spawnSync(
+      pythonCmd,
+      [
+        stateApiPath(),
+        "writeback-spec-task",
+        "--task-id",
+        "pending-writeback",
+        "--spec-task",
+        "R1-T1",
+        "--status",
+        "blocked",
+        "--summary",
+        "Different action",
+        "--idempotency-key",
+        "pending-writeback:different",
+        "--agent",
+        "codex",
+        "--cwd",
+        tempDir,
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    expect(rejected.status).toBe(1);
+    expect(rejected.stderr).toContain("different Canonical Spec writeback is pending");
+    const preserved = JSON.parse(await readFile(taskPath, "utf8"));
+    expect(JSON.parse(preserved.spec_writeback_progress.pending_action)).toEqual(pendingAction);
+  }, 20_000);
+
+  it("clears an obsolete pending writeback so a revised design can synchronize", async () => {
+    const fixture = await writeCanonicalFixture();
+    initializeSpecExecution(fixture.specPath);
+    runState([
+      "create-task-from-spec",
+      "--spec",
+      fixture.specPath,
+      "--spec-task",
+      "R1-T1",
+      "--task-id",
+      "obsolete-pending",
+      "--type",
+      "feature",
+      "--title",
+      "Obsolete pending",
+      "--repo-path",
+      `R1=${fixture.repoA}`,
+      "--agent",
+      "codex",
+    ]);
+    const taskPath = path.join(
+      tempDir,
+      ".easy-coding",
+      "tasks",
+      "obsolete-pending",
+      "task.json",
+    );
+    const task = JSON.parse(await readFile(taskPath, "utf8"));
+    task.spec_writeback_progress.pending_action = JSON.stringify({
+      kind: "task",
+      source_task_id: "R1-T1",
+      status: "in_progress",
+      summary: "Interrupted old-design start",
+      evidence: [],
+      idempotency_key: "obsolete-pending:start",
+      agent: "codex",
+    });
+    task.spec_writeback_progress.status = "pending";
+    await writeFile(taskPath, JSON.stringify(task, null, 2), "utf8");
+    const revised = (await readFile(fixture.specPath, "utf8"))
+      .replace('"revision": 1', '"revision": 2')
+      .replace(
+        "总目标：订单成功提交后发布事件，通知服务消费同一冻结契约。",
+        "总目标：订单成功提交后按新设计发布可靠事件。",
+      );
+    await writeFile(fixture.specPath, revised, "utf8");
+
+    const reconciliation = spawnSync(
+      pythonCmd,
+      [
+        stateApiPath(),
+        "reconcile-spec-execution",
+        "--task-id",
+        "obsolete-pending",
+        "--agent",
+        "codex",
+        "--cwd",
+        tempDir,
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    expect(reconciliation.status).toBe(1);
+    expect(reconciliation.stderr).toContain("obsolete design");
+    const unlocked = JSON.parse(await readFile(taskPath, "utf8"));
+    expect(unlocked.spec_writeback_progress).toMatchObject({ status: "error" });
+    expect(unlocked.spec_writeback_progress.pending_action).toBeUndefined();
+
+    const synchronized = JSON.parse(
+      runState([
+        "sync-spec-design",
+        "--affected-task",
+        "R1-T1",
+        "--summary",
+        "Synchronize revised design after discarding stale progress",
+        "--idempotency-key",
+        "obsolete-pending:revision:2",
+        "--agent",
+        "codex",
+      ]),
+    );
+    expect(synchronized.task.spec_source).toMatchObject({ revision: 2, execution_revision: 1 });
+  }, 20_000);
+
+  it("clears a terminal idempotency-key conflict instead of retaining an unreplayable action", async () => {
+    const fixture = await writeCanonicalFixture();
+    initializeSpecExecution(fixture.specPath);
+    runState([
+      "create-task-from-spec",
+      "--spec",
+      fixture.specPath,
+      "--spec-task",
+      "R1-T1",
+      "--task-id",
+      "idempotency-conflict",
+      "--type",
+      "feature",
+      "--title",
+      "Idempotency conflict",
+      "--repo-path",
+      `R1=${fixture.repoA}`,
+      "--agent",
+      "codex",
+    ]);
+    const taskPath = path.join(
+      tempDir,
+      ".easy-coding",
+      "tasks",
+      "idempotency-conflict",
+      "task.json",
+    );
+    const firstWrite = [
+      "writeback-spec-task",
+      "--task-id",
+      "idempotency-conflict",
+      "--spec-task",
+      "R1-T1",
+      "--status",
+      "in_progress",
+      "--summary",
+      "First payload",
+      "--idempotency-key",
+      "idempotency-conflict:shared-key",
+      "--agent",
+      "codex",
+    ];
+    runState(firstWrite);
+    const rejected = spawnSync(
+      pythonCmd,
+      [
+        stateApiPath(),
+        "writeback-spec-task",
+        "--task-id",
+        "idempotency-conflict",
+        "--spec-task",
+        "R1-T1",
+        "--status",
+        "in_progress",
+        "--summary",
+        "Second payload",
+        "--idempotency-key",
+        "idempotency-conflict:shared-key",
+        "--agent",
+        "codex",
+        "--cwd",
+        tempDir,
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    expect(rejected.status).toBe(1);
+    expect(rejected.stderr).toContain("CAS retry failed");
+    const unlocked = JSON.parse(await readFile(taskPath, "utf8"));
+    expect(unlocked.spec_writeback_progress).toMatchObject({ status: "error" });
+    expect(unlocked.spec_writeback_progress.pending_action).toBeUndefined();
+  }, 20_000);
+
+  it("reopens only blocked source tasks during a multi-source repair", async () => {
+    const fixture = await writeCanonicalFixture();
+    initializeSpecExecution(fixture.specPath);
+    runState([
+      "create-task-from-spec",
+      "--spec",
+      fixture.specPath,
+      "--spec-task",
+      "R1-T1",
+      "--spec-task",
+      "R2-T1",
+      "--task-id",
+      "scoped-repair",
+      "--type",
+      "bugfix",
+      "--title",
+      "Scoped repair",
+      "--repo-path",
+      `R1=${fixture.repoA}`,
+      "--repo-path",
+      `R2=${fixture.repoB}`,
+      "--agent",
+      "codex",
+    ]);
+    for (const sourceTask of ["R1-T1", "R2-T1"]) {
+      runState([
+        "writeback-spec-task",
+        "--spec-task",
+        sourceTask,
+        "--status",
+        "in_progress",
+        "--summary",
+        `Started ${sourceTask}`,
+        "--idempotency-key",
+        `scoped-repair:${sourceTask}:start`,
+        "--agent",
+        "codex",
+      ]);
+    }
+    runState([
+      "writeback-spec-step",
+      "--spec-task",
+      "R1-T1",
+      "--step",
+      "S1",
+      "--status",
+      "failed",
+      "--summary",
+      "R1 review failure",
+      "--evidence",
+      JSON.stringify({ kind: "review", status: "failed", ref: "execution.jsonl#R1" }),
+      "--idempotency-key",
+      "scoped-repair:R1-T1:failed",
+      "--agent",
+      "codex",
+    ]);
+    runState([
+      "writeback-spec-step",
+      "--spec-task",
+      "R2-T1",
+      "--step",
+      "S2",
+      "--status",
+      "completed",
+      "--summary",
+      "R2 implementation complete",
+      "--evidence",
+      JSON.stringify({ kind: "test", status: "passed", ref: "local", test_id: "T2" }),
+      "--idempotency-key",
+      "scoped-repair:R2-T1:S2",
+      "--agent",
+      "codex",
+    ]);
+    runState([
+      "writeback-spec-task",
+      "--spec-task",
+      "R2-T1",
+      "--status",
+      "implemented",
+      "--summary",
+      "R2 remains complete",
+      "--idempotency-key",
+      "scoped-repair:R2-T1:implemented",
+      "--agent",
+      "codex",
+    ]);
+    const moduleRoot = path.dirname(stateApiPath());
+    execFileSync(
+      pythonCmd,
+      [
+        "-c",
+        [
+          "import pathlib, sys",
+          `sys.path.insert(0, ${JSON.stringify(moduleRoot)})`,
+          "import easy_coding_state as state",
+          `root = pathlib.Path(${JSON.stringify(tempDir)})`,
+          "task = state.load_task(root, 'scoped-repair')",
+          "state.writeback_ready_tasks_for_implement(root, 'scoped-repair', task, 'codex', {'blocked'})",
+        ].join("; "),
+      ],
+      { cwd: tempDir },
+    );
+    const inspection = JSON.parse(runState(["inspect-dev-spec", "--spec", fixture.specPath]));
+    expect(
+      inspection.execution.tasks.find(
+        (task: { task_id: string }) => task.task_id === "R1-T1",
+      ),
+    ).toMatchObject({ status: "in_progress" });
+    expect(
+      inspection.execution.tasks.find(
+        (task: { task_id: string }) => task.task_id === "R2-T1",
+      ),
+    ).toMatchObject({ status: "implemented" });
+  }, 25_000);
+
+  it("reconciles a local completed result even when no pending writer action was recorded", async () => {
+    const fixture = await writeCanonicalFixture();
+    initializeSpecExecution(fixture.specPath);
+    runState([
+      "create-task-from-spec",
+      "--spec",
+      fixture.specPath,
+      "--spec-task",
+      "R1-T1",
+      "--task-id",
+      "result-reconcile",
+      "--type",
+      "feature",
+      "--title",
+      "Result reconcile",
+      "--repo-path",
+      `R1=${fixture.repoA}`,
+      "--agent",
+      "codex",
+    ]);
+    runState([
+      "writeback-spec-task",
+      "--spec-task",
+      "R1-T1",
+      "--status",
+      "in_progress",
+      "--summary",
+      "Implementation started before the local result",
+      "--idempotency-key",
+      "result-reconcile:start",
+      "--agent",
+      "codex",
+    ]);
+    const taskDir = path.join(tempDir, ".easy-coding", "tasks", "result-reconcile");
+    const unit = {
+      id: "U1",
+      title: "Publish event",
+      type: "backend",
+      files: ["order-domain/src/main/java/com/example/order/OrderEventPublisher.java"],
+      depends_on: [],
+      repo_id: "R1",
+      source_task_id: "R1-T1",
+      source_step_ids: ["S1"],
+      symbols: ["OrderEventPublisher#publish"],
+      test_commands: ["mvn -Dtest=OrderEventPublisherTest test"],
+    };
+    await appendFile(
+      path.join(taskDir, "execution.jsonl"),
+      [
+        JSON.stringify({ type: "plan", strategy: "single", units: [unit] }),
+        JSON.stringify({
+          type: "dispatch",
+          unit_id: "U1",
+          repo_id: "R1",
+          source_task_id: "R1-T1",
+        }),
+        JSON.stringify({
+          type: "result",
+          unit_id: "U1",
+          status: "completed",
+          changed_files: unit.files,
+          summary: "Implemented and tested",
+          checks: [
+            { command: "mvn -Dtest=OrderEventPublisherTest test", passed: true, failures: [] },
+          ],
+          issues: [],
+          needs_attention: [],
+          repo_id: "R1",
+          source_task_id: "R1-T1",
+        }),
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    const reconciled = JSON.parse(
+      runState([
+        "reconcile-spec-execution",
+        "--task-id",
+        "result-reconcile",
+        "--agent",
+        "codex",
+      ]),
+    );
+    expect(reconciled).toMatchObject({
+      reconciled: true,
+      reconciled_actions: 2,
+      unresolved_local_evidence: [],
+    });
+    const inspection = JSON.parse(runState(["inspect-dev-spec", "--spec", fixture.specPath]));
+    expect(
+      inspection.execution.tasks.find((task: { task_id: string }) => task.task_id === "R1-T1"),
+    ).toMatchObject({ status: "implemented", completed_step_ids: ["S1"] });
+    const repeated = JSON.parse(
+      runState([
+        "reconcile-spec-execution",
+        "--task-id",
+        "result-reconcile",
+        "--agent",
+        "codex",
+      ]),
+    );
+    expect(repeated).toMatchObject({
+      reconciled: false,
+      reconciled_actions: 0,
+      unresolved_local_evidence: ["U1:shared-task-status=implemented"],
+    });
+    const repeatedInspection = JSON.parse(
+      runState(["inspect-dev-spec", "--spec", fixture.specPath]),
+    );
+    expect(repeatedInspection.execution_revision).toBe(3);
+    const moduleRoot = path.dirname(stateApiPath());
+    execFileSync(
+      pythonCmd,
+      [
+        "-c",
+        [
+          "import pathlib, sys",
+          `sys.path.insert(0, ${JSON.stringify(moduleRoot)})`,
+          "import easy_coding_state as state",
+          `root = pathlib.Path(${JSON.stringify(tempDir)})`,
+          "task = state.load_task(root, 'result-reconcile')",
+          "state.writeback_ready_tasks_for_implement(root, 'result-reconcile', task, 'codex')",
+        ].join("; "),
+      ],
+      { cwd: tempDir },
+    );
+    const noFreshResult = JSON.parse(
+      runState([
+        "reconcile-spec-execution",
+        "--task-id",
+        "result-reconcile",
+        "--agent",
+        "codex",
+      ]),
+    );
+    expect(noFreshResult).toMatchObject({
+      reconciled: false,
+      reconciled_actions: 0,
+      unresolved_local_evidence: ["U1:no-result-for-current-attempt"],
+    });
+    const repairInspection = JSON.parse(
+      runState(["inspect-dev-spec", "--spec", fixture.specPath]),
+    );
+    expect(repairInspection.execution_revision).toBe(4);
+    expect(
+      repairInspection.execution.tasks.find(
+        (task: { task_id: string }) => task.task_id === "R1-T1",
+      ),
+    ).toMatchObject({ status: "in_progress" });
+
+    await appendFile(
+      path.join(taskDir, "execution.jsonl"),
+      [
+        JSON.stringify({
+          type: "dispatch",
+          unit_id: "U1",
+          repo_id: "R1",
+          source_task_id: "R1-T1",
+        }),
+        JSON.stringify({
+          type: "result",
+          unit_id: "U1",
+          status: "completed",
+          changed_files: unit.files,
+          summary: "Completed with unresolved issues",
+          checks: [
+            { command: "mvn -Dtest=OrderEventPublisherTest test", passed: true, failures: [] },
+          ],
+          issues: ["unresolved contract mismatch"],
+          needs_attention: [],
+          repo_id: "R1",
+          source_task_id: "R1-T1",
+        }),
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    const malformed = JSON.parse(
+      runState([
+        "reconcile-spec-execution",
+        "--task-id",
+        "result-reconcile",
+        "--agent",
+        "codex",
+      ]),
+    );
+    expect(malformed).toMatchObject({
+      reconciled: false,
+      reconciled_actions: 0,
+      unresolved_local_evidence: ["U1:invalid-result-status-or-issues"],
+    });
+    const afterMalformed = JSON.parse(
+      runState(["inspect-dev-spec", "--spec", fixture.specPath]),
+    );
+    expect(afterMalformed.execution_revision).toBe(4);
+  }, 20_000);
+
+  it("rejects an execution revision rollback while preserving the static design binding", async () => {
+    const fixture = await writeCanonicalFixture();
+    initializeSpecExecution(fixture.specPath);
+    const initialized = await readFile(fixture.specPath, "utf8");
+    runState([
+      "create-task-from-spec",
+      "--spec",
+      fixture.specPath,
+      "--spec-task",
+      "R1-T1",
+      "--task-id",
+      "rollback-guard",
+      "--type",
+      "feature",
+      "--title",
+      "Rollback guard",
+      "--repo-path",
+      `R1=${fixture.repoA}`,
+      "--agent",
+      "codex",
+    ]);
+    runState([
+      "writeback-spec-task",
+      "--spec-task",
+      "R1-T1",
+      "--status",
+      "in_progress",
+      "--summary",
+      "Started",
+      "--idempotency-key",
+      "rollback-guard:start",
+      "--agent",
+      "codex",
+    ]);
+    await writeFile(fixture.specPath, initialized, "utf8");
+    const result = spawnSync(
+      pythonCmd,
+      [
+        stateApiPath(),
+        "reconcile-spec-execution",
+        "--task-id",
+        "rollback-guard",
+        "--agent",
+        "codex",
+        "--cwd",
+        tempDir,
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("execution revision moved backwards");
+  }, 20_000);
+
+  it("migrates a legacy whole-document digest after the execution ledger is initialized", async () => {
+    const fixture = await writeCanonicalFixture();
+    initializeSpecExecution(fixture.specPath);
+    runState([
+      "create-task-from-spec",
+      "--spec",
+      fixture.specPath,
+      "--spec-task",
+      "R1-T1",
+      "--task-id",
+      "legacy-digest",
+      "--type",
+      "feature",
+      "--title",
+      "Legacy digest",
+      "--repo-path",
+      `R1=${fixture.repoA}`,
+      "--agent",
+      "codex",
+    ]);
+    const taskPath = path.join(
+      tempDir,
+      ".easy-coding",
+      "tasks",
+      "legacy-digest",
+      "task.json",
+    );
+    const task = JSON.parse(await readFile(taskPath, "utf8"));
+    const document = await readFile(fixture.specPath, "utf8");
+    const designText = `${document.split("<!-- EDS:EXECUTION:BEGIN -->", 1)[0].trimEnd()}\n`;
+    task.spec_source.sha256 = createHash("sha256").update(designText).digest("hex");
+    delete task.spec_source.path_mode;
+    delete task.spec_source.design_sha256;
+    delete task.spec_source.document_sha256;
+    delete task.spec_source.execution_revision;
+    await writeFile(taskPath, JSON.stringify(task, null, 2), "utf8");
+
+    runState([
+      "reconcile-spec-execution",
+      "--task-id",
+      "legacy-digest",
+      "--agent",
+      "codex",
+    ]);
+    const migrated = JSON.parse(await readFile(taskPath, "utf8"));
+    expect(migrated.spec_source).toMatchObject({
+      path_mode: "project-relative",
+      design_sha256: expect.any(String),
+      document_sha256: expect.any(String),
+      execution_revision: 0,
+    });
+    expect(migrated.spec_source.sha256).toBeUndefined();
+  }, 20_000);
+
+  it("uses a new automatic in-progress event when an implemented task enters a repair attempt", async () => {
+    const fixture = await writeCanonicalFixture();
+    initializeSpecExecution(fixture.specPath);
+    runState([
+      "create-task-from-spec",
+      "--spec",
+      fixture.specPath,
+      "--spec-task",
+      "R1-T1",
+      "--task-id",
+      "repair-attempt",
+      "--type",
+      "feature",
+      "--title",
+      "Repair attempt",
+      "--repo-path",
+      `R1=${fixture.repoA}`,
+      "--agent",
+      "codex",
+    ]);
+    runState([
+      "writeback-spec-task",
+      "--spec-task",
+      "R1-T1",
+      "--status",
+      "in_progress",
+      "--summary",
+      "Initial implementation",
+      "--idempotency-key",
+      "repair-attempt:initial",
+      "--agent",
+      "codex",
+    ]);
+    runState([
+      "writeback-spec-step",
+      "--spec-task",
+      "R1-T1",
+      "--step",
+      "S1",
+      "--status",
+      "completed",
+      "--summary",
+      "Initial step complete",
+      "--evidence",
+      JSON.stringify({ kind: "test", status: "passed", ref: "local", test_id: "T1" }),
+      "--idempotency-key",
+      "repair-attempt:step",
+      "--agent",
+      "codex",
+    ]);
+    runState([
+      "writeback-spec-task",
+      "--spec-task",
+      "R1-T1",
+      "--status",
+      "implemented",
+      "--summary",
+      "Initial implementation complete",
+      "--idempotency-key",
+      "repair-attempt:implemented",
+      "--agent",
+      "codex",
+    ]);
+    const taskPath = path.join(
+      tempDir,
+      ".easy-coding",
+      "tasks",
+      "repair-attempt",
+      "task.json",
+    );
+    const task = JSON.parse(await readFile(taskPath, "utf8"));
+    task.stage_history.push({ stage: "IMPLEMENT", agent: "codex", entered_at: "2026-08-11" });
+    await writeFile(taskPath, JSON.stringify(task, null, 2), "utf8");
+    const moduleRoot = path.dirname(stateApiPath());
+    execFileSync(
+      pythonCmd,
+      [
+        "-c",
+        [
+          "import pathlib, sys",
+          `sys.path.insert(0, ${JSON.stringify(moduleRoot)})`,
+          "import easy_coding_state as state",
+          `root = pathlib.Path(${JSON.stringify(tempDir)})`,
+          "task = state.load_task(root, 'repair-attempt')",
+          "state.writeback_ready_tasks_for_implement(root, 'repair-attempt', task, 'codex')",
+        ].join("; "),
+      ],
+      { cwd: tempDir },
+    );
+    const inspection = JSON.parse(runState(["inspect-dev-spec", "--spec", fixture.specPath]));
+    expect(
+      inspection.execution.tasks.find((item: { task_id: string }) => item.task_id === "R1-T1"),
+    ).toMatchObject({ status: "in_progress" });
+    const records = (await readFile(
+      path.join(tempDir, ".easy-coding", "tasks", "repair-attempt", "execution.jsonl"),
+      "utf8",
+    ))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(
+      records.some(
+        (record) =>
+          record.type === "spec-writeback" &&
+          record.idempotency_key === "repair-attempt:R1-T1:enter-implement:1:attempt-2",
+      ),
+    ).toBe(true);
+    const unit = {
+      id: "U1",
+      title: "Repair event publishing",
+      type: "backend",
+      files: ["order-domain/src/main/java/com/example/order/OrderEventPublisher.java"],
+      depends_on: [],
+      repo_id: "R1",
+      source_task_id: "R1-T1",
+      source_step_ids: ["S1"],
+      symbols: ["OrderEventPublisher#publish"],
+      test_commands: ["mvn -Dtest=OrderEventPublisherTest test"],
+    };
+    await appendFile(
+      path.join(tempDir, ".easy-coding", "tasks", "repair-attempt", "execution.jsonl"),
+      [
+        JSON.stringify({ type: "plan", strategy: "single", units: [unit] }),
+        JSON.stringify({
+          type: "dispatch",
+          unit_id: "U1",
+          repo_id: "R1",
+          source_task_id: "R1-T1",
+        }),
+        JSON.stringify({
+          type: "result",
+          unit_id: "U1",
+          status: "completed",
+          changed_files: unit.files,
+          summary: "Repair completed",
+          checks: [
+            { command: "mvn -Dtest=OrderEventPublisherTest test", passed: true, failures: [] },
+          ],
+          issues: [],
+          needs_attention: [],
+          repo_id: "R1",
+          source_task_id: "R1-T1",
+        }),
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    runState([
+      "reconcile-spec-execution",
+      "--task-id",
+      "repair-attempt",
+      "--agent",
+      "codex",
+    ]);
+    const repaired = JSON.parse(runState(["inspect-dev-spec", "--spec", fixture.specPath]));
+    expect(
+      repaired.execution.tasks.find((item: { task_id: string }) => item.task_id === "R1-T1"),
+    ).toMatchObject({ status: "implemented" });
+    const repairedRecords = (await readFile(
+      path.join(tempDir, ".easy-coding", "tasks", "repair-attempt", "execution.jsonl"),
+      "utf8",
+    ))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(
+      repairedRecords.filter(
+        (record) => record.type === "spec-writeback" && record.action?.kind === "step",
+      ),
+    ).toHaveLength(2);
+  }, 20_000);
+
+  it("synchronizes a confirmed static revision and resets the affected shared task closure", async () => {
+    const fixture = await writeCanonicalFixture();
+    initializeSpecExecution(fixture.specPath);
+    runState([
+      "create-task-from-spec",
+      "--spec",
+      fixture.specPath,
+      "--spec-task",
+      "R1-T1",
+      "--task-id",
+      "design-sync",
+      "--type",
+      "feature",
+      "--title",
+      "Design sync",
+      "--repo-path",
+      `R1=${fixture.repoA}`,
+      "--agent",
+      "codex",
+    ]);
+    runState(["auto-transition", "--stage", "ANALYSIS", "--agent", "codex"]);
+    const designSyncTaskDir = path.join(
+      tempDir,
+      ".easy-coding",
+      "tasks",
+      "design-sync",
+    );
+    await writeFile(
+      path.join(designSyncTaskDir, "execution.jsonl"),
+      `${JSON.stringify({
+        type: "plan",
+        strategy: "single",
+        units: [
+          {
+            id: "U1",
+            title: "Publish event",
+            type: "backend",
+            files: ["order-domain/src/main/java/com/example/order/OrderEventPublisher.java"],
+            depends_on: [],
+            repo_id: "R1",
+            source_task_id: "R1-T1",
+            source_step_ids: ["S1"],
+            symbols: ["OrderEventPublisher#publish"],
+            test_commands: ["mvn -Dtest=OrderEventPublisherTest test"],
+          },
+        ],
+      })}\n`,
+      "utf8",
+    );
+    const oldFingerprint = JSON.parse(
+      runState(["evidence-fingerprints", "--task-id", "design-sync", "--agent", "codex"]),
+    ).implementation_fingerprint;
+    expect(oldFingerprint).toEqual(expect.any(String));
+    runState([
+      "writeback-spec-task",
+      "--spec-task",
+      "R1-T1",
+      "--status",
+      "in_progress",
+      "--summary",
+      "Started old design",
+      "--idempotency-key",
+      "design-sync:start",
+      "--agent",
+      "codex",
+    ]);
+    const revised = (await readFile(fixture.specPath, "utf8"))
+      .replace('"revision": 1', '"revision": 2')
+      .replace(
+        "总目标：订单成功提交后发布事件，通知服务消费同一冻结契约。",
+        "总目标：订单成功提交后可靠发布事件，通知服务消费同一冻结契约。",
+      );
+    await writeFile(fixture.specPath, revised, "utf8");
+    const synchronized = JSON.parse(
+      runState([
+        "sync-spec-design",
+        "--affected-task",
+        "R1-T1",
+        "--summary",
+        "Confirmed reliability wording",
+        "--idempotency-key",
+        "design-sync:revision:2",
+        "--agent",
+        "codex",
+      ]),
+    );
+    expect(synchronized.task.status).toBe("ANALYSIS");
+    expect(synchronized.task.spec_source).toMatchObject({ revision: 2, execution_revision: 2 });
+    const inspection = JSON.parse(runState(["inspect-dev-spec", "--spec", fixture.specPath]));
+    expect(
+      inspection.execution.tasks.find((task: { task_id: string }) => task.task_id === "R1-T1"),
+    ).toMatchObject({ status: "not_started", completed_step_ids: [] });
+    const staleFingerprint = spawnSync(
+      pythonCmd,
+      [
+        stateApiPath(),
+        "evidence-fingerprints",
+        "--task-id",
+        "design-sync",
+        "--agent",
+        "codex",
+        "--cwd",
+        tempDir,
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    expect(staleFingerprint.status).toBe(1);
+    expect(staleFingerprint.stderr).toContain("without a valid plan");
+  }, 20_000);
+
+  it("invalidates affected dependency evidence on design sync and accepts fresh revision evidence", async () => {
+    const fixture = await writeCanonicalFixture();
+    initializeSpecExecution(fixture.specPath);
+    runState([
+      "create-task-from-spec",
+      "--spec",
+      fixture.specPath,
+      "--spec-task",
+      "R1-T1",
+      "--spec-task",
+      "R2-T1",
+      "--spec-task",
+      "R1-T2",
+      "--task-id",
+      "dependency-sync",
+      "--type",
+      "feature",
+      "--title",
+      "Dependency sync",
+      "--repo-path",
+      `R1=${fixture.repoA}`,
+      "--repo-path",
+      `R2=${fixture.repoB}`,
+      "--agent",
+      "codex",
+    ]);
+    runState(["auto-transition", "--stage", "ANALYSIS", "--agent", "codex"]);
+    const evidenceArgs = [
+      "satisfy-spec-dependency",
+      "--spec-task",
+      "R2-T1",
+      "--source-task",
+      "R1-T2",
+      "--evidence",
+      "integration report 42",
+      "--agent",
+      "codex",
+    ];
+    const initiallySatisfied = JSON.parse(runState(evidenceArgs));
+    expect(
+      initiallySatisfied.task.spec_dependency_evidence.find(
+        (record: { source_task_id: string; task_id: string }) =>
+          record.source_task_id === "R1-T2" && record.task_id === "R2-T1",
+      ),
+    ).toMatchObject({ status: "satisfied", evidence: "integration report 42" });
+
+    const revised = (await readFile(fixture.specPath, "utf8"))
+      .replace('"revision": 1', '"revision": 2')
+      .replace(
+        "总目标：订单成功提交后发布事件，通知服务消费同一冻结契约。",
+        "总目标：订单成功提交后按修订契约发布事件。",
+      );
+    await writeFile(fixture.specPath, revised, "utf8");
+    const synchronized = JSON.parse(
+      runState([
+        "sync-spec-design",
+        "--affected-task",
+        "R1-T2",
+        "--summary",
+        "Revised integration contract",
+        "--idempotency-key",
+        "dependency-sync:revision:2",
+        "--agent",
+        "codex",
+      ]),
+    );
+    expect(
+      synchronized.task.spec_dependency_evidence.find(
+        (record: { source_task_id: string; task_id: string }) =>
+          record.source_task_id === "R1-T2" && record.task_id === "R2-T1",
+      ),
+    ).toMatchObject({ status: "pending", shared_status: "pending" });
+    expect(
+      synchronized.task.spec_dependency_evidence.find(
+        (record: { source_task_id: string; task_id: string; evidence?: string }) =>
+          record.source_task_id === "R1-T2" &&
+          record.task_id === "R2-T1" &&
+          record.evidence !== undefined,
+      ),
+    ).toBeUndefined();
+
+    const freshlySatisfied = JSON.parse(runState(evidenceArgs));
+    expect(
+      freshlySatisfied.task.spec_dependency_evidence.find(
+        (record: { source_task_id: string; task_id: string }) =>
+          record.source_task_id === "R1-T2" && record.task_id === "R2-T1",
+      ),
+    ).toMatchObject({ status: "satisfied", evidence: "integration report 42" });
+  }, 30_000);
+
+  it("reconciles a design sync that committed before the local acknowledgment", async () => {
+    const fixture = await writeCanonicalFixture();
+    initializeSpecExecution(fixture.specPath);
+    runState([
+      "create-task-from-spec",
+      "--spec",
+      fixture.specPath,
+      "--spec-task",
+      "R1-T1",
+      "--task-id",
+      "design-sync-recovery",
+      "--type",
+      "feature",
+      "--title",
+      "Design sync recovery",
+      "--repo-path",
+      `R1=${fixture.repoA}`,
+      "--agent",
+      "codex",
+    ]);
+    runState(["auto-transition", "--stage", "ANALYSIS", "--agent", "codex"]);
+    const taskDir = path.join(tempDir, ".easy-coding", "tasks", "design-sync-recovery");
+    const taskPath = path.join(taskDir, "task.json");
+    const logPath = path.join(taskDir, "execution.jsonl");
+    const staleTask = JSON.parse(await readFile(taskPath, "utf8"));
+    const staleLog = await readFile(logPath, "utf8").catch(() => "");
+    const revised = (await readFile(fixture.specPath, "utf8"))
+      .replace('"revision": 1', '"revision": 2')
+      .replace(
+        "总目标：订单成功提交后发布事件，通知服务消费同一冻结契约。",
+        "总目标：订单成功提交后支持可恢复的可靠事件发布。",
+      );
+    await writeFile(fixture.specPath, revised, "utf8");
+    const syncArgs = [
+      "sync-spec-design",
+      "--affected-task",
+      "R1-T1",
+      "--summary",
+      "Recoverable design sync",
+      "--idempotency-key",
+      "design-sync-recovery:revision:2",
+      "--agent",
+      "codex",
+    ];
+    runState(syncArgs);
+
+    staleTask.spec_writeback_progress.pending_action = JSON.stringify({
+      kind: "sync-design",
+      affected_task_ids: ["R1-T1"],
+      summary: "Recoverable design sync",
+      idempotency_key: "design-sync-recovery:revision:2",
+      agent: "codex",
+    });
+    staleTask.spec_writeback_progress.status = "pending";
+    await writeFile(taskPath, JSON.stringify(staleTask, null, 2), "utf8");
+    await writeFile(logPath, staleLog, "utf8");
+
+    const reconciled = JSON.parse(
+      runState([
+        "reconcile-spec-execution",
+        "--task-id",
+        "design-sync-recovery",
+        "--agent",
+        "codex",
+      ]),
+    );
+    expect(reconciled).toMatchObject({ reconciled: true });
+    expect(reconciled.task.spec_source).toMatchObject({ revision: 2, execution_revision: 1 });
+    const records = (await readFile(logPath, "utf8"))
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+    expect(records.filter((record) => record.type === "spec-design-sync")).toHaveLength(1);
   }, 20_000);
 });

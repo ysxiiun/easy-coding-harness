@@ -22,8 +22,10 @@ Communicate with the user in the user's language.
    dependency or risk.
 
 For a task with `task.json.spec_source`, re-run `inspect-dev-spec` against the stored source and
-every stored `task.repo_paths` repository binding. The schema, spec ID, revision, and SHA-256
-must still match. Then call the read-only selector for the exact stored selection:
+every stored `task.repo_paths` repository binding. Schema, Spec ID, design revision, and
+`design_sha256` must still match. A changed `document_sha256` with the same design is normal
+shared progress; refresh `execution_revision` without invalidating plan/review/verify evidence.
+An execution revision rollback is blocking. Then call the selector for the exact selection:
 
 ```bash
 {{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py inspect-dev-spec \
@@ -70,6 +72,7 @@ Execution plan records use:
 ```json
 {
   "type": "plan",
+  "spec_design_sha256": "<Canonical design digest; omit for ordinary tasks>",
   "strategy": "single|sequential|parallel",
   "units": [{
     "id": "U1",
@@ -99,7 +102,8 @@ units together must cover every source step exactly once. Map selected hard depe
 `parallel_groups`.
 
 Canonical-backed `dev-spec.md`, `execution.jsonl`, and `test-strategy.md` are runtime-derived
-evidence, not a second maintained Spec. Record the source path/ID/revision/SHA, selected tasks
+evidence, not a second maintained Spec. Record the source path/path mode/ID/design revision and
+digest, current document digest/execution revision/writeback status, selected tasks
 and repositories, baseline/conflict result, Unit mapping, source test mapping, and pending
 integration edges.
 
@@ -233,5 +237,11 @@ controls waiting; it never changes the selected execution depth.
 - No final summary, workflow proposal, or transition while a material decision is unresolved.
 - No transition without exactly one `decision_status: closed` marker in `dev-spec.md`.
 - No transition without a valid workflow proposal.
-- No Canonical-backed transition with changed source SHA, unresolved repository identity,
+- No Canonical-backed transition with changed design revision/digest, a backward execution
+  revision, pending/conflicted writeback, unresolved repository identity,
   incomplete selected-task coverage, or an open Unit/Step/File/Symbol/Test traceability gap.
+
+If evidence requires changing Canonical task boundaries, contracts, files, symbols, Steps, Tests,
+or dependencies, remain/return to ANALYSIS, update the original static design with revision +1,
+restore READY, and call `sync-spec-design --affected-task ...`. This invalidates the old local
+plan. Never substitute edits to the derived `dev-spec.md`, and never edit `EDS:EXECUTION` by hand.
