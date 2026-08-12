@@ -37,15 +37,18 @@ CLI 本身很克制——它只往 `.claude` / `.agents` / `.qoder` 这些目录
 `approval_mode` 支持 `approve / guard / confirm / auto`；`workflow_mode` 支持默认
 `adaptive` 以及 `fast / standard / strict`。Confirm 只在 ANALYSIS 后确认一次，随后
 依次自动 REVIEW、VERIFICATION、MEMORY、COMPLETE；自动推进仍受各阶段质量门禁约束。
-Adaptive 在 ANALYSIS 结束时解析并冻结具体模式。所有新代码任务都进入 REVIEW，模式
-只改变状态内部的成本与保障深度。任何模式下关闭任务都必须显式执行。只读任务展示
-完整报告后结束，不审查、不验证、不归档记忆。
+Adaptive 在 ANALYSIS 结束时解析并冻结具体模式。普通业务默认 Standard；单仓单 Unit、
+非并行且最多 5 个文件的低风险局部修改优先 Fast；只有明确高风险与真实复杂度同时存在
+才进入 Strict。仓库数按当前 plan 实际修改文件所属 Git root 计算，Canonical Spec 或
+supermodule 中未修改的仓库不会抬级。所有新代码任务都进入 REVIEW，模式只改变状态内部
+的成本与保障深度。任何模式下关闭任务都必须显式执行。只读任务展示完整报告后结束，
+不审查、不验证、不归档记忆。
 
 ### 上下文卫生
 
-实现、审查、验证这几个阶段，主代理都不亲自下场，而是派**子代理**去干。
-
-原因很直接：实现细节是上下文的噪声源，一旦灌进主代理，长会话必然越来越糊。把脏活隔离在子代理里，主代理只拿结论，主线才能一直清醒。
+Fast 的单一低风险工作允许主代理直接完成。Standard / Strict 只有在单元相互独立、并行确实
+节省成本，或高风险工作需要上下文隔离时才派**子代理**；审查与验证也按冻结模式选择足够的
+独立性。这样既避免简单任务承担不必要的调度成本，也能让复杂任务的主线只保留决策和证据。
 
 ### 记忆要沉淀，不能只活在当前会话
 
@@ -132,7 +135,7 @@ agent 会读项目，生成 `SOUL.md`、`RULES.md`、`ABSTRACT.md`、`TEST_STRAT
 /ec-workflow 实现 xxx 功能
 ```
 
-`ec-workflow` 负责创建或恢复任务。项目和当前 session 可分别覆盖审批模式、工作流模式与 Java TDD；ANALYSIS 先通过问答闭合技术路线、接口、模型、状态、范围和验收问题，只有 Dev-Spec 写入唯一的 `decision_status: closed` 后才允许进入 IMPLEMENT。会话只展示核心方案和主要风险，完整 Dev-Spec 通过本地链接或绝对路径按需查看。新版 Canonical Spec 会把静态设计与共享执行状态分离：Harness 以 design digest 冻结方案，并用 CAS、幂等键和断点对账把实施、验证与完成结论投影回共享 Spec，不会因正常进度回写误判方案漂移。TDD 默认关闭且不增加任何测试成本；首次开启前由 `ec-tdd-init` 在 TDD 关闭态建设 JUnit/JaCoCo/GitLab 增量覆盖率基础设施，不补存量业务单测。readiness 通过后才能显式开启，任务会冻结 baseline 与阈值（默认 90%），只对本任务新增/修改生产代码行要求本地单测通过和本地差异覆盖率达标；生成的 GitLab job 不作为 Harness 验收依赖。IMPLEMENT 中需要作者署名时使用当前宿主 Agent 与 Easy Coding 的组合；新增模型字段、枚举成员和常量必须逐项写清注释。新代码任务在 IMPLEMENT 后统一进入 REVIEW；只读任务展示完整报告后进入 COMPLETE，不执行 REVIEW、VERIFICATION 或 MEMORY。
+`ec-workflow` 负责创建或恢复任务。项目和当前 session 可分别覆盖审批模式、工作流模式与 Java TDD；ANALYSIS 先通过问答闭合技术路线、接口、模型、状态、范围和验收问题，只有 Dev-Spec 写入唯一的 `decision_status: closed` 后才允许进入 IMPLEMENT。分析按 Fast/Standard/Strict 使用渐进成本预算，只读取当前修改闭包、最近邻同类代码和必要测试；会话只展示核心方案和主要风险，完整 Dev-Spec 通过本地链接或绝对路径按需查看。新版 Canonical Spec 会把静态设计与共享执行状态分离：Harness 以 design digest 冻结方案，并用 CAS、幂等键和断点对账把实施、验证与完成结论投影回共享 Spec，不会因正常进度回写误判方案漂移。TDD 默认关闭且不增加任何测试成本；首次开启前由 `ec-tdd-init` 在 TDD 关闭态建设 JUnit/JaCoCo/GitLab 增量覆盖率基础设施，不补存量业务单测。readiness 通过后才能显式开启，任务会冻结 baseline 与阈值（默认 90%），只对本任务新增/修改生产代码行要求本地单测通过和本地差异覆盖率达标；生成的 GitLab job 不作为 Harness 验收依赖。IMPLEMENT 在不违反正确性、安全和项目硬规则时沿用局部代码风格，避免投机性抽象、碎片化小方法和无意义常量；允许符合局部惯例的直观魔法值。需要作者署名时使用当前宿主 Agent 与 Easy Coding 的组合；新增模型字段、枚举成员和常量必须逐项写清注释；新增核心 Java 类的每个方法和字段、已有核心类中新增或实质修改的方法和字段必须有 Javadoc。新代码任务在 IMPLEMENT 后统一进入 REVIEW；只读任务展示完整报告后进入 COMPLETE，不执行 REVIEW、VERIFICATION 或 MEMORY。
 
 如果当前会话不希望 Harness 接管，显式调用 `/ec-no-harness`（Codex 使用 `$ec-no-harness`）。它只旁路 Easy Coding，其他 skills 和 hooks 仍正常工作，任务状态也会原样保留。
 

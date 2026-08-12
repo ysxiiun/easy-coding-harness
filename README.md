@@ -85,7 +85,10 @@ any stage --[user abort via ec-task-close]--> CLOSED
   逐边确认，`guard` 确认 ANALYSIS → IMPLEMENT 与 VERIFICATION → MEMORY，`confirm` 只在
   ANALYSIS → IMPLEMENT 确认一次，随后各阶段在质量门禁通过后自动推进，`auto` 从开始即
   自动推进。
-- 工作流模式优先级为 session 覆盖 > 项目 `behavior.workflow_mode` > `adaptive`。Adaptive 在 ANALYSIS 结束时根据风险解析、展示并冻结为 `fast`、`standard` 或 `strict`，用户可在风险下限之上调整。
+- 工作流模式优先级为 session 覆盖 > 项目 `behavior.workflow_mode` > `adaptive`。Adaptive
+  以 Standard 作为普通业务默认：单仓单 Unit、非并行且不超过 5 个文件的低风险局部修改
+  优先 Fast；只有明确高风险与真实复杂度/大影响面同时存在才进入 Strict。仓库数只按当前
+  execution plan 实际修改的 Git root 计算，用户可在机械风险下限之上调整。
 - ANALYSIS 会先通过问答闭合影响技术路线、接口、模型、状态、范围或验收的实质性问题，
   并在 Dev-Spec 中记录唯一的 `decision_status: closed`。会话只展示核心方案、验收摘要、
   Workflow Mode 与主要风险；完整 `dev-spec.md` 通过绝对本地链接或路径按需查看。

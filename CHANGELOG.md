@@ -6,6 +6,23 @@
 - `y`：常规功能升级
 - `z`：日常 bug 修复
 
+## 0.10.0-beta.7
+
+- Workflow floor 改为 Standard 居中的复合判定：单仓、单 Unit、非并行且最多 5 个文件的
+  低风险局部修改优先 Fast；普通业务、多 Unit/文件、闭合的跨仓修改默认 Standard；只有
+  明确高风险与真实复杂度/大影响面同时存在才进入 Strict。
+- 仓库数量只统计 execution plan 中实际修改文件所属的 Git root。Canonical Spec 的未选
+  task、依赖摘要、未使用 `repo_paths`，以及 supermodule 已登记但未修改的子项目不再抬高
+  Workflow；风险描述、标题或文件路径中仅出现 `payment` / `schema` 等普通领域词也不再
+  单独触发 Strict，并行执行本身也只作为 Standard 信号。
+- ANALYSIS 新增渐进成本预算和 `Local Baseline`：只读取当前变更需要的最近邻同类代码、
+  合同和测试，按证据继承命名、空值/异常处理、分层、方法粒度、常量与注释习惯，避免
+  无关全仓扫描、投机性抽象和碎片化小方法。
+- IMPLEMENT/REVIEW 与三平台子代理统一克制设计合同：允许符合局部惯例的直观魔法值，
+  禁止为单个 getter return 创建常量；新增核心 Java 类的全部方法/字段、已有核心类中新增或
+  实质修改的方法/字段必须有 Javadoc，核心或复杂逻辑补充必要意图/约束注释，且不批量改造
+  未触碰历史代码。
+
 ## 0.10.0-beta.6
 
 - Canonical Spec 首次路由新增 `inspect-dev-spec --manifest-only`：只通过 normalized remote

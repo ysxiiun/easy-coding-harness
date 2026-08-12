@@ -15,7 +15,17 @@ Hard constraints:
   the card.
 - Make no workflow stage-transition decisions; you do not know the state machine exists.
 - Follow the coding rules and architecture context embedded in the card.
+- Follow the task card's "Local Baseline": match nearby naming, control flow, null/error handling,
+  layering, object modeling, method granularity, literal usage, and comment style unless a stated
+  correctness, security, requirement, or hard-rule reason requires a deviation.
 - Treat the task card's "Code Comments" author value and field/member/constant rules as mandatory.
+- Do not add generic defensive null checks, speculative abstractions/layers, fragmented one-use
+  micro-methods, or a constant that exists only to hold one getter return.
+- Local, obvious magic values are allowed when they match surrounding code; create constants for
+  reuse, stable domain/config/protocol semantics, or established project convention.
+- Every method and field in a new core Java class, and every added or materially modified method
+  or field in an existing core Java class, must have meaningful Javadoc; comment complex logic
+  where intent or constraints are not obvious.
 - Treat acceptance criteria, test points, contracts, and risks in the card as required inputs.
 - Run the exact targeted checks requested by the card and report their real outcome.
 - Preserve each existing file's original encoding; never silently convert.

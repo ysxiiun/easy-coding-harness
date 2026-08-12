@@ -75,6 +75,7 @@ async function writeReadyAnalysisArtifacts(root: string, taskId: string): Promis
           test_points: ["fixture test"],
           contracts: ["none"],
           risks: ["none"],
+          local_baseline: ["src/example.ts:1 follows the local fixture style"],
         },
       ],
     })}\n`,
@@ -151,6 +152,11 @@ describe("configureClaude", () => {
     expect(analysisSkill).toContain("concise session summary instead of");
     expect(analysisSkill).toContain("[View full Dev-Spec](</absolute/path/to/dev-spec.md>)");
     expect(analysisSkill).toContain("decision_status: closed");
+    expect(analysisSkill).toContain("progressive cost budget");
+    expect(analysisSkill).toContain("## Local implementation baseline");
+    expect(analysisSkill).toContain("at most five");
+    expect(analysisSkill).toContain("compound high-risk and complexity signals");
+    expect(analysisSkill).toContain("unused `repo_paths`");
 
     const implementingSkill = await readFile(
       path.join(tempDir, ".claude", "skills", "ec-implementing", "SKILL.md"),
@@ -163,6 +169,10 @@ describe("configureClaude", () => {
     expect(implementingSkill).toContain("Every new model field, enum member, and constant");
     expect(implementingSkill).toContain("user-facing host Agent");
     expect(implementingSkill).toContain("## Code Comments");
+    expect(implementingSkill).toContain("## Local Baseline");
+    expect(implementingSkill).toContain("generic best practice");
+    expect(implementingSkill).toContain("single return value of\n    a getter");
+    expect(implementingSkill).toContain("existing core Java class");
 
     const implementerAgent = await readFile(
       path.join(tempDir, ".claude", "agents", "ec-implementer.md"),
@@ -171,6 +181,9 @@ describe("configureClaude", () => {
     expect(implementerAgent).toContain("NONE — read-only deliverable");
     expect(implementerAgent).toContain("`deliverable`");
     expect(implementerAgent).toContain("`Code Comments`");
+    expect(implementerAgent).toContain("`Local Baseline`");
+    expect(implementerAgent).toContain("fragmented one-use");
+    expect(implementerAgent).toContain("new core Java class");
 
     const reviewingSkill = await readFile(
       path.join(tempDir, ".claude", "skills", "ec-reviewing", "SKILL.md"),
@@ -179,7 +192,16 @@ describe("configureClaude", () => {
     expect(reviewingSkill).toContain("Every new code task enters REVIEW");
     expect(reviewingSkill).toContain("implementation_fingerprint");
     expect(reviewingSkill).toContain("two consecutive rounds");
+    expect(reviewingSkill).toContain("Review local fit before recommending generic cleanup");
+    expect(reviewingSkill).toContain("constants created only for one getter");
     expect(reviewingSkill).not.toContain("Deliverable mode");
+
+    const reviewerAgent = await readFile(
+      path.join(tempDir, ".claude", "agents", "ec-reviewer.md"),
+      "utf8",
+    );
+    expect(reviewerAgent).toContain("evidenced Local Baseline");
+    expect(reviewerAgent).toContain("missing Javadoc on any method/field");
 
     const devSpecSkeleton = await readFile(
       path.join(tempDir, ".easy-coding", "templates", "dev-spec-skeleton.md"),

@@ -1094,6 +1094,9 @@ describe("Canonical Spec v1 runtime integration", () => {
         test_points: ["contract test"],
         contracts: ["C1"],
         risks: ["public contract"],
+        local_baseline: [
+          "order-domain/src/main/java/com/example/order/OrderEventPublisher.java follows the local publisher style",
+        ],
       },
       {
         id: "U2",
@@ -1105,6 +1108,9 @@ describe("Canonical Spec v1 runtime integration", () => {
         test_points: ["consumer test"],
         contracts: ["C1"],
         risks: ["integration"],
+        local_baseline: [
+          "notification-app/src/main/java/com/example/notification/OrderEventConsumer.java follows the local consumer style",
+        ],
       },
       {
         id: "U3",
@@ -1116,6 +1122,9 @@ describe("Canonical Spec v1 runtime integration", () => {
         test_points: ["api test"],
         contracts: ["C1"],
         risks: ["integration"],
+        local_baseline: [
+          "order-api/src/main/java/com/example/order/api/DeliveryStatusController.java follows the local controller style",
+        ],
       },
     ];
     await writeFile(

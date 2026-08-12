@@ -147,7 +147,14 @@ agent must be able to see what was generated and on what evidence.
    - Naming conventions actually in use (scan representative files)
    - Comment language: if more than 70% of existing comments are Chinese, the rule is
      "comments in Chinese"; same logic for English; mixed → follow each file's dominant language
-   - Error handling style, import ordering, formatter/linter in use (read their configs)
+   - Null/empty handling and error-handling style, including where the project intentionally
+     relies on upstream contracts instead of adding defensive checks
+   - Existing class/method extraction granularity and architecture boundaries; do not turn a
+     preference for single responsibility into a generic demand for many one-use helpers
+   - Literal and constant conventions, including when local magic values are accepted and when
+     a stable domain/config/protocol value is promoted to a named constant
+   - Javadoc/doc-comment coverage for core code and the inline-comment style used for complex logic
+   - Import ordering and formatter/linter in use (read their configs)
    Structure as one section per language plus a General section. Every rule must be
    mechanically checkable — "be clean" is not a rule; "exported functions carry explicit
    return types" is.

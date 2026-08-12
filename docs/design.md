@@ -208,7 +208,11 @@ INIT ─自动→ ANALYSIS → IMPLEMENT → REVIEW → VERIFICATION → MEMORY 
   `approve` 逐边确认，`guard` 确认两个关键边，`confirm` 只确认 ANALYSIS → IMPLEMENT，
   `auto` 自动执行全部合法边。所有自动边仍需满足机械质量门禁，CLOSED 始终要求显式
   关闭。
-- **工作流模式**：session 覆盖优先于项目 `behavior.workflow_mode`，缺失时为 `adaptive`。ANALYSIS 保存 configured/selected/minimum/source/reasons 提案，进入 IMPLEMENT 时原子冻结为具体模式。
+- **工作流模式**：session 覆盖优先于项目 `behavior.workflow_mode`，缺失时为 `adaptive`。
+  ANALYSIS 保存 configured/selected/minimum/source/reasons 提案，进入 IMPLEMENT 时原子冻结。
+  机械 floor 以 Standard 为普通业务默认：Fast 要求单个实际修改仓库、单 Unit、非并行、
+  最多 5 个文件且没有明确高风险/宽契约；Strict 则必须同时命中明确高风险与真实复杂度。
+  Canonical/supermodule 的未修改仓库元数据不参与定级。
 - **Java TDD 模式**：session 覆盖优先于项目 `behavior.tdd_enabled`，默认关闭；覆盖率阈值默认 90，可配置 1..100。开启入口必须先验证 `ec-tdd-init` readiness，不存在“先开启、稍后初始化”。专用 `tdd-init` 代码任务始终冻结 TDD 关闭，只建设 JUnit/JaCoCo/GitLab changed-line coverage 基础设施，不补存量业务单测或要求全量覆盖。后续业务任务进入 IMPLEMENT 时原子冻结 baseline 与阈值，以 100% 为测试设计目标、以配置阈值作为新增/修改生产代码行最低门禁；VERIFICATION 对每个仓库（Canonical 下每个 source task）同时要求通过的本地单测证据与本地 changed-line coverage 证据。GitLab TEST stage 继续复用同一脚本，但远程 pipeline URL、job identity 与成功状态不进入 Harness 验收；beta.1/beta.2 的历史 GitLab coverage 记录保留并在新门禁中忽略。
 - **共享 Canonical 执行投影**：Canonical Spec 的静态设计和机器执行区分层管理。Harness
   用 design revision + `design_sha256` 绑定本地计划，只把跨应用必须消费的 Task、Step、
@@ -275,21 +279,23 @@ ec-analysis 是从需求到可执行方案的翻译器。
 
 ```json
 {"type":"plan","strategy":"parallel","units":[
-  {"id":"U1","title":"...","type":"backend","files":["..."],"depends_on":[],"rules_sections":["..."],"abstract_modules":["..."]},
-  {"id":"U2","title":"...","type":"test","files":["..."],"depends_on":["U1"],"rules_sections":["..."],"abstract_modules":["..."]}
+  {"id":"U1","title":"...","type":"backend","files":["..."],"depends_on":[],"rules_sections":["..."],"abstract_modules":["..."],"local_baseline":["..."]},
+  {"id":"U2","title":"...","type":"test","files":["..."],"depends_on":["U1"],"rules_sections":["..."],"abstract_modules":["..."],"local_baseline":["..."]}
 ],"parallel_groups":[{"level":0,"units":["U1"]},{"level":1,"units":["U2"]}]}
 ```
 
 状态 API 会校验 unit 必填字段、依赖引用、依赖图无环，以及 `parallel_groups` 的层级必须晚于其依赖。显式 `doc` / `analysis` / `report` 无代码任务可使用 `single` + `files:[]`，子代理只返回 `deliverable` 且不得修改项目文件；代码任务不允许空文件范围。
 
 三种执行策略：
-- `single`：一个单元，派发 1 个子代理执行
-- `sequential`：多个单元，有强依赖链，按依赖顺序逐个派发子代理
-- `parallel`：存在独立单元，按依赖层级并行派发子代理
+- `single`：一个单元；由冻结的 Workflow Mode 和独立性要求决定主 Agent 内联或派发
+- `sequential`：多个单元，有强依赖链，按依赖顺序执行；只有上下文隔离有实际价值时派发
+- `parallel`：存在独立单元，按依赖层级执行；并行确实节省成本时才派发多个子代理
 
 #### 3.3 记忆集成
 
-分析阶段强制读取项目记忆（长期 + 短期），并在"背景数据应用"章节中显式引用命中的业务记忆和技术记忆。这确保了过往的决策和教训能在新任务中被参考。
+分析阶段先检索长期记忆索引和短期记忆元数据，只读取与当前领域、文件、前置任务直接命中的
+内容；不默认加载最近若干条记忆或完整记忆库。Fast 候选只补充最近邻同类代码、直接合同和
+目标测试，Standard 读取受影响闭包，只有 Strict 的复合证据出现后才扩展跨模块上下文。
 
 ---
 
@@ -300,17 +306,27 @@ ec-analysis 是从需求到可执行方案的翻译器。
 - **范围即法律**：只能修改 dev-spec 改动范围表中列出的文件。需要额外文件？必须回退 ANALYSIS 修改方案。
 - **RULES 合规**：每次写入前检查对应的 RULES 段落。
 - **编码保护**：修改已有文件保持原编码，新文件遵循 dev-spec 声明的编码。
+- **局部基线**：优先遵循同模块同职责代码的命名、控制流、空值/异常处理、分层、对象建模、
+  方法粒度、常量和注释习惯；正确性、安全、明确需求与项目硬规则优先。
+- **克制设计**：不预建抽象、wrapper、factory、层级或扩展点，不按行数把连贯逻辑拆成大量
+  单次调用方法；只提取清晰语义边界、真实复用、独立测试点或能显著降复杂度的逻辑。
+- **字面量策略**：允许符合局部惯例、含义直观且局部的魔法值；常量用于复用、稳定领域/
+  配置/协议语义或项目惯例，禁止只为单个 getter return 创建常量。
 - **作者归属**：项目存在作者署名惯例时，新署名固定为当前宿主 Agent 名称加
   `with Easy Coding`，例如 `Codex with Easy Coding`。
 - **字段注释**：新增数据模型字段、枚举成员和常量必须逐项解释语义，并按需记录单位、
   格式、取值、空值、默认值或兼容约束；类型级注释不能替代字段级注释。
-- **步进式报告**：每完成一个文件/模块输出简短进度，不堆到最后汇报。
+- **核心 Java 注释**：新增核心 Java 类的每个方法和字段、已有核心类中新增或实质修改的
+  方法和字段必须有 Javadoc；核心/复杂逻辑补充意图和约束注释，不批量改造未触碰的历史代码。
+- **步进式报告**：只在 Unit 边界输出简短进度，不为每个琐碎编辑单独汇报。
 - **自审门控**：实现完成后自检——是否所有改动都在确认范围内、有无未声明的依赖变更、
   有无遗留 TODO、作者署名和新增字段/成员/常量注释是否合规。
 
 #### 4.2 子代理调度
 
-所有执行策略都必须派发子代理：`single` 派发一个，`sequential` 按依赖顺序逐个派发，`parallel` 按层级并发派发。并行调度机制：
+执行主体按冻结模式和真实独立性选择：Fast 的单一低风险 Unit 由主 Agent 内联完成；Standard
+只在并行能节省成本、存在独立技术上下文时派发；Strict 的多 Unit/高风险实现保持独立执行。
+需要并行时使用以下调度机制：
 
 1. 按 `parallel_groups` 的 level 排序
 2. 为每个 unit 构造**任务卡**（Task Card）
@@ -333,6 +349,7 @@ ec-analysis 是从需求到可执行方案的翻译器。
 ## 可修改范围    {unit.files | NONE — read-only deliverable}
 ## 编码规范     {RULES.md 相关段落}
 ## 架构上下文   {ABSTRACT.md 相关段落}
+## 局部基线     {同模块同职责代码的可核验惯例与路径}
 ## 输出格式     changed_files, summary, deliverable, issues, needs_attention
 ```
 

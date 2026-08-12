@@ -12,7 +12,17 @@ Every new code task enters REVIEW. Read-only tasks do not. Obtain the current fi
 ```
 
 Review the final diff against `dev-spec.md`, RULES, unit acceptance criteria, tests, contracts,
-and obvious security risks. Every finding cites `file:line`.
+the Unit's Local Baseline, and obvious security risks. Every finding cites `file:line`.
+
+Review local fit before recommending generic cleanup. Flag an implementation when it departs from
+the nearest comparable naming, control flow, null/error handling, layering, modeling, or method
+granularity without a correctness, security, requirement, or hard-rule reason. Also flag
+speculative layers, fragmented one-use micro-methods, constants created only for one getter
+return, and missing Javadoc in core Java code: check every method/field in a new core class and
+each added or materially modified one in an existing core class. Do not demand defensive null
+checks, abstraction, constant extraction, or legacy-wide comment retrofits merely because they
+are generic best practices. A violation of an explicit task-card coding/comment contract is a
+contract defect, not optional stylistic advice.
 
 For Canonical-backed tasks, group evidence by `repo_id` and `source_task_id`. Every selected
 Spec task needs an implementation result and source test evidence; file references remain

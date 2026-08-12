@@ -197,6 +197,7 @@ async function writeAnalysisArtifacts(taskId: string): Promise<void> {
           depends_on: [],
           rules_sections: [],
           abstract_modules: [],
+          local_baseline: ["src/example.ts:1 follows the local fixture style"],
         },
       ],
     })}\n`,
@@ -1836,6 +1837,7 @@ describe("easy_coding_state.py ANALYSIS template gate", () => {
             test_points: ["targeted regression"],
             contracts: ["none"],
             risks: ["none"],
+            local_baseline: ["src/example.ts:1 follows the local fixture style"],
           },
         ],
       })}\n`,
@@ -1904,6 +1906,7 @@ describe("easy_coding_state.py ANALYSIS template gate", () => {
             test_points: ["regression"],
             contracts: ["none"],
             risks: ["none"],
+            local_baseline: ["src/example.java:1 follows the local fixture style"],
           },
         ],
       })}\n`,
@@ -2895,8 +2898,22 @@ describe("easy_coding_state.py ANALYSIS template gate", () => {
         type: "plan",
         strategy: "parallel",
         units: [
-          { id: "U1", title: "One", type: "backend", files: ["a.ts"], depends_on: [] },
-          { id: "U2", title: "Two", type: "test", files: ["b.ts"], depends_on: ["U1"] },
+          {
+            id: "U1",
+            title: "One",
+            type: "backend",
+            files: ["a.ts"],
+            depends_on: [],
+            local_baseline: ["a.ts:1 follows the local fixture style"],
+          },
+          {
+            id: "U2",
+            title: "Two",
+            type: "test",
+            files: ["b.ts"],
+            depends_on: ["U1"],
+            local_baseline: ["b.ts:1 follows the local fixture style"],
+          },
         ],
         parallel_groups: [
           { level: 0, units: ["U1"] },
@@ -5365,6 +5382,26 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
       title: "schema migration workflow",
     });
     await writeAnalysisArtifacts(taskId);
+    await writeFile(
+      path.join(tempDir, ".easy-coding", "tasks", taskId, "execution.jsonl"),
+      `${JSON.stringify({
+        type: "plan",
+        strategy: "single",
+        units: [
+          {
+            id: "U1",
+            title: "migrate public schema",
+            type: "backend",
+            files: ["src/example.ts"],
+            depends_on: [],
+            risks: ["high-risk irreversible schema migration can cause data loss"],
+            contracts: ["public contract compatibility"],
+            local_baseline: ["src/example.ts:1 is the nearest comparable implementation"],
+          },
+        ],
+      })}\n`,
+      "utf8",
+    );
 
     const calculatedFloor = JSON.parse(
       execFileSync(
@@ -5381,7 +5418,8 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
       ),
     ) as { minimum_mode: string; reasons: string[] };
     expect(calculatedFloor.minimum_mode).toBe("strict");
-    expect(calculatedFloor.reasons).toContain("high-risk-contract-or-domain");
+    expect(calculatedFloor.reasons).toContain("compound-high-risk-and-complexity");
+    expect(calculatedFloor.reasons).toContain("explicit-high-risk-signal");
 
     const understatedFloor = spawnSync(
       "python3",
@@ -5522,7 +5560,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
     expect(downgrade.stderr).toContain("can only be raised above strict");
   });
 
-  it("classifies actual multi-repository plan files as strict without task repo metadata", async () => {
+  it("classifies an actual multi-repository change as standard without a high-risk signal", async () => {
     const taskId = "07-27-actual-cross-repo";
     await writeConfirmModeConfig("guard");
     await writeSessionFixture(taskId);
@@ -5549,6 +5587,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
             type: "backend",
             files: ["src/root.ts", "packages/child/child.ts"],
             depends_on: [],
+            local_baseline: ["src/root.ts:1 and packages/child/child.ts:1 define the local style"],
           },
         ],
       })}\n`,
@@ -5569,8 +5608,311 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
         { cwd: tempDir, encoding: "utf8" },
       ),
     ) as { minimum_mode: string; reasons: string[] };
-    expect(floor.minimum_mode).toBe("strict");
-    expect(floor.reasons).toContain("cross-repository-scope");
+    expect(floor.minimum_mode).toBe("standard");
+    expect(floor.reasons).toContain("cross-repository-change");
+  });
+
+  it("keeps bounded changes at fast through five files and defaults broader work to standard", async () => {
+    await writeConfirmModeConfig("guard");
+    execFileSync("git", ["init", "-q"], { cwd: tempDir });
+    await mkdir(path.join(tempDir, "src"), { recursive: true });
+    for (let index = 1; index <= 10; index += 1) {
+      await writeFile(path.join(tempDir, "src", `Model${index}.ts`), `export interface M${index} {}\n`);
+    }
+
+    for (const scenario of [
+      {
+        taskId: "07-27-five-models",
+        files: Array.from({ length: 5 }, (_, index) => `src/Model${index + 1}.ts`),
+        risks: ["none"],
+        contracts: ["none"],
+        localBaseline: ["src/Model1.ts:1 is the nearest comparable model"],
+        expected: "fast",
+        reason: "single-bounded-unit",
+      },
+      {
+        taskId: "07-27-six-models",
+        files: Array.from({ length: 6 }, (_, index) => `src/Model${index + 1}.ts`),
+        risks: ["none"],
+        contracts: ["none"],
+        localBaseline: ["src/Model1.ts:1 is the nearest comparable model"],
+        expected: "standard",
+        reason: "multi-file-impact",
+      },
+      {
+        taskId: "07-27-broad-low-risk",
+        files: Array.from({ length: 10 }, (_, index) => `src/Model${index + 1}.ts`),
+        risks: ["none"],
+        contracts: ["none"],
+        localBaseline: ["src/Model1.ts:1 is the nearest comparable model"],
+        expected: "standard",
+        reason: "broad-change-scope",
+      },
+      {
+        taskId: "07-27-domain-keywords-only",
+        title: "payment schema parameter",
+        files: ["src/Model1.ts"],
+        risks: ["none"],
+        contracts: ["none"],
+        localBaseline: ["src/Model1.ts:1 is the nearest comparable model"],
+        expected: "fast",
+        reason: "single-bounded-unit",
+      },
+      {
+        taskId: "07-27-payment-keyword-risk",
+        files: ["src/Model1.ts"],
+        risks: ["payment compatibility risk"],
+        contracts: ["local model"],
+        localBaseline: ["src/Model1.ts:1 is the nearest comparable model"],
+        expected: "fast",
+        reason: "single-bounded-unit",
+      },
+      {
+        taskId: "07-27-negated-risk-words",
+        files: ["src/Model1.ts"],
+        risks: ["non-critical payment change with no risk of data loss"],
+        contracts: ["local model"],
+        localBaseline: ["src/Model1.ts:1 is the nearest comparable model"],
+        expected: "fast",
+        reason: "single-bounded-unit",
+      },
+      {
+        taskId: "07-27-criticality-keyword",
+        files: ["src/Model1.ts"],
+        risks: ["low criticality payment parameter"],
+        contracts: ["local model"],
+        localBaseline: ["src/Model1.ts:1 is the nearest comparable model"],
+        expected: "fast",
+        reason: "single-bounded-unit",
+      },
+      {
+        taskId: "07-27-bounded-high-risk",
+        files: ["src/Model1.ts"],
+        risks: ["high-risk financial loss exposure"],
+        contracts: ["local model"],
+        localBaseline: ["src/Model1.ts:1 is the nearest comparable model"],
+        expected: "standard",
+        reason: "bounded-high-risk-change",
+      },
+      {
+        taskId: "07-27-bounded-high-risk-zh",
+        files: ["src/Model1.ts"],
+        risks: ["变更不可逆并可能导致资损"],
+        contracts: ["local model"],
+        localBaseline: ["src/Model1.ts:1 is the nearest comparable model"],
+        expected: "standard",
+        reason: "bounded-high-risk-change",
+      },
+      {
+        taskId: "07-27-wide-contract-low-risk",
+        files: ["src/Model1.ts"],
+        risks: ["none"],
+        contracts: ["public API compatibility"],
+        localBaseline: ["src/Model1.ts:1 is the nearest comparable model"],
+        expected: "standard",
+        reason: "wide-contract-impact",
+      },
+    ]) {
+      await writeSessionFixture(scenario.taskId);
+      await writeTaskFixture(scenario.taskId, "ANALYSIS", "codex", {
+        ...(scenario.title ? { title: scenario.title } : {}),
+      });
+      const taskDir = path.join(tempDir, ".easy-coding", "tasks", scenario.taskId);
+      await writeFile(
+        path.join(taskDir, "execution.jsonl"),
+        `${JSON.stringify({
+          type: "plan",
+          strategy: "single",
+          units: [
+            {
+              id: "U1",
+              title: "bounded business change",
+              type: "backend",
+              files: scenario.files,
+              depends_on: [],
+              risks: scenario.risks,
+              contracts: scenario.contracts,
+              local_baseline: scenario.localBaseline,
+            },
+          ],
+        })}\n`,
+        "utf8",
+      );
+      const floor = JSON.parse(
+        execFileSync(
+          "python3",
+          [
+            stateApiPath(),
+            "workflow-floor",
+            "--session-file",
+            ".easy-coding/sessions/test.json",
+            "--agent",
+            "codex",
+          ],
+          { cwd: tempDir, encoding: "utf8" },
+        ),
+      ) as { minimum_mode: string; reasons: string[] };
+      expect(floor.minimum_mode).toBe(scenario.expected);
+      expect(floor.reasons).toContain(scenario.reason);
+    }
+  });
+
+  it("requires a local baseline and keeps small parallel work at standard", async () => {
+    const taskId = "07-27-parallel-local-baseline";
+    await writeConfirmModeConfig("guard");
+    await writeSessionFixture(taskId);
+    await writeTaskFixture(taskId, "ANALYSIS", "codex");
+    await mkdir(path.join(tempDir, "src"), { recursive: true });
+    await writeFile(path.join(tempDir, "src", "ModelA.ts"), "export interface ModelA {}\n");
+    await writeFile(path.join(tempDir, "src", "ModelB.ts"), "export interface ModelB {}\n");
+    execFileSync("git", ["init", "-q"], { cwd: tempDir });
+    const executionPath = path.join(
+      tempDir,
+      ".easy-coding",
+      "tasks",
+      taskId,
+      "execution.jsonl",
+    );
+    const units = [
+      {
+        id: "U1",
+        title: "adjust model A",
+        type: "backend",
+        files: ["src/ModelA.ts"],
+        depends_on: [],
+        risks: ["none"],
+        contracts: ["none"],
+      },
+      {
+        id: "U2",
+        title: "adjust model B",
+        type: "backend",
+        files: ["src/ModelB.ts"],
+        depends_on: [],
+        risks: ["none"],
+        contracts: ["none"],
+      },
+    ];
+    const plan = {
+      type: "plan",
+      strategy: "parallel",
+      units,
+      parallel_groups: [{ level: 0, units: ["U1", "U2"] }],
+    };
+    await writeFile(executionPath, `${JSON.stringify(plan)}\n`, "utf8");
+
+    const missingBaseline = spawnSync(
+      "python3",
+      [
+        stateApiPath(),
+        "workflow-floor",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    expect(missingBaseline.status).toBe(1);
+    expect(missingBaseline.stderr).toContain("non-empty local_baseline: U1, U2");
+
+    await writeFile(
+      executionPath,
+      `${JSON.stringify({
+        ...plan,
+        units: units.map((unit) => ({
+          ...unit,
+          local_baseline: [`${unit.files[0]}:1 is the nearest comparable model`],
+        })),
+      })}\n`,
+      "utf8",
+    );
+    const floor = JSON.parse(
+      execFileSync(
+        "python3",
+        [
+          stateApiPath(),
+          "workflow-floor",
+          "--session-file",
+          ".easy-coding/sessions/test.json",
+          "--agent",
+          "codex",
+        ],
+        { cwd: tempDir, encoding: "utf8" },
+      ),
+    ) as { minimum_mode: string; reasons: string[] };
+    expect(floor.minimum_mode).toBe("standard");
+    expect(floor.reasons).toContain("parallel-execution");
+  });
+
+  it("ignores unmodified Canonical and supermodule repositories when calculating the floor", async () => {
+    await writeConfirmModeConfig("guard");
+    const repoA = path.join(tempDir, "repos", "service-a");
+    const repoB = path.join(tempDir, "repos", "service-b");
+    await mkdir(path.join(repoA, "src"), { recursive: true });
+    await mkdir(path.join(repoB, "src"), { recursive: true });
+    execFileSync("git", ["init", "-q"], { cwd: repoA });
+    execFileSync("git", ["init", "-q"], { cwd: repoB });
+    await writeFile(path.join(repoA, "src", "model.ts"), "export interface Model {}\n");
+    await writeFile(path.join(repoB, "src", "unused.ts"), "export const unused = true;\n");
+
+    const scenarios = [
+      {
+        taskId: "07-27-canonical-one-repo",
+        task: {
+          spec_source: { path: "/tmp/spec.md" },
+          repo_paths: { R1: "repos/service-a", R2: "repos/service-b" },
+        },
+        unit: { repo_id: "R1", files: ["src/model.ts"] },
+      },
+      {
+        taskId: "07-27-supermodule-one-child",
+        task: { repo_paths: { parent: ".", childA: "repos/service-a", childB: "repos/service-b" } },
+        unit: { files: ["repos/service-a/src/model.ts"] },
+      },
+    ];
+
+    for (const scenario of scenarios) {
+      await writeSessionFixture(scenario.taskId);
+      await writeTaskFixture(scenario.taskId, "ANALYSIS", "codex", scenario.task);
+      const taskDir = path.join(tempDir, ".easy-coding", "tasks", scenario.taskId);
+      await writeFile(
+        path.join(taskDir, "execution.jsonl"),
+        `${JSON.stringify({
+          type: "plan",
+          strategy: "single",
+          units: [
+            {
+              id: "U1",
+              title: "change one repository",
+              type: "backend",
+              depends_on: [],
+              risks: ["none"],
+              contracts: ["none"],
+              local_baseline: ["src/model.ts:1 is the nearest comparable model"],
+              ...scenario.unit,
+            },
+          ],
+        })}\n`,
+        "utf8",
+      );
+      const floor = JSON.parse(
+        execFileSync(
+          "python3",
+          [
+            stateApiPath(),
+            "workflow-floor",
+            "--session-file",
+            ".easy-coding/sessions/test.json",
+            "--agent",
+            "codex",
+          ],
+          { cwd: tempDir, encoding: "utf8" },
+        ),
+      ) as { minimum_mode: string; reasons: string[] };
+      expect(floor.minimum_mode).toBe("fast");
+      expect(floor.reasons).toEqual(["single-bounded-unit"]);
+    }
   });
 
   it("invalidates evidence for modified and added unplanned Git worktree files", async () => {

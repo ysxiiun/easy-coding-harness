@@ -87,10 +87,24 @@ WORKFLOW_MODES = {"fast", "standard", "strict"}
 WORKFLOW_MODE_RANK = {"fast": 0, "standard": 1, "strict": 2}
 STRICT_VERIFICATION_CHECK_TYPES = {"lint", "typecheck", "test", "build"}
 REVIEW_FINDING_SEVERITIES = {"error", "warning", "info"}
-STRICT_WORKFLOW_RISK_PATTERN = re.compile(
-    r"(migration|migrate|schema|state[-_ ]?machine|security|payment|data[-_ ]?loss|"
-    r"concurren|cross[-_ ]?repo|public[-_ ]?(api|contract)|迁移|状态机|安全|支付|"
-    r"数据丢失|并发|跨仓|公共接口|公共契约)",
+HIGH_WORKFLOW_RISK_PATTERN = re.compile(
+    r"(\bhigh[-_ ]?risk\b|\bcritical\b|\bsevere\b|\birreversible\b|"
+    r"\bdata[-_ ]?loss\b|\bfinancial[-_ ]?loss\b|"
+    r"\bsecurity[-_ ]?(boundary|breach)\b|\bprivilege[-_ ]?escalation\b|"
+    r"\bproduction[-_ ]?outage\b|"
+    r"高风险|严重|不可逆|数据丢失|资损|安全边界|安全事件|权限提升|生产故障)",
+    re.IGNORECASE,
+)
+NEGATED_HIGH_WORKFLOW_RISK_PATTERN = re.compile(
+    r"(\b(?:non[-_ ]?|not[-_ ]+|no[-_ ]+)(?:high[-_ ]?risk|critical|severe|irreversible)\b|"
+    r"\b(?:no|without)[-_ ]+(?:risk[-_ ]+of[-_ ]+)?(?:data[-_ ]?loss|"
+    r"financial[-_ ]?loss|security[-_ ]?breach|production[-_ ]?outage)\b|"
+    r"低风险|非高风险|不严重|(?<!不)可逆|无(?:数据丢失|资损|安全事件|生产故障)|"
+    r"不会导致(?:数据丢失|资损|安全事件|生产故障))",
+    re.IGNORECASE,
+)
+WIDE_WORKFLOW_CONTRACT_PATTERN = re.compile(
+    r"(cross[-_ ]?repo|public[-_ ]?(api|contract)|跨仓|公共接口|公共契约)",
     re.IGNORECASE,
 )
 DEFAULT_APPROVAL_MODE = "guard"
@@ -1589,7 +1603,7 @@ def is_valid_execution_plan(
             has_empty_file_scope = True
         if not is_string_list(unit.get("depends_on")):
             return False
-        for optional_list in ("rules_sections", "abstract_modules"):
+        for optional_list in ("rules_sections", "abstract_modules", "local_baseline"):
             if optional_list in unit and not is_string_list(unit.get(optional_list)):
                 return False
         if require_unit_contracts:
@@ -2277,6 +2291,42 @@ def task_repository_roots(root: Path, task: dict | None, plan: dict) -> list[Pat
         repository
         for repository, _scopes in task_repository_scopes(root, task, plan)
     ]
+
+
+def workflow_plan_repository_roots(root: Path, task: dict, plan: dict) -> list[Path]:
+    """Resolve only repositories that own files in the current execution plan."""
+    repositories: set[Path] = set()
+    repo_paths = task.get("repo_paths")
+    canonical = isinstance(task.get("spec_source"), dict)
+
+    for unit in plan.get("units", []):
+        if not isinstance(unit, dict):
+            continue
+        if canonical:
+            repo_id = unit.get("repo_id")
+            if not is_non_empty_string(repo_id) or not isinstance(repo_paths, dict):
+                raise StateError("Canonical workflow Unit is missing its repository binding.")
+            raw_repo_path = repo_paths.get(str(repo_id))
+            if not is_non_empty_string(raw_repo_path):
+                raise StateError(f"Canonical workflow repository path is missing: {repo_id}")
+            candidate = Path(str(raw_repo_path))
+            resolved = (candidate if candidate.is_absolute() else root / candidate).resolve()
+            repository = git_repository_root(resolved)
+            if repository is None or repository.resolve() != resolved:
+                raise StateError(f"Canonical workflow repository binding is not a Git root: {repo_id}")
+            repositories.add(repository.resolve())
+            continue
+
+        for file_name in unit.get("files", []):
+            if not is_non_empty_string(file_name):
+                continue
+            candidate = Path(str(file_name))
+            resolved = (candidate if candidate.is_absolute() else root / candidate).resolve()
+            repository = git_repository_root(resolved)
+            if repository is not None:
+                repositories.add(repository.resolve())
+
+    return sorted(repositories, key=lambda item: item.as_posix())
 
 
 def tdd_repositories(root: Path, task: dict, plan: dict) -> dict[str, Path]:
@@ -6083,54 +6133,65 @@ def calculate_workflow_floor(root: Path, task_id: str) -> tuple[str, list[str]]:
     if not plan:
         raise StateError("Cannot calculate workflow floor without a valid execution plan.")
     units = [unit for unit in plan.get("units", []) if isinstance(unit, dict)]
+    missing_local_baseline = [
+        str(unit.get("id") or "<unknown>")
+        for unit in units
+        if not is_string_list(unit.get("local_baseline"), allow_empty=False)
+    ]
+    if missing_local_baseline:
+        raise StateError(
+            "Workflow plan Units must record a non-empty local_baseline: "
+            + ", ".join(missing_local_baseline)
+        )
     files = {
         str(file_name)
         for unit in units
         for file_name in unit.get("files", [])
         if is_non_empty_string(file_name)
     }
-    repositories = task_repository_roots(root, task, plan)
-    repos = task.get("repos")
-    repo_paths = task.get("repo_paths")
-    metadata_repo_count = max(
-        len(repos) if isinstance(repos, list) else 0,
-        len(repo_paths) if isinstance(repo_paths, dict) else 0,
-    )
-    repo_count = max(len(repositories), metadata_repo_count)
-    risk_text = " ".join(
-        [
-            str(task.get("title") or ""),
-            task_type,
-            *files,
-            *[
-                str(item)
-                for unit in units
-                for field in ("risks", "contracts")
-                for item in unit.get(field, [])
-                if is_non_empty_string(item)
-                and str(item).strip().lower() not in {"none", "no", "n/a", "无", "无风险"}
-            ],
+    repositories = workflow_plan_repository_roots(root, task, plan)
+    ignored_values = {"none", "no", "n/a", "无", "无风险"}
+    risk_values = [
+        str(item)
+        for unit in units
+        for item in unit.get("risks", [])
+        if is_non_empty_string(item) and str(item).strip().lower() not in ignored_values
+    ]
+    contract_values = [
+        str(item)
+        for unit in units
+        for item in unit.get("contracts", [])
+        if is_non_empty_string(item) and str(item).strip().lower() not in ignored_values
+    ]
+    risk_text = NEGATED_HIGH_WORKFLOW_RISK_PATTERN.sub("", " ".join(risk_values))
+    high_risk = bool(HIGH_WORKFLOW_RISK_PATTERN.search(risk_text))
+
+    complexity_reasons: list[str] = []
+    if len(repositories) > 1:
+        complexity_reasons.append("cross-repository-change")
+    if len(units) >= 4 or len(files) >= 10:
+        complexity_reasons.append("broad-change-scope")
+    if WIDE_WORKFLOW_CONTRACT_PATTERN.search(" ".join(contract_values)):
+        complexity_reasons.append("wide-contract-impact")
+    if high_risk and complexity_reasons:
+        return "strict", [
+            "compound-high-risk-and-complexity",
+            "explicit-high-risk-signal",
+            *complexity_reasons,
         ]
-    )
-    strict_reasons: list[str] = []
-    if repo_count > 1:
-        strict_reasons.append("cross-repository-scope")
-    if len(units) >= 4 or len(files) >= 8:
-        strict_reasons.append("broad-change-scope")
-    if STRICT_WORKFLOW_RISK_PATTERN.search(risk_text):
-        strict_reasons.append("high-risk-contract-or-domain")
-    if strict_reasons:
-        return "strict", strict_reasons
 
     standard_reasons: list[str] = []
+    if high_risk:
+        standard_reasons.append("bounded-high-risk-change")
+    standard_reasons.extend(complexity_reasons)
     if len(units) > 1:
         standard_reasons.append("multiple-units")
-    if len(files) >= 3:
+    if len(files) > 5:
         standard_reasons.append("multi-file-impact")
     if plan.get("strategy") == "parallel":
         standard_reasons.append("parallel-execution")
     if standard_reasons:
-        return "standard", standard_reasons
+        return "standard", list(dict.fromkeys(standard_reasons))
     return "fast", ["single-bounded-unit"]
 
 

@@ -21,6 +21,13 @@ Communicate with the user in the user's language.
 4. Inspect concrete code paths and tests. Expand context only when evidence reveals another
    dependency or risk.
 
+Apply a progressive cost budget while doing this work. A likely Fast task reads only the nearest
+comparable implementation, its direct contracts, and targeted tests. Standard reads the affected
+module closure. Expand into cross-module or repository-wide context only after concrete evidence
+shows the compound high-risk and complexity signals required for Strict. Do not scan unrelated
+repositories, the full Spec, broad Git history, or every architecture section merely to prove
+that a bounded task might be complicated.
+
 For a task with `task.json.spec_source`, re-run `inspect-dev-spec` against the stored source, exact
 `selected_spec_tasks`, and only their stored `task.repo_paths` bindings. Schema, Spec ID, design
 revision, and `design_sha256` must still match. A changed `document_sha256` with the same design is
@@ -55,6 +62,19 @@ read. Treat the Canonical closure as frozen design, not as a prompt to design th
 Use shared execution dependency status directly. Do not inspect another local Harness task or Git
 history to re-prove a completed hard dependency, and do not repeat dependency or baseline
 explanations after the selected inspection has recorded them.
+
+## Local implementation baseline
+
+For every code unit, inspect the nearest same-module, same-role implementation before planning.
+Record a concise `local_baseline` covering only evidenced conventions that affect this change:
+naming and control flow, null/empty and error handling, layering and dependency direction, object
+modeling, method extraction granularity, literal/constant usage, and comments/Javadoc. Prefer the
+closest comparable code over a repository-wide average. Explicit requirements, correctness,
+security, and project hard rules still take precedence; otherwise do not replace safe local
+conventions with generic best practices.
+
+Do not ask the user to choose a style already answered consistently by comparable code. Ask only
+when local evidence conflicts or a deviation can change the contract, risk, or acceptance result.
 
 ## Analysis artifacts
 
@@ -101,6 +121,7 @@ Execution plan records use:
     "test_points": ["targeted check"],
     "contracts": ["input/output/invariant or none"],
     "risks": ["known risk or none"],
+    "local_baseline": ["evidenced local convention and source path"],
     "repo_id": "R1",
     "source_task_id": "R1-T1",
     "source_step_ids": ["S1"],
@@ -132,8 +153,10 @@ For every selected source test, `test-strategy.md` must spell out its Test ID, s
 owning Unit ID, repository-relative test file, and exact Canonical command; the state gate checks
 these markers mechanically.
 
-Prefer one coherent unit over artificial file-level splitting. Use parallel only for truly
-independent write scopes. Better unit contracts reduce later REVIEW rework.
+Prefer one coherent unit over artificial file-level splitting. Do not split a class or method by
+line count, or create many one-use helpers, merely to make the plan look modular. Extract only a
+clear semantic boundary, reuse point, or independently testable responsibility. Use parallel only
+for truly independent write scopes. Better unit contracts reduce later REVIEW rework.
 
 Code tasks require `test-strategy.md`; explicit `doc`, `analysis`, and `report` tasks do not.
 
@@ -196,19 +219,30 @@ Use its `minimum_mode` and `reasons` as the proposal floor. You may raise this r
 uncertainty or user preference requires more rigor, but never lower or replace it with a
 self-reported floor. The state API rechecks the floor when the proposal is saved and frozen.
 
-The calculation classifies:
+The calculation is intentionally Standard-centered:
 
-- `fast`: one low-risk unit, local behavior, no public contract/schema/security/concurrency or
-  migration impact, targeted test available.
-- `standard`: ordinary multi-file feature/fix, bounded contract impact, existing patterns and
-  impacted tests available.
-- `strict`: state machine, configuration/schema migration, security/payment/data-loss risk,
-  public or cross-repository contract, broad concurrency, platform generators, or uncertain
-  blast radius.
+- `fast`: one coherent, non-parallel unit in one actually modified repository, at most five
+  changed files, no explicit high-risk signal, and no public or cross-repository contract impact.
+  Small parameter changes, bounded field/mapping edits, and a few ordinary model files should
+  normally remain Fast.
+- `standard`: the default for ordinary business work. Multiple units/files, bounded compatibility
+  work, actual but contained multi-repository changes, broad low-risk work, and bounded high-risk
+  work remain Standard.
+- `strict`: requires both an explicit high-risk signal and concrete complexity/blast-radius
+  evidence. Complexity means actual multi-repository edits, at least four units, at least ten
+  changed files, or a public/cross-repository contract. Parallel execution is a Standard signal
+  by itself. Generic domain words in a risk description, title, file path, Spec repository
+  catalog, or unselected task are never sufficient evidence of high risk.
+
+Repository count comes only from repositories that own files in current plan units. Canonical
+Spec metadata, unselected tasks, dependency summaries, unused `repo_paths`, and supermodule child
+registrations do not raise the mode. A real multi-repository change is a Standard signal by
+itself and reaches Strict only when an explicit high-risk signal is also present.
 
 If configuration is concrete, it is also a floor. The selected mode may be raised by the user
-but never placed below either floor. Explain the decision and state-specific effects in the
-dev-spec.
+but never placed below either floor. The Agent must not raise an adaptive proposal to Strict from
+vague uncertainty or a domain keyword; cite both the explicit risk and the concrete complexity
+signal. Explain the decision and state-specific effects in the dev-spec.
 
 Persist the proposal before requesting ANALYSIS -> IMPLEMENT:
 

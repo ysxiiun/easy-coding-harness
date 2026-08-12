@@ -47,6 +47,24 @@ Communicate with the user in the user's language.
    Describe the semantic meaning and, when relevant, units, format, allowed values, nullability,
    default behavior, or compatibility constraints. A type-level comment does not replace comments
    on its fields or members; do not add low-value comments to ordinary local variables.
+10. Treat the task card's `Local Baseline` as the default implementation shape. Match the nearest
+    comparable code's naming, control flow, null/empty and error handling, layering, object model,
+    and extraction granularity unless correctness, security, an explicit requirement, or a hard
+    project rule requires a deviation. Do not add defensive null checks solely because they are a
+    generic best practice when the evidenced local contract intentionally omits them.
+11. Implement the smallest coherent design. Do not add speculative abstractions, wrappers,
+    factories, layers, or extension points, and do not fragment one readable flow into many
+    single-use micro-methods. Extract code only for a clear semantic boundary, real reuse,
+    independent testability, or a material reduction in complexity.
+12. Literals and magic values are allowed when they are obvious, local, and consistent with the
+    surrounding code. Introduce a constant for repeated use, stable domain/config/protocol
+    semantics, or an established project convention—not merely to hold the single return value of
+    a getter.
+13. In a newly added core Java class, every method and field requires meaningful Javadoc. In an
+    existing core Java class, every added or materially modified method and field requires it.
+    Add focused inline comments to core or complex logic to explain intent, constraints, or
+    non-obvious tradeoffs. Do not mass-retrofit untouched legacy code, and for non-Java code
+    follow the language's doc-comment form plus the evidenced project convention.
 
 ## Choose the execution owner
 
@@ -92,6 +110,7 @@ Sub-agents never dispatch other sub-agents or read `.easy-coding` workflow asset
 ## Test Points    {unit.test_points and exact targeted commands}
 ## Contracts      {inputs, outputs, invariants shared with other units}
 ## Risks          {known edge cases and compatibility risks}
+## Local Baseline {nearest comparable code conventions and evidence paths}
 ## Code Comments  {resolved host Agent author value; model-field, enum-member, and constant rules}
 ## Coding Rules   {pre-digested RULES sections}
 ## Architecture   {pre-digested ABSTRACT sections}
@@ -110,11 +129,13 @@ deliverable|null, checks:[{command,passed,failures:[]}], issues:[], needs_attent
    hard/contract dependencies are ready; do not batch-start dependent tasks at the initial
    IMPLEMENT boundary.
    Populate `Code Comments` on every code task card with the resolved user-facing host Agent
-   author value and the field/member/constant rules above; sub-agents do not read this Skill.
+   author value, the field/member/constant rules, and the core Java Javadoc rule above. Populate
+   `Local Baseline` from the Unit's analyzed evidence; sub-agents do not read this Skill.
 2. Execute according to dependency order and selected owner.
 3. Run targeted unit tests and self-audit scope, contracts, TODOs, and introduced warnings.
    Also audit new author attributions and every new model field, enum member, and constant against
-   the comment requirements above before recording success.
+   the comment requirements above, then check local-style deviations, unnecessary abstractions,
+   one-use constant extraction, and affected core Java Javadoc before recording success.
 4. Append one `result` record. Only a successful unit uses `status:"completed"`; include
    unresolved issues rather than hiding them, and do not advance while `issues` or
    `needs_attention` is non-empty.
@@ -150,6 +171,10 @@ conversation overhead while keeping work observable.
 - [ ] Every unit has a dispatch/result pair and satisfied its acceptance criteria.
 - [ ] Targeted tests ran or a concrete blocker is recorded.
 - [ ] Cross-unit contracts still match.
+- [ ] The implementation follows the evidenced Local Baseline or records a required deviation.
+- [ ] No speculative layer, fragmented micro-method set, or single-use getter constant was added.
 - [ ] New author attributions use the user-facing host `<Current Agent Name> with Easy Coding`.
 - [ ] Every new model field, enum member, and constant has a meaningful field-level comment.
+- [ ] Every method/field in a new core Java class, and every added or materially modified one in
+      an existing core Java class, has Javadoc.
 - [ ] Code tasks enter REVIEW, regardless of workflow mode.

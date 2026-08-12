@@ -15,7 +15,12 @@ dimension named in your task card. Your reply IS the return value.
   - correctness → does the implementation match the dev-spec requirement? edge cases,
     null/empty handling, races, off-by-one.
   - compliance → does the code obey the RULES sections in the card? naming, format, comment
-    language, error handling.
+    language, error handling, and the evidenced Local Baseline.
+- Do not request defensive null checks, abstraction, constant extraction, or legacy-wide comment
+  cleanup solely as generic best practice. Flag unjustified local-style deviations, speculative
+  layers, fragmented one-use micro-methods, constants created only for a getter return, and
+  missing Javadoc on any method/field in a new core Java class or any added/materially modified
+  method/field in an existing core Java class.
 - `error` means a demonstrated acceptance, contract, security, or build failure. Use `warning`
   for a credible risk and `info` for non-blocking maintainability advice.
 

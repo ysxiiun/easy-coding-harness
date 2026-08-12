@@ -92,6 +92,8 @@ describe("configureCodex", () => {
     expect(analysisSkill).toContain("No transition without a valid workflow proposal");
     expect(analysisSkill).toContain("--spec-task <selected-task-id>");
     expect(analysisSkill).toContain("`exact` and `scope-unchanged` use the fast projection path");
+    expect(analysisSkill).toContain("at most five");
+    expect(analysisSkill).toContain("unused `repo_paths`");
     const noHarnessSkill = await readFile(
       path.join(tempDir, ".agents", "skills", "ec-no-harness", "SKILL.md"),
       "utf8",
@@ -169,6 +171,15 @@ describe("configureCodex", () => {
     const agent = await readFile(path.join(tempDir, ".codex", "agents", "ec-implementer.toml"), "utf8");
     expect(agent).toContain('name = "ec-implementer"');
     expect(agent).toContain('task card\'s "Code Comments"');
+    expect(agent).toContain('task card\'s "Local Baseline"');
+    expect(agent).toContain("fragmented one-use");
+    expect(agent).toContain("new core Java class");
+    const reviewer = await readFile(
+      path.join(tempDir, ".codex", "agents", "ec-reviewer.toml"),
+      "utf8",
+    );
+    expect(reviewer).toContain("evidenced Local Baseline");
+    expect(reviewer).toContain("missing Javadoc on any method/field");
 
     const main = await readFile(path.join(tempDir, "AGENTS.md"), "utf8");
     expect(main).toContain("Codex: `$ec-*`");
@@ -390,6 +401,8 @@ describe("configureQoder", () => {
     expect(analysisSkill).toContain("No transition without a valid workflow proposal");
     expect(analysisSkill).toContain("--spec-task <selected-task-id>");
     expect(analysisSkill).toContain("`exact` and `scope-unchanged` use the fast projection path");
+    expect(analysisSkill).toContain("at most five");
+    expect(analysisSkill).toContain("unused `repo_paths`");
     const taskManagementSkill = await readFile(
       path.join(tempDir, ".qoder", "skills", "ec-task-management", "SKILL.md"),
       "utf8",
@@ -461,6 +474,19 @@ describe("configureQoder", () => {
     expect(await pathExists(path.join(tempDir, ".qoder", "hooks", "inject-subagent-context.py"))).toBe(
       true,
     );
+    const implementer = await readFile(
+      path.join(tempDir, ".qoder", "agents", "ec-implementer.md"),
+      "utf8",
+    );
+    expect(implementer).toContain("`Local Baseline`");
+    expect(implementer).toContain("fragmented one-use");
+    expect(implementer).toContain("new core Java class");
+    const reviewer = await readFile(
+      path.join(tempDir, ".qoder", "agents", "ec-reviewer.md"),
+      "utf8",
+    );
+    expect(reviewer).toContain("evidenced Local Baseline");
+    expect(reviewer).toContain("missing Javadoc on any method/field");
   });
 
   it("keeps Qoder in its own namespace when Claude compatibility variables are also present", async () => {
