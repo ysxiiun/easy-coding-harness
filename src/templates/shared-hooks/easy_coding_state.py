@@ -16,6 +16,7 @@ import sys
 
 from easy_dev_spec import (
     EasyDevSpecError,
+    inspect_manifest,
     inspect_spec,
     inspection_summary,
     select_consumption_scopes,
@@ -1754,8 +1755,16 @@ def inspect_task_spec(root: Path, task: dict) -> tuple[dict, dict]:
             if stored.get(field) != expected.get(field):
                 raise StateError("Canonical Spec dependency metadata no longer matches source selection.")
         refreshed = dict(stored)
-        refreshed["status"] = expected.get("status")
-        refreshed["shared_status"] = expected.get("shared_status")
+        for field in (
+            "status",
+            "shared_status",
+            "dependency_task_status",
+            "basis",
+        ):
+            if expected.get(field) is None:
+                refreshed.pop(field, None)
+            else:
+                refreshed[field] = expected.get(field)
         if expected.get("evidence"):
             refreshed["evidence"] = expected.get("evidence")
         refreshed_dependencies.append(refreshed)
@@ -6735,6 +6744,8 @@ def main() -> int:
     inspect_spec_parser = subcommands.add_parser("inspect-dev-spec", parents=[common])
     inspect_spec_parser.add_argument("--spec", required=True)
     inspect_spec_parser.add_argument("--repo-path", action="append", default=[])
+    inspect_spec_parser.add_argument("--spec-task", action="append", default=[])
+    inspect_spec_parser.add_argument("--manifest-only", action="store_true")
 
     initialize_spec = subcommands.add_parser("initialize-spec-execution", parents=[common])
     initialize_spec.add_argument("--spec", required=True)
@@ -6756,7 +6767,7 @@ def main() -> int:
     create_from_spec.add_argument("--task-id", required=True)
     create_from_spec.add_argument("--type", required=True)
     create_from_spec.add_argument("--title", required=True)
-    create_from_spec.add_argument("--repo-path", required=True, action="append")
+    create_from_spec.add_argument("--repo-path", action="append", default=[])
     create_from_spec.add_argument("--dependency-evidence", action="append", default=[])
     create_from_spec.add_argument("--agent", required=True)
     create_from_spec.add_argument("--no-set-current", action="store_true")
@@ -7017,15 +7028,21 @@ def main() -> int:
             emit(snapshot_state(root, session_file))
         elif command == "inspect-dev-spec":
             spec_path = Path(args.spec).expanduser()
-            emit(
-                inspection_summary(
-                    inspect_spec(
-                        spec_path if spec_path.is_absolute() else root / spec_path,
-                        root,
-                        parse_mapping_args(args.repo_path, "--repo-path"),
-                    )
+            if args.manifest_only and args.spec_task:
+                raise StateError("--manifest-only cannot be combined with --spec-task")
+            resolved_spec = spec_path if spec_path.is_absolute() else root / spec_path
+            repo_paths = parse_mapping_args(args.repo_path, "--repo-path")
+            inspection = (
+                inspect_manifest(resolved_spec, root, repo_paths)
+                if args.manifest_only
+                else inspect_spec(
+                    resolved_spec,
+                    root,
+                    repo_paths,
+                    args.spec_task or None,
                 )
             )
+            emit(inspection_summary(inspection))
         elif command == "initialize-spec-execution":
             emit(initialize_spec_execution_state(root, args.spec))
         elif command == "select-dev-spec-scope":

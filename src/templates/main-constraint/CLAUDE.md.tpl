@@ -90,6 +90,11 @@ First run `/ec-init`; daily work goes through `/ec-workflow`.
   external explicit Spec paths are allowed and may be repaired only with identity-checked rebind.
   Runtime progress must use the shared writer with CAS/idempotency and reconciliation; static
   design changes require revision + READY + `sync-spec-design`. Never hand-edit `EDS:EXECUTION`.
+- Canonical routing is two-pass: first use manifest-only discovery for the current worktree, then
+  inspect only the explicitly selected task IDs and repositories. A remote-confirmed worktree
+  overrides a stale `path_hint`; never mirror the source Spec or re-check unselected repositories.
+  ANALYSIS reads the selected consumption closure once and treats exact/scope-unchanged as a fast
+  projection, while shared execution is the dependency fact source.
 - MEMORY combines short-memory creation and the conditional long-memory gate. Entry follows the
   effective confirmation mode; once memory processing completes, COMPLETE is automatic.
 - NO CODE-TASK COMPLETION CLAIMS WITHOUT FRESH VERIFICATION EVIDENCE.

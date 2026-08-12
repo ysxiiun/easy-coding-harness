@@ -21,15 +21,18 @@ Communicate with the user in the user's language.
 4. Inspect concrete code paths and tests. Expand context only when evidence reveals another
    dependency or risk.
 
-For a task with `task.json.spec_source`, re-run `inspect-dev-spec` against the stored source and
-every stored `task.repo_paths` repository binding. Schema, Spec ID, design revision, and
-`design_sha256` must still match. A changed `document_sha256` with the same design is normal
-shared progress; refresh `execution_revision` without invalidating plan/review/verify evidence.
-An execution revision rollback is blocking. Then call the selector for the exact selection:
+For a task with `task.json.spec_source`, re-run `inspect-dev-spec` against the stored source, exact
+`selected_spec_tasks`, and only their stored `task.repo_paths` bindings. Schema, Spec ID, design
+revision, and `design_sha256` must still match. A changed `document_sha256` with the same design is
+normal shared progress; refresh `execution_revision` without invalidating plan/review/verify
+evidence. An execution revision rollback is blocking. Then call the selector once for the exact
+selection:
 
 ```bash
 {{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py inspect-dev-spec \
-  --spec <stored-source> --repo-path <repo-id>=<stored-path> [--repo-path <repo-id>=<stored-path>]...
+  --spec <stored-source> \
+  --spec-task <selected-task-id> [--spec-task <selected-task-id>]... \
+  [--repo-path <repo-id>=<stored-path>]...
 
 {{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py select-dev-spec-scope \
   --spec <stored-source> --spec-task <selected-task-id> [--spec-task <selected-task-id>]...
@@ -38,8 +41,20 @@ An execution revision rollback is blocking. Then call the selector for the exact
 Load only the returned per-repository consumption closures: manifest/global context, selected
 task and repository sections, related contracts, direct dependency summaries, selected
 changes/steps/tests, and relevant integration rows. Never replace the selector with a whole-file
-read. `scope-drifted` requires current-code conflict analysis before confirmation;
-`baseline-unavailable` or unresolved repository identity remains blocked in ANALYSIS.
+read. Treat the Canonical closure as frozen design, not as a prompt to design the task again:
+
+- `exact` and `scope-unchanged` use the fast projection path. Confirm the selected paths, symbols,
+  and test entry points, then map the closure into Units, `test-strategy.md`, and the derived
+  `dev-spec.md` in one pass. Do not reselect interfaces, fields, task boundaries, Steps, or Tests,
+  and do not ask questions already answered by the source Spec.
+- `scope-drifted` reads and analyzes only changed files and symbols in the selected task scope.
+  Escalate to a static design revision only when that evidence changes a frozen contract or task
+  boundary; unrelated repository or completed-task changes are background, not current drift.
+- `baseline-unavailable` or unresolved selected-repository identity remains blocked in ANALYSIS.
+
+Use shared execution dependency status directly. Do not inspect another local Harness task or Git
+history to re-prove a completed hard dependency, and do not repeat dependency or baseline
+explanations after the selected inspection has recorded them.
 
 ## Analysis artifacts
 
@@ -106,6 +121,10 @@ evidence, not a second maintained Spec. Record the source path/path mode/ID/desi
 digest, current document digest/execution revision/writeback status, selected tasks
 and repositories, baseline/conflict result, Unit mapping, source test mapping, and pending
 integration edges.
+
+The required skeleton is a mechanical artifact schema. For a Canonical-backed task it is filled
+from the selected closure and current-code delta; it must never become a second round of Spec
+authoring.
 
 Every source test command remains mandatory. Additional commands from the current repository are
 allowed only when `test-strategy.md` records why the Canonical command alone is insufficient.

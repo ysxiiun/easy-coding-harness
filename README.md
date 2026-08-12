@@ -101,15 +101,19 @@ any stage --[user abort via ec-task-close]--> CLOSED
 
 Harness 可选择性消费 easy-dev-spec 生成的单文件 `easy-dev-spec/v1` Canonical Spec：
 
-1. `ec-workflow` 先只读检查 manifest、仓库、任务 DAG、依赖、baseline 与共享 execution；
-   旧 Spec 仍可只读检查，但成为可执行任务前必须初始化共享执行区。
-2. 用户明确选择一个或多个 Spec task；`select-dev-spec-scope` 按仓库提取确定性消费
-   闭包，Harness 不默认导入整份 Spec，也不会读取未选任务正文。
-3. 一次选择创建一个 Harness task；ANALYSIS 使用最终 producer READY 门禁，并将
-   selected task 映射为带 `repo_id`、`source_task_id`、source steps、文件、符号和测试
-   命令的 Unit。
-4. `hard` 依赖决定执行顺序，冻结的 `contract` 依赖允许并行编码，`integration` 依赖
-   在证据闭合前阻止全链路完成。
+1. `ec-workflow` 先用 `inspect-dev-spec --manifest-only` 只读校验 manifest，通过 normalized
+   remote 识别当前 worktree，并展示任务 DAG 与共享 execution；不会解析未选仓库路径，也
+   不在选择前计算任何任务的 baseline。旧 Spec 仍可只读检查，但成为可执行任务前必须
+   初始化共享执行区。
+2. 用户明确选择一个或多个 Spec task 后，Harness 用 `--spec-task` 只检查所选任务仓库和
+   change/test 范围。当前 worktree remote 唯一匹配时无需手工路径；`path_hint` 不一致只会
+   形成一次运行时映射提示，不会复制或修复原 Spec。
+3. 一次选择创建一个 Harness task；ANALYSIS 唯一一次调用 `select-dev-spec-scope` 提取确定性
+   消费闭包。`exact` / `scope-unchanged` 直接快速投影为 Unit、测试策略和派生 dev-spec，
+   `scope-drifted` 才读取所选范围内的漂移文件与符号；未选任务正文始终不进入上下文。
+4. `EDS:EXECUTION` 是依赖事实来源：`hard` 依赖决定执行顺序，冻结的 `contract` 依赖允许
+   并行编码，`integration` 依赖在证据闭合前阻止全链路完成；不会再从本地任务或 Git 历史
+   重复推断共享状态。
 
 Canonical Spec 的静态设计由 design revision + `design_sha256` 冻结；共享
 `EDS:EXECUTION` 则接收 Harness 的 Task/Step/dependency 投影。写回使用

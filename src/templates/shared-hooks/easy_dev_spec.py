@@ -128,29 +128,298 @@ def portable_path(root: Path, path: Path) -> str:
             )
 
 
+def _path_hint_status(root: Path, repository: dict[str, Any], repository_path: Path) -> str:
+    hint = Path(str(repository.get("path_hint") or ""))
+    if not str(hint):
+        return "missing"
+    resolved_hint = (hint if hint.is_absolute() else root / hint).resolve()
+    return "matched" if resolved_hint == repository_path.resolve() else "different"
+
+
 def _candidate_repository_paths(
     root: Path,
     repository: dict[str, Any],
     explicit_paths: dict[str, str],
-) -> list[Path]:
+) -> list[tuple[str, Path]]:
     repo_id = str(repository["repo_id"])
-    candidates: list[Path] = []
+    candidates: list[tuple[str, Path]] = []
     explicit = explicit_paths.get(repo_id)
     if explicit:
         path = Path(explicit)
         # An explicit binding is authoritative. Falling back to path_hint/root would make a
         # mistyped --repo-path appear valid while silently binding a different checkout.
-        return [(path if path.is_absolute() else root / path).resolve()]
+        return [("explicit", (path if path.is_absolute() else root / path).resolve())]
+    candidates.append(("current-root", root))
     hint = Path(str(repository.get("path_hint") or ""))
     if str(hint):
-        candidates.append(hint if hint.is_absolute() else root / hint)
-    candidates.append(root)
-    unique: list[Path] = []
-    for candidate in candidates:
+        candidates.append(("path-hint", hint if hint.is_absolute() else root / hint))
+    unique: list[tuple[str, Path]] = []
+    seen: set[Path] = set()
+    for binding_source, candidate in candidates:
         resolved = candidate.resolve()
-        if resolved not in unique:
-            unique.append(resolved)
+        if resolved not in seen:
+            unique.append((binding_source, resolved))
+            seen.add(resolved)
     return unique
+
+
+def _resolve_repository_binding(
+    root: Path,
+    repository: dict[str, Any],
+    explicit_paths: dict[str, str],
+) -> dict[str, Any] | None:
+    expected_remotes = {
+        normalize_remote(remote) for remote in repository["remote_urls"]
+    }
+    # 显式路径保持权威；否则当前 worktree 一旦通过 remote 验证就立即返回，不再探测旧 path_hint。
+    for binding_source, repository_path in _candidate_repository_paths(
+        root, repository, explicit_paths
+    ):
+        if not repository_path.is_dir():
+            continue
+        if not expected_remotes.intersection(repository_remotes(repository_path)):
+            continue
+        return {
+            "path": repository_path,
+            "binding_source": binding_source,
+            "path_hint_status": _path_hint_status(root, repository, repository_path),
+        }
+    return None
+
+
+def _current_repository_match(
+    root: Path,
+    repositories: list[dict[str, Any]],
+    explicit_paths: dict[str, str],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    resolved_root = root.resolve()
+    repository_by_id = {
+        str(repository["repo_id"]): repository for repository in repositories
+    }
+    if len(explicit_paths) > 1:
+        raise EasyDevSpecError(
+            "Manifest routing accepts at most one --repo-path for the current repository"
+        )
+    if explicit_paths:
+        repo_id, raw_path = next(iter(explicit_paths.items()))
+        repository = repository_by_id.get(repo_id)
+        if repository is None:
+            raise EasyDevSpecError(f"Unknown Canonical repository: {repo_id}")
+        path = Path(raw_path)
+        resolved_path = (path if path.is_absolute() else root / path).resolve()
+        if resolved_path != resolved_root:
+            raise EasyDevSpecError(
+                "Manifest routing --repo-path must identify the current Git worktree"
+            )
+        binding = _resolve_repository_binding(root, repository, explicit_paths)
+        if binding is None:
+            raise EasyDevSpecError(
+                f"Current worktree does not match Canonical repository {repo_id}"
+            )
+        return repository, binding
+
+    local_remotes = set(repository_remotes(resolved_root))
+    if not local_remotes:
+        raise EasyDevSpecError(
+            "Current worktree has no Git remote; configure a matching remote before "
+            "Canonical manifest routing"
+        )
+    matches = [
+        repository
+        for repository in repositories
+        if local_remotes.intersection(
+            normalize_remote(remote) for remote in repository["remote_urls"]
+        )
+    ]
+    if len(matches) != 1:
+        candidates = ", ".join(str(item["repo_id"]) for item in matches) or "none"
+        raise EasyDevSpecError(
+            "Current worktree must match exactly one Canonical repository; "
+            f"matched: {candidates}. Pass --repo-path <repo-id>=<current-worktree>."
+        )
+    repository = matches[0]
+    return repository, {
+        "path": resolved_root,
+        "binding_source": "current-root-remote",
+        "path_hint_status": _path_hint_status(root, repository, resolved_root),
+    }
+
+
+def _dependency_execution_summary(
+    dependency: dict[str, Any],
+    source_snapshot: dict[str, Any],
+    execution_by_task: dict[str, dict[str, Any]],
+    manifest_status: str,
+    execution_available: bool,
+) -> dict[str, Any]:
+    dependency_id = str(dependency["task_id"])
+    shared_dependency = next(
+        (
+            item
+            for item in source_snapshot.get("dependencies", [])
+            if isinstance(item, dict) and item.get("task_id") == dependency_id
+        ),
+        None,
+    )
+    shared_status = (
+        shared_dependency.get("status")
+        if execution_available and isinstance(shared_dependency, dict)
+        else "pending"
+        if execution_available
+        else None
+    )
+    dependency_task_status = (
+        execution_by_task.get(dependency_id, {}).get("status", "not_started")
+        if execution_available
+        else None
+    )
+    dependency_type = str(dependency.get("type"))
+    if dependency_type == "contract":
+        status = "satisfied" if manifest_status == "READY" else "pending"
+        basis = "design-ready" if status == "satisfied" else "design-not-ready"
+    elif shared_status == "satisfied":
+        status = "satisfied"
+        basis = "recorded-evidence"
+    elif dependency_type == "hard" and dependency_task_status == "completed":
+        status = "satisfied"
+        basis = "dependency-task-completed"
+    else:
+        status = "pending"
+        basis = "pending-integration" if dependency_type == "integration" else "pending"
+    return {
+        "shared_status": shared_status,
+        "dependency_task_status": dependency_task_status,
+        "status": status,
+        "basis": basis,
+    }
+
+
+def inspect_manifest(
+    spec_path: Path,
+    root: Path,
+    repo_paths: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Return the current-repository task catalog without resolving unrelated checkouts."""
+
+    resolved_spec_path = spec_path.resolve()
+    if not resolved_spec_path.is_file():
+        raise EasyDevSpecError(f"Spec file does not exist: {resolved_spec_path}")
+    try:
+        text = resolved_spec_path.read_text(encoding="utf-8")
+        report = validate_spec(text)
+    except (OSError, UnicodeError) as exc:
+        raise EasyDevSpecError(
+            f"Cannot read Spec as UTF-8: {resolved_spec_path}: {exc}"
+        ) from exc
+    if report.protocol == "legacy":
+        return {
+            "inspection_mode": "manifest-only",
+            "protocol": "legacy",
+            "source_path": str(resolved_spec_path),
+            "source_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+            "design_sha256": report.design_sha256,
+            "document_sha256": report.document_sha256,
+            "execution_revision": None,
+            "execution": None,
+            "selection_required": False,
+            "selected_task_ids": [],
+            "task_catalog": [],
+            "matched_repo_paths": {},
+            "unresolved_repositories": [],
+            "baseline_status": {},
+            "repository_bindings": [],
+        }
+    if report.protocol != "canonical-v1" or report.manifest is None or not report.ok:
+        details = "; ".join(
+            f"{issue.code}: {issue.message}" for issue in report.issues
+        ) or "unknown validation failure"
+        raise EasyDevSpecError(f"Canonical Spec validation failed: {details}")
+    manifest = report.manifest
+    repositories = manifest["repositories"]
+    tasks = manifest["tasks"]
+    repository, binding = _current_repository_match(
+        root, repositories, repo_paths or {}
+    )
+    current_repo_id = str(repository["repo_id"])
+    repository_names = {
+        str(item["repo_id"]): str(item["name"]) for item in repositories
+    }
+    execution = report.execution
+    execution_by_task = {
+        str(snapshot.get("task_id")): snapshot
+        for snapshot in execution.get("tasks", [])
+        if isinstance(execution, dict)
+        and isinstance(snapshot, dict)
+        and isinstance(snapshot.get("task_id"), str)
+    } if isinstance(execution, dict) else {}
+    task_catalog: list[dict[str, Any]] = []
+    for task in tasks:
+        task_id = str(task["task_id"])
+        source_snapshot = execution_by_task.get(task_id, {})
+        dependencies = [
+            {
+                **dependency,
+                **_dependency_execution_summary(
+                    dependency,
+                    source_snapshot,
+                    execution_by_task,
+                    str(manifest["status"]),
+                    isinstance(execution, dict),
+                ),
+            }
+            for dependency in task.get("depends_on", [])
+        ]
+        task_catalog.append(
+            {
+                "task_id": task_id,
+                "repo_id": task["repo_id"],
+                "repository_name": repository_names[str(task["repo_id"])],
+                "title": task["title"],
+                "status": task["status"],
+                "execution_status": (
+                    execution_by_task.get(task_id, {}).get("status", "not_started")
+                    if isinstance(execution, dict)
+                    else None
+                ),
+                "depends_on": dependencies,
+                "baseline_status": "not-inspected",
+            }
+        )
+    try:
+        source_path = portable_path(root, resolved_spec_path)
+    except EasyDevSpecError:
+        source_path = str(resolved_spec_path)
+    return {
+        "inspection_mode": "manifest-only",
+        "protocol": "canonical-v1",
+        "schema": SCHEMA,
+        "spec_id": manifest["spec_id"],
+        "revision": manifest["revision"],
+        "status": manifest["status"],
+        "title": manifest["title"],
+        "source_path": source_path,
+        "source_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        "design_sha256": report.design_sha256,
+        "document_sha256": report.document_sha256,
+        "execution_revision": (
+            execution.get("execution_revision") if isinstance(execution, dict) else None
+        ),
+        "execution": execution,
+        "repository_match": {
+            "repo_id": current_repo_id,
+            "name": repository["name"],
+            "path": portable_path(root, binding["path"]),
+            "binding_source": binding["binding_source"],
+            "path_hint_status": binding["path_hint_status"],
+        },
+        "task_catalog": task_catalog,
+        "selection_required": True,
+        "selected_task_ids": [],
+        "matched_repo_paths": {},
+        "unresolved_repositories": [],
+        "baseline_status": {},
+        "repository_bindings": [],
+    }
 
 
 def inspect_spec(
@@ -168,6 +437,14 @@ def inspect_spec(
     task_by_id = {task["task_id"]: task for task in tasks}
     explicit_paths = repo_paths or {}
     selected_task_set = set(selected_task_ids or [])
+    unknown_tasks = selected_task_set - set(task_by_id)
+    if unknown_tasks:
+        raise EasyDevSpecError(
+            "Unknown Canonical Spec tasks: " + ", ".join(sorted(unknown_tasks))
+        )
+    selected_repo_ids = {
+        str(task_by_id[task_id]["repo_id"]) for task_id in selected_task_set
+    }
     matched_repo_paths: dict[str, str] = {}
     unresolved_repositories: list[str] = []
     baseline_status: dict[str, str] = {}
@@ -175,18 +452,15 @@ def inspect_spec(
 
     for repository in repositories:
         repo_id = str(repository["repo_id"])
-        expected_remotes = {normalize_remote(remote) for remote in repository["remote_urls"]}
-        matches = [
-            candidate
-            for candidate in _candidate_repository_paths(root, repository, explicit_paths)
-            if candidate.is_dir() and expected_remotes.intersection(repository_remotes(candidate))
-        ]
-        matches = list(dict.fromkeys(matches))
-        if len(matches) != 1:
+        # task 已选定后只解析其所属仓库，未选仓库不得制造路径或 baseline 阻塞。
+        if selected_repo_ids and repo_id not in selected_repo_ids:
+            continue
+        binding = _resolve_repository_binding(root, repository, explicit_paths)
+        if binding is None:
             unresolved_repositories.append(repo_id)
             baseline_status[repo_id] = "baseline-unavailable"
             continue
-        repository_path = matches[0]
+        repository_path = binding["path"]
         selected_paths = [
             str(change["path"])
             for change in changes
@@ -214,6 +488,8 @@ def inspect_spec(
                 "path": stored_path,
                 "baseline_commit": repository["baseline"]["commit"],
                 "baseline_status": status,
+                "binding_source": binding["binding_source"],
+                "path_hint_status": binding["path_hint_status"],
             }
         )
 
@@ -234,6 +510,7 @@ def inspect_spec(
         source_path = str(resolved_spec_path)
     execution = report.execution
     return {
+        "inspection_mode": "selected" if selected_task_set else "full",
         "protocol": "canonical-v1",
         "schema": SCHEMA,
         "spec_id": manifest["spec_id"],
@@ -255,6 +532,7 @@ def inspect_spec(
         "tests": manifest["tests"],
         "contracts": manifest["contracts"],
         "dependency_edges": dependency_edges,
+        "selected_task_ids": sorted(selected_task_set),
         "matched_repo_paths": matched_repo_paths,
         "unresolved_repositories": unresolved_repositories,
         "baseline_status": baseline_status,
@@ -376,29 +654,31 @@ def select_tasks(
             if evidence is None and dependency_target_counts[dependency_id] == 1:
                 evidence = evidence_by_dependency.get(dependency_id)
             source_snapshot = execution_by_task.get(source_task_id, {})
-            shared_dependency = next(
-                (
-                    item
-                    for item in source_snapshot.get("dependencies", [])
-                    if isinstance(item, dict) and item.get("task_id") == dependency_id
-                ),
-                None,
+            execution_fact = _dependency_execution_summary(
+                dependency,
+                source_snapshot,
+                execution_by_task,
+                str(inspection.get("status")),
+                isinstance(execution, dict),
             )
-            dependency_snapshot = execution_by_task.get(dependency_id, {})
-            shared_satisfied = bool(
-                isinstance(shared_dependency, dict)
-                and shared_dependency.get("status") == "satisfied"
+            shared_satisfied = execution_fact["shared_status"] == "satisfied"
+            dependency_completed = (
+                execution_fact["dependency_task_status"] == "completed"
             )
-            dependency_completed = dependency_snapshot.get("status") == "completed"
+            basis = execution_fact.get("basis")
             if dependency_type == "hard":
                 satisfied = shared_satisfied or dependency_completed or bool(evidence)
+                if execution_fact["status"] != "satisfied" and evidence:
+                    basis = "manual-evidence"
                 if dependency_id not in selected_set and not satisfied:
                     missing_hard.append(f"{source_task_id}->{dependency_id}")
             elif dependency_type == "contract":
-                satisfied = shared_satisfied or inspection.get("status") == "READY"
+                satisfied = execution_fact["status"] == "satisfied"
                 evidence = evidence or "canonical-spec-ready-contract"
             else:
                 satisfied = shared_satisfied or bool(evidence)
+                if execution_fact["status"] != "satisfied" and evidence:
+                    basis = "manual-evidence"
             dependency_records.append(
                 {
                     "source_task_id": source_task_id,
@@ -406,11 +686,11 @@ def select_tasks(
                     "dependency_type": dependency_type,
                     "required_evidence": dependency["required_evidence"],
                     "status": "satisfied" if satisfied else "pending",
-                    "shared_status": (
-                        shared_dependency.get("status")
-                        if isinstance(shared_dependency, dict)
-                        else "pending"
-                    ),
+                    "shared_status": execution_fact["shared_status"],
+                    "dependency_task_status": execution_fact[
+                        "dependency_task_status"
+                    ],
+                    "basis": basis,
                     **({"evidence": evidence} if evidence else {}),
                 }
             )
@@ -453,6 +733,7 @@ def inspection_summary(inspection: dict[str, Any]) -> dict[str, Any]:
     """Return the discovery surface without unrelated implementation routing objects."""
 
     keys = (
+        "inspection_mode",
         "protocol",
         "schema",
         "spec_id",
@@ -467,26 +748,84 @@ def inspection_summary(inspection: dict[str, Any]) -> dict[str, Any]:
         "repositories",
         "tasks",
         "dependency_edges",
+        "selected_task_ids",
+        "repository_match",
+        "task_catalog",
+        "selection_required",
         "matched_repo_paths",
         "unresolved_repositories",
         "baseline_status",
         "repository_bindings",
     )
-    summary = {key: inspection[key] for key in keys}
+    summary = {key: inspection[key] for key in keys if key in inspection}
     execution = inspection.get("execution")
+    relevant_execution_task_ids: set[str] | None = None
+    if inspection.get("inspection_mode") == "selected":
+        selected_task_ids = set(inspection.get("selected_task_ids", []))
+        selected_tasks = [
+            task
+            for task in inspection.get("tasks", [])
+            if str(task.get("task_id")) in selected_task_ids
+        ]
+        selected_repo_ids = {str(task.get("repo_id")) for task in selected_tasks}
+        execution_by_task = {
+            str(task.get("task_id")): task
+            for task in execution.get("tasks", [])
+            if isinstance(execution, dict)
+            and isinstance(task, dict)
+            and isinstance(task.get("task_id"), str)
+        } if isinstance(execution, dict) else {}
+        selected_edges: list[dict[str, Any]] = []
+        for edge in inspection.get("dependency_edges", []):
+            source_task_id = str(edge.get("source_task_id"))
+            if source_task_id not in selected_task_ids:
+                continue
+            selected_edges.append(
+                {
+                    **edge,
+                    **_dependency_execution_summary(
+                        {
+                            "task_id": edge.get("task_id"),
+                            "type": edge.get("dependency_type"),
+                        },
+                        execution_by_task.get(source_task_id, {}),
+                        execution_by_task,
+                        str(inspection.get("status")),
+                        isinstance(execution, dict),
+                    ),
+                }
+            )
+        summary["repositories"] = [
+            repository
+            for repository in inspection.get("repositories", [])
+            if str(repository.get("repo_id")) in selected_repo_ids
+        ]
+        summary["tasks"] = selected_tasks
+        summary["dependency_edges"] = selected_edges
+        relevant_execution_task_ids = selected_task_ids | {
+            str(edge.get("task_id")) for edge in selected_edges
+        }
     if isinstance(execution, dict):
+        execution_keys = [
+            "schema",
+            "spec_id",
+            "design_revision",
+            "design_sha256",
+            "execution_revision",
+            "updated_at",
+        ]
+        if inspection.get("inspection_mode") != "manifest-only":
+            execution_keys.append("tasks")
         summary["execution"] = {
             key: execution.get(key)
-            for key in (
-                "schema",
-                "spec_id",
-                "design_revision",
-                "design_sha256",
-                "execution_revision",
-                "updated_at",
-                "tasks",
-            )
+            for key in execution_keys
         }
+        if relevant_execution_task_ids is not None:
+            summary["execution"]["tasks"] = [
+                task
+                for task in execution.get("tasks", [])
+                if str(task.get("task_id")) in relevant_execution_task_ids
+            ]
     else:
         summary["execution"] = None
     return summary

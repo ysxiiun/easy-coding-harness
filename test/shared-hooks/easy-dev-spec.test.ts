@@ -28,6 +28,13 @@ function runState(args: string[]): string {
   });
 }
 
+function runStateAt(root: string, args: string[]): string {
+  return execFileSync(pythonCmd, [stateApiPath(), ...args, "--cwd", root], {
+    cwd: root,
+    encoding: "utf8",
+  });
+}
+
 function initializeSpecExecution(specPath: string): void {
   runState(["initialize-spec-execution", "--spec", specPath]);
 }
@@ -137,6 +144,272 @@ describe("Canonical Spec v1 runtime integration", () => {
     await expect(
       readFile(path.join(tempDir, ".easy-coding", "sessions", "codex-ppid.json")),
     ).rejects.toThrow();
+  });
+
+  it("routes from the current worktree without resolving unrelated repository paths", async () => {
+    const fixture = await writeCanonicalFixture();
+    await mkdir(path.join(fixture.repoA, ".easy-coding"), { recursive: true });
+    const oldCheckout = await createRepository(
+      "old-checkouts/order-service",
+      "git@example.com:demo/order-service.git",
+      {
+        "order-domain/src/main/java/com/example/order/OrderEventPublisher.java":
+          "package com.example.order;\npublic interface OrderEventPublisher {}\n",
+      },
+    );
+    const source = await readFile(fixture.specPath, "utf8");
+    await writeFile(
+      fixture.specPath,
+      source.replace("/workspace/order-service", oldCheckout.root),
+      "utf8",
+    );
+    runStateAt(fixture.repoA, ["initialize-spec-execution", "--spec", fixture.specPath]);
+
+    const routing = JSON.parse(
+      runStateAt(fixture.repoA, [
+        "inspect-dev-spec",
+        "--spec",
+        fixture.specPath,
+        "--manifest-only",
+      ]),
+    );
+
+    expect(routing.inspection_mode).toBe("manifest-only");
+    expect(routing.repositories).toBeUndefined();
+    expect(routing.tasks).toBeUndefined();
+    expect(routing.dependency_edges).toBeUndefined();
+    expect(routing.execution.tasks).toBeUndefined();
+    expect(routing.repository_match).toEqual({
+      repo_id: "R1",
+      name: "order-service",
+      path: ".",
+      binding_source: "current-root-remote",
+      path_hint_status: "different",
+    });
+    expect(routing.unresolved_repositories).toEqual([]);
+    expect(routing.task_catalog).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          task_id: "R1-T1",
+          repository_name: "order-service",
+          baseline_status: "not-inspected",
+        }),
+        expect.objectContaining({ task_id: "R1-T2", baseline_status: "not-inspected" }),
+        expect.objectContaining({ task_id: "R2-T1", baseline_status: "not-inspected" }),
+      ]),
+    );
+    expect(routing.task_catalog).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          task_id: "R1-T2",
+          depends_on: expect.arrayContaining([
+            expect.objectContaining({
+              task_id: "R1-T1",
+              status: "pending",
+              basis: "pending",
+              shared_status: "pending",
+              dependency_task_status: "not_started",
+            }),
+          ]),
+        }),
+      ]),
+    );
+    expect(routing.task_catalog[0]).not.toHaveProperty("change_paths");
+    expect(routing.task_catalog[0]).not.toHaveProperty("test_files");
+
+    const selected = JSON.parse(
+      runStateAt(fixture.repoA, [
+        "inspect-dev-spec",
+        "--spec",
+        fixture.specPath,
+        "--spec-task",
+        "R1-T2",
+      ]),
+    );
+    expect(selected).toMatchObject({
+      inspection_mode: "selected",
+      selected_task_ids: ["R1-T2"],
+      matched_repo_paths: { R1: "." },
+      unresolved_repositories: [],
+      baseline_status: { R1: "exact" },
+    });
+    expect(selected.repository_bindings).toEqual([
+      expect.objectContaining({
+        repo_id: "R1",
+        binding_source: "current-root",
+        path_hint_status: "different",
+      }),
+    ]);
+    expect(selected.dependency_edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          source_task_id: "R1-T2",
+          task_id: "R1-T1",
+          dependency_type: "hard",
+          status: "pending",
+          basis: "pending",
+          shared_status: "pending",
+          dependency_task_status: "not_started",
+        }),
+      ]),
+    );
+
+    const selectedLeaf = JSON.parse(
+      runStateAt(fixture.repoA, [
+        "inspect-dev-spec",
+        "--spec",
+        fixture.specPath,
+        "--spec-task",
+        "R1-T1",
+      ]),
+    );
+    expect(selectedLeaf.repositories.map((item: { repo_id: string }) => item.repo_id)).toEqual([
+      "R1",
+    ]);
+    expect(selectedLeaf.tasks.map((item: { task_id: string }) => item.task_id)).toEqual(["R1-T1"]);
+    expect(selectedLeaf.dependency_edges).toEqual([]);
+    expect(
+      selectedLeaf.execution.tasks.map((item: { task_id: string }) => item.task_id),
+    ).toEqual(["R1-T1"]);
+  });
+
+  it("never treats a matching directory name as repository identity without a remote", async () => {
+    const fixture = await writeCanonicalFixture();
+    await mkdir(path.join(fixture.repoA, ".easy-coding"), { recursive: true });
+    execFileSync("git", ["-C", fixture.repoA, "remote", "remove", "origin"]);
+    const source = await readFile(fixture.specPath, "utf8");
+    await writeFile(
+      fixture.specPath,
+      source
+        .replace('"name": "order-service"', '"name": "service-a"')
+        .replace("仓库 R1：order-service", "仓库 R1：service-a"),
+      "utf8",
+    );
+
+    const result = spawnSync(
+      pythonCmd,
+      [
+        stateApiPath(),
+        "inspect-dev-spec",
+        "--spec",
+        fixture.specPath,
+        "--manifest-only",
+        "--cwd",
+        fixture.repoA,
+      ],
+      { cwd: fixture.repoA, encoding: "utf8" },
+    );
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("Current worktree has no Git remote");
+  });
+
+  it("routes a READY manifest before shared execution is initialized", async () => {
+    const fixture = await writeCanonicalFixture();
+    await mkdir(path.join(fixture.repoA, ".easy-coding"), { recursive: true });
+
+    const routing = JSON.parse(
+      runStateAt(fixture.repoA, [
+        "inspect-dev-spec",
+        "--spec",
+        fixture.specPath,
+        "--manifest-only",
+      ]),
+    );
+
+    expect(routing).toMatchObject({
+      protocol: "canonical-v1",
+      status: "READY",
+      execution_revision: null,
+      execution: null,
+      selection_required: true,
+    });
+    expect(routing.task_catalog).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          task_id: "R1-T2",
+          execution_status: null,
+          depends_on: expect.arrayContaining([
+            expect.objectContaining({
+              task_id: "R1-T1",
+              status: "pending",
+              basis: "pending",
+              shared_status: null,
+              dependency_task_status: null,
+            }),
+          ]),
+        }),
+      ]),
+    );
+  });
+
+  it("creates a selected current-worktree task without an explicit repository path", async () => {
+    const fixture = await writeCanonicalFixture();
+    await mkdir(path.join(fixture.repoA, ".easy-coding"), { recursive: true });
+    runStateAt(fixture.repoA, ["initialize-spec-execution", "--spec", fixture.specPath]);
+
+    const created = JSON.parse(
+      runStateAt(fixture.repoA, [
+        "create-task-from-spec",
+        "--spec",
+        fixture.specPath,
+        "--spec-task",
+        "R1-T1",
+        "--task-id",
+        "worktree-auto-binding",
+        "--type",
+        "feature",
+        "--title",
+        "Worktree auto binding",
+        "--agent",
+        "codex",
+      ]),
+    );
+
+    expect(created.task.repo_paths).toEqual({ R1: "." });
+    expect(created.task.spec_repositories).toEqual([
+      expect.objectContaining({
+        repo_id: "R1",
+        binding_source: "current-root",
+        path_hint_status: "different",
+      }),
+    ]);
+  });
+
+  it("rejects combining manifest routing with an explicit task selection", async () => {
+    const fixture = await writeCanonicalFixture();
+    const result = spawnSync(
+      pythonCmd,
+      [
+        stateApiPath(),
+        "inspect-dev-spec",
+        "--spec",
+        fixture.specPath,
+        "--manifest-only",
+        "--spec-task",
+        "R1-T1",
+        "--cwd",
+        fixture.repoA,
+      ],
+      { cwd: fixture.repoA, encoding: "utf8" },
+    );
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("--manifest-only cannot be combined with --spec-task");
+  });
+
+  it("keeps manifest routing compatible with a legacy Dev-Spec", async () => {
+    const legacySpec = path.join(tempDir, ".easy-coding", "spec", "dev", "legacy.md");
+    await writeFile(legacySpec, "# Legacy Dev-Spec\n\nNo Canonical manifest.\n", "utf8");
+
+    const inspected = JSON.parse(
+      runState(["inspect-dev-spec", "--spec", legacySpec, "--manifest-only"]),
+    );
+    expect(inspected).toMatchObject({
+      inspection_mode: "manifest-only",
+      protocol: "legacy",
+      selection_required: false,
+      task_catalog: [],
+    });
   });
 
   it("recognizes a structurally valid DRAFT but refuses to select it for execution", async () => {
@@ -324,6 +597,17 @@ describe("Canonical Spec v1 runtime integration", () => {
         dependency_type: "hard",
       }),
     ]);
+    expect(
+      satisfied.task.spec_dependency_evidence.find(
+        (record: { source_task_id: string; task_id: string }) =>
+          record.source_task_id === "R1-T2" && record.task_id === "R2-T1",
+      ),
+    ).toMatchObject({
+      status: "satisfied",
+      shared_status: "satisfied",
+      dependency_task_status: "not_started",
+      basis: "recorded-evidence",
+    });
   });
 
   it("treats an explicit repository path as authoritative", async () => {
@@ -1628,6 +1912,39 @@ describe("Canonical Spec v1 runtime integration", () => {
         expect.objectContaining({ app: "easy-coding", agent: "Codex with Easy Coding" }),
       ]),
     );
+
+    await rm(lifecycleTaskDir, { recursive: true, force: true });
+    const downstream = JSON.parse(
+      runState([
+        "create-task-from-spec",
+        "--spec",
+        fixture.specPath,
+        "--spec-task",
+        "R1-T2",
+        "--task-id",
+        "shared-dependency-consumer",
+        "--type",
+        "feature",
+        "--title",
+        "Shared dependency consumer",
+        "--repo-path",
+        `R1=${fixture.repoA}`,
+        "--agent",
+        "codex",
+        "--no-set-current",
+      ]),
+    );
+    expect(
+      downstream.task.spec_dependency_evidence.find(
+        (record: { source_task_id: string; task_id: string }) =>
+          record.source_task_id === "R1-T2" && record.task_id === "R1-T1",
+      ),
+    ).toMatchObject({
+      status: "satisfied",
+      shared_status: "pending",
+      dependency_task_status: "completed",
+      basis: "dependency-task-completed",
+    });
   });
 
   it("allows only one bundled writer to commit from the same execution revision", async () => {

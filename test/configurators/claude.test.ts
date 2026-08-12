@@ -321,8 +321,15 @@ describe("configureClaude", () => {
       "utf8",
     );
     expect(workflowSkill).toContain("inspect-dev-spec");
+    expect(workflowSkill).toContain("--manifest-only");
+    expect(workflowSkill).toContain("A differing `path_hint` is a one-time runtime mapping notice");
+    expect(workflowSkill).toContain("never reconstruct completion from another local Harness task");
     expect(workflowSkill).toContain("select-dev-spec-scope");
     expect(workflowSkill).toContain("create-task-from-spec");
+
+    expect(analysisSkill).toContain("--spec-task <selected-task-id>");
+    expect(analysisSkill).toContain("`exact` and `scope-unchanged` use the fast projection path");
+    expect(analysisSkill).toContain("second round of Spec");
 
     const verificationSkill = await readFile(
       path.join(tempDir, ".claude", "skills", "ec-verification", "SKILL.md"),

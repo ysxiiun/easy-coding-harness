@@ -218,6 +218,11 @@ INIT ─自动→ ANALYSIS → IMPLEMENT → REVIEW → VERIFICATION → MEMORY 
   迁移后必须按 schema/spec_id/design revision/design digest 精确 rebind。静态方案变化只能
   revision +1、重新 READY 并 `sync-spec-design`，执行区禁止人工修改；共享回写与 Git
   提交/推送是两个独立事实。
+- **Canonical 两段式分析**：路由阶段使用 manifest-only 目录，只以 normalized remote
+  确认当前 worktree，`path_hint` 仅报告生成路径是否不同；用户选定 task 后才解析所选
+  仓库和 change/test baseline。ANALYSIS 负责唯一一次消费闭包读取，exact/scope-unchanged
+  直接投影运行时产物，scope-drifted 只分析所选任务漂移。未选仓库路径、旧本地 Harness
+  task 和 Git 提交考古都不能成为当前分析门禁。
 - **pending_transition**：仅审批模式要求人工确认时记录；自动边走受限 `auto-transition`。所有新代码主链从 IMPLEMENT 进入 REVIEW。
 - **确认门展示**：存在人工确认边时，Agent 完整展示“确认进入/返回目标阶段”“交接给其他智能体”和 free-form Other。模式选择已包含在 ANALYSIS 方案中，用户可在风险下限之上修改。取消、超时或无法解析时保留 `pending_transition`。
 - **VERIFICATION**：Fast 运行最小充分的定向检查，Standard 运行受影响范围的 lint/typecheck/test，Strict 运行项目适用的完整 lint/typecheck/test/build；所选模式要求的检查必须绑定当前实现与配置指纹并全部通过，"should pass" 不是证据。

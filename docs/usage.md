@@ -220,6 +220,13 @@ ANALYSIS 结束时只展示以下摘要，并在客户端支持时提供可点�
 现场，而旧设计动作、幂等键载荷冲突和确定性状态错误会终止并释放写槽。repair 仅重开
 blocked 来源任务，且只接受本次共享 `in_progress` 事件之后产生的本地 result 证据。
 
+首次路由只运行 `inspect-dev-spec --manifest-only`：当前 worktree 通过 normalized remote
+匹配仓库，`path_hint` 不一致只表示生成 Spec 时的路径不同，不要求复制或改写 Spec。选择
+task 后才用 `--spec-task` 检查对应 change/test baseline；额外跨仓 task 才需要显式
+`--repo-path`。ANALYSIS 随后只读取一次精确消费闭包，`exact` / `scope-unchanged` 走快速
+投影，`scope-drifted` 才分析所选范围漂移。hard/contract/integration 状态直接读取共享
+execution，不从其他本地任务或 Git 历史重复证明。
+
 #### 3. 审批模式、工作流模式与状态边
 
 当生效模式要求确认时，阶段完成后状态仍停留在当前阶段，同时写入

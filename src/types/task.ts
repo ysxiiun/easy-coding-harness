@@ -158,6 +158,10 @@ export interface SpecRepositoryBinding {
   path: string;
   baseline_commit: string;
   baseline_status: "exact" | "scope-unchanged" | "scope-drifted" | "baseline-unavailable";
+  /** 仓库定位所采用的证据；候选路径必须先通过 normalized remote 验证。 */
+  binding_source?: "explicit" | "path-hint" | "current-root" | "current-root-remote";
+  /** path_hint 只用于提示当前 worktree 是否与生成时路径相同，不参与身份判定。 */
+  path_hint_status?: "matched" | "different" | "missing";
 }
 
 export interface SpecDependencyEvidence {
@@ -168,6 +172,24 @@ export interface SpecDependencyEvidence {
   status: "satisfied" | "pending";
   /** 原 Canonical Spec execution 中该依赖边的共享状态。 */
   shared_status?: "satisfied" | "pending";
+  /** 依赖目标任务在共享 execution 中的实际状态。 */
+  dependency_task_status?:
+    | "not_started"
+    | "in_progress"
+    | "blocked"
+    | "implemented"
+    | "verified"
+    | "completed"
+    | "cancelled";
+  /** 与 Canonical execution projection 对齐的依赖判定依据。 */
+  basis?:
+    | "design-ready"
+    | "design-not-ready"
+    | "recorded-evidence"
+    | "dependency-task-completed"
+    | "pending"
+    | "pending-integration"
+    | "manual-evidence";
   evidence?: string;
   satisfied_at?: string;
   satisfied_by?: string;

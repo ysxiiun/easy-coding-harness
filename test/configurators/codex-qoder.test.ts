@@ -79,6 +79,8 @@ describe("configureCodex", () => {
     expect(skill).toContain("raise-workflow-mode");
     expect(skill).toContain("Missing: tell the user to run `easy-coding init`");
     expect(skill).toContain("During VERIFICATION, return to IMPLEMENT before");
+    expect(skill).toContain("--manifest-only");
+    expect(skill).toContain("never reconstruct completion from another local Harness task");
     expect(skill).not.toContain("{{");
     const analysisSkill = await readFile(
       path.join(tempDir, ".agents", "skills", "ec-analysis", "SKILL.md"),
@@ -88,6 +90,8 @@ describe("configureCodex", () => {
     expect(analysisSkill).toContain("mechanical minimum");
     expect(analysisSkill).toContain("acceptance_criteria");
     expect(analysisSkill).toContain("No transition without a valid workflow proposal");
+    expect(analysisSkill).toContain("--spec-task <selected-task-id>");
+    expect(analysisSkill).toContain("`exact` and `scope-unchanged` use the fast projection path");
     const noHarnessSkill = await readFile(
       path.join(tempDir, ".agents", "skills", "ec-no-harness", "SKILL.md"),
       "utf8",
@@ -373,6 +377,8 @@ describe("configureQoder", () => {
     expect(skill).toContain("workflow_mode = adaptive|fast|standard|strict");
     expect(skill).toContain("New code tasks never skip REVIEW");
     expect(skill).toContain("raise-workflow-mode");
+    expect(skill).toContain("--manifest-only");
+    expect(skill).toContain("never reconstruct completion from another local Harness task");
     expect(skill).not.toContain("{{");
     const analysisSkill = await readFile(
       path.join(tempDir, ".qoder", "skills", "ec-analysis", "SKILL.md"),
@@ -382,6 +388,8 @@ describe("configureQoder", () => {
     expect(analysisSkill).toContain("mechanical minimum");
     expect(analysisSkill).toContain("acceptance_criteria");
     expect(analysisSkill).toContain("No transition without a valid workflow proposal");
+    expect(analysisSkill).toContain("--spec-task <selected-task-id>");
+    expect(analysisSkill).toContain("`exact` and `scope-unchanged` use the fast projection path");
     const taskManagementSkill = await readFile(
       path.join(tempDir, ".qoder", "skills", "ec-task-management", "SKILL.md"),
       "utf8",

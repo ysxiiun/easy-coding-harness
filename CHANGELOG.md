@@ -6,6 +6,22 @@
 - `y`：常规功能升级
 - `z`：日常 bug 修复
 
+## 0.10.0-beta.6
+
+- Canonical Spec 首次路由新增 `inspect-dev-spec --manifest-only`：只通过 normalized remote
+  识别当前 worktree、展示任务目录和共享 execution 状态，不再为未选仓库解析本地路径或
+  为任何未选任务计算 baseline；`path_hint` 明确降级为提示信息。
+- 用户选定 task 后，`inspect-dev-spec --spec-task ...` 只检查所选任务所属仓库及其
+  change/test 范围；当前 worktree remote 唯一匹配时无需手工传 `--repo-path`，即使旧
+  `path_hint` 指向仍存在的原 checkout，也优先绑定当前 worktree。
+- `ec-workflow` 不再在路由阶段提前读取消费闭包；`ec-analysis` 负责唯一一次精确 selector
+  调用，并对 `exact` / `scope-unchanged` 使用快速投影，对 `scope-drifted` 只分析所选任务
+  的漂移文件和符号，派生 dev-spec 不再被解释为第二轮 Spec 创作。
+- 共享 `EDS:EXECUTION` 固化为依赖事实来源：已完成 hard task 或已满足依赖边直接放行；
+  禁止通过另一个本地 Harness task、Git 历史或 Agent 推断重复考古完成状态。
+- 保持项目外原始 Spec absolute locator、身份校验 rebind、共享 writer/CAS 及旧版全量
+  `inspect-dev-spec` 调用兼容；新增 worktree、未选仓库隔离和三平台安装产物回归测试。
+
 ## 0.10.0-beta.5
 
 - 兼容新版 `easy-dev-spec/v1` 共享执行区：同步设计/整文双摘要与 execution 投影协议，新增

@@ -61,36 +61,52 @@ plan decision; Auto continues immediately. Both remove later waiting, not qualit
    - Present with `status != "COMPLETE"`: invoke `{{skill_trigger}}ec-init`, then stop.
    - `[easy-coding:upgrade-init-pending:X]`: recommend `{{skill_trigger}}ec-init` for vX
      adaptation, but allow the user to continue; this reminder is not a workflow block.
-3. When the user explicitly references a Dev-Spec, run the read-only `inspect-dev-spec` command
-   before ordinary task creation. For `protocol=canonical-v1`, show every task ID, repository,
-   title, dependency, and baseline status; never select all tasks by default. After the user
-   chooses one or more tasks and resolves repository paths or omitted hard-dependency evidence,
-   call `create-task-from-spec` once for the complete selection. A document without a Canonical
-   manifest remains a legacy ANALYSIS input for an ordinary task. A malformed, DRAFT, or otherwise
-   non-READY Canonical Spec stays blocked and must never be downgraded to the legacy route. A
-   READY Canonical Spec without shared execution remains readable, but run
-   `initialize-spec-execution` before selection can become an executable Harness task.
+3. When the user explicitly references a Dev-Spec, first run read-only `inspect-dev-spec
+   --manifest-only`. This routing pass validates the document, identifies the current worktree by
+   normalized remote, and returns the task catalog without resolving unrelated repositories. For
+   `protocol=canonical-v1`, show every task ID, repository, title, static status, actual execution
+   status, and dependency; never select all tasks by default and never calculate baseline drift
+   before selection.
+
+   After the user chooses one or more tasks, run one selected inspection with repeated
+   `--spec-task`. Resolve paths only for repositories that own selected tasks. The current
+   worktree needs no explicit mapping when its normalized remote matches uniquely; pass
+   `--repo-path` only for an additional selected repository or to confirm an ambiguous current
+   match. A differing `path_hint` is a one-time runtime mapping notice, not a Spec portability
+   failure: never copy, mirror, or rewrite the source Spec because of it.
+
+   Then call `create-task-from-spec` once for the complete selection. Do not call
+   `select-dev-spec-scope` during routing; `ec-analysis` owns the single consumption-closure read
+   after task creation. A document without a Canonical manifest remains a legacy ANALYSIS input
+   for an ordinary task. A malformed, DRAFT, or otherwise non-READY Canonical Spec stays blocked
+   and must never be downgraded to the legacy route. A READY Canonical Spec without shared
+   execution remains readable, but run `initialize-spec-execution` before selection can become an
+   executable Harness task.
 
    ```bash
    {{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py inspect-dev-spec \
-     --spec <path> [--repo-path <repo-id>=<path>]...
+     --spec <path> --manifest-only
+
+   {{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py inspect-dev-spec \
+     --spec <path> --spec-task <task-id> [--spec-task <task-id>]... \
+     [--repo-path <repo-id>=<path>]...
 
    {{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py initialize-spec-execution \
      --spec <path>
 
-   {{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py select-dev-spec-scope \
-     --spec <path> --spec-task <task-id> [--spec-task <task-id>]...
-
    {{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py create-task-from-spec \
      --spec <path> --spec-task <task-id> [--spec-task <task-id>]... \
      --task-id <harness-task-id> --type <type> --title <title> \
-     --repo-path <repo-id>=<path> [--dependency-evidence <dependency-id>=<evidence>]... \
+     [--repo-path <repo-id>=<path>]... \
+     [--dependency-evidence <dependency-id>=<evidence>]... \
      --agent <agent-id> --session-file <P>
    ```
 
-   `select-dev-spec-scope` is read-only and may run only after explicit task selection. Its
-   per-repository payload is the authoritative ANALYSIS context; do not load unselected task
-   bodies from the source document.
+   Shared `EDS:EXECUTION` is the dependency fact source. Accept a completed hard dependency or a
+   satisfied edge directly from that snapshot. Only accept manual dependency evidence when the
+   shared edge is still pending and the user explicitly supplies independently verifiable
+   evidence; never reconstruct completion from another local Harness task, Git history, or an
+   agent's inference.
 
    When multiple selected tasks depend on the same target, disambiguate creation evidence with
    `<source-task-id>-><dependency-task-id>=<evidence>`.
