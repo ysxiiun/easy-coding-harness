@@ -15,7 +15,8 @@ Read-only tasks never enter this stage. Obtain fresh fingerprints before running
 
 - No completion claim without executed verification evidence.
 - Evidence is reusable only while both returned fingerprints remain unchanged.
-- Relevant code or config changes invalidate old evidence automatically.
+- Relevant code or config changes invalidate old evidence automatically unless the exact
+  post-verification code diff is explicitly accepted under the checkpoint protocol below.
 - Failed or missing evidence never becomes acceptance because of approval mode.
 
 ## Verification depth
@@ -109,6 +110,38 @@ enable TDD; report the explicit `ec-config`/`easy-coding config` next step.
   user wait.
 - A reported in-scope problem returns to IMPLEMENT; out-of-scope work becomes a separate task.
 
+After the final green evidence is recorded, freeze the acceptance baseline before presenting the
+result or applying the boundary:
+
+```bash
+{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py verification-checkpoint \
+  --agent <agent-id> --session-file <P>
+```
+
+Then request or auto-apply VERIFICATION -> MEMORY according to `approval_mode`. `auto` remains
+automatic when the checkpoint is unchanged. If any in-scope code changed after the checkpoint,
+the state API returns `action:"acceptance-drift"`, keeps the task in VERIFICATION, and includes
+the exact unified patches or binary/mode-change descriptions plus a stable `diff_sha256`. This
+exceptional drift pauses every approval mode, including `auto`; it does not permanently change
+the configured mode.
+
+Show the complete returned diff and ask whether to accept that exact digest. Do not re-enter
+IMPLEMENT or rerun REVIEW merely because this drift exists. On acceptance, call
+`confirm-transition --stage MEMORY --diff-sha256 <digest>` with exactly one policy:
+
+- `carry-forward`: only when every changed hunk is confidently non-executable and existing
+  verification remains applicable;
+- `targeted`: executable behavior changed; append passed current-fingerprint targeted verification
+  before confirming. Canonical tasks must cover every affected source task reported by the
+  acceptance record, without rerunning checks for unaffected source tasks;
+- `waived`: the user explicitly accepts the stated unverified risk.
+
+Include `--decision-summary` with the user's decision. A changed digest invalidates the pending
+confirmation and must be shown again. Behavior config, execution plan, workflow, Canonical
+design, or nested-repository metadata drift cannot use this shortcut; return to ANALYSIS or
+IMPLEMENT as reported by the state API. The acceptance record bridges only the accepted
+implementation fingerprints, so prior REVIEW evidence remains valid without a second REVIEW.
+
 For Canonical-backed tasks, run each repository's commands from `task.repo_paths[repo_id]` and
 cover every selected task's source test IDs. Report pending integration edges separately from
 local green checks. They do not block local implementation evidence, but the state API blocks
@@ -119,12 +152,15 @@ tasks remain separate evidence records. In `strict`, every involved repository i
 records all four check types; a repository-specific non-applicable record still needs its reason
 and source ownership.
 
-After all current-fingerprint local checks pass for a Canonical source task, call
-`writeback-spec-task --status verified`. Include passed `kind:"test"` evidence for every bound
-Canonical Test ID plus concise references to local review/build/coverage records. The subsequent
-VERIFICATION -> MEMORY application requires every selected shared task to be `verified` or
-`completed`; remote CI remains outside this acceptance gate. If writeback is interrupted, run
-`reconcile-spec-execution` before requesting the transition.
+After implementation and local checks, each selected Canonical source task remains
+`implemented`. Do not call `writeback-spec-task --status verified` from VERIFICATION. Applying
+VERIFICATION -> MEMORY is the authoritative acceptance boundary: the state API writes each
+still-implemented source task to `verified` through CAS/idempotent recoverable events with its
+accepted test evidence and acceptance digest, then enters MEMORY only after every write is
+confirmed. For `approve`/`guard`, that authority is the explicit boundary
+confirmation; for `confirm`/`auto`, it is the standing approval-mode authorization when no new
+drift exists. If writeback is interrupted, run `reconcile-spec-execution` before retrying the
+transition. Remote CI remains outside this acceptance gate.
 
 Record the exact integration edge only after its evidence exists:
 
@@ -137,5 +173,5 @@ Record the exact integration edge only after its evidence exists:
   --agent <agent>
 ```
 
-The state API rejects VERIFICATION -> MEMORY unless all evidence for the current implementation
-and config fingerprints is green.
+The state API rejects VERIFICATION -> MEMORY unless all effective evidence is green and the
+checkpoint is either unchanged or bound to an exact accepted diff.

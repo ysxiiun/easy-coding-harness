@@ -28,7 +28,9 @@ lite semantics or an already-persisted edge, permits one IMPLEMENT -> VERIFICATI
 
 - `approval_mode = approve|guard|confirm|auto` controls whether a legal transition waits for a
   user. `confirm` waits only at ANALYSIS -> IMPLEMENT; after that, green REVIEW, VERIFICATION,
-  MEMORY, and COMPLETE transitions advance automatically.
+  MEMORY, and COMPLETE transitions advance automatically. `auto` advances every legal green
+  edge. The only additional pause is an exceptional code diff detected after the frozen
+  VERIFICATION acceptance checkpoint; accepting that exact diff does not change the mode.
 - `workflow_mode = adaptive|fast|standard|strict` controls execution cost and assurance depth.
 - `tdd_enabled` independently activates Java TDD and changed-line coverage. It defaults off;
   `tdd_coverage_threshold` defaults to 90 and accepts integers from 1 to 100.
@@ -140,7 +142,8 @@ plan decision; Auto continues immediately. Both remove later waiting, not qualit
 - `ANALYSIS`: dispatch `ec-analysis`; it produces artifacts and a workflow proposal.
 - `IMPLEMENT`: dispatch `ec-implementing` using the frozen concrete mode.
 - `REVIEW`: dispatch `ec-reviewing`; the transition requires current fingerprint evidence.
-- `VERIFICATION`: dispatch `ec-verification`; archive requires current green evidence.
+- `VERIFICATION`: dispatch `ec-verification`; the MEMORY boundary requires green evidence and an
+  unchanged or explicitly accepted verification checkpoint.
 - `MEMORY`: dispatch `ec-memory`.
 - `COMPLETE` / `CLOSED`: report terminal status and clear stale session ownership.
 
@@ -165,6 +168,23 @@ reply may consume it. Use `confirm-transition` only for a matching stored edge.
 Use `auto-transition` only when the state API says the edge is automatic. Mechanical gates
 (analysis artifacts and proposal, review fingerprint, verification fingerprint, memory
 completion) apply in every approval mode.
+
+`[easy-coding:acceptance-drift-confirmation-required]` is a narrow exception to automatic-edge
+handling. Call `inspect-transition-drift`, present every returned patch/binary/mode change and the
+current `diff_sha256`, then use the platform's native choice UI for these branches:
+
+1. Accept this exact diff and continue to MEMORY (recommended only with the stated verification
+   policy).
+2. Return to IMPLEMENT because the change needs normal repair/review.
+3. Hand off to another Agent.
+4. Other / revise.
+
+Never call `auto-transition` repeatedly to hide this pause. If the user accepts, preserve the
+existing REVIEW conclusion and call `confirm-transition` with the exact digest,
+`--verification-policy carry-forward|targeted|waived`, and a decision summary. `targeted` needs a
+passed current-fingerprint targeted check first. If the digest changes, inspect and present the
+new diff. Config, plan, workflow, Canonical-design, or nested-repository drift is not an
+acceptance-diff choice and returns to the stage required by the state API.
 
 For a migrated pre-0.9 Lite task, the breadcrumb
 `[easy-coding:lite-review-bypass-required:IMPLEMENT->REVIEW]` means the stored REVIEW edge is

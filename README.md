@@ -84,7 +84,8 @@ any stage --[user abort via ec-task-close]--> CLOSED
 - 审批模式优先级为 session 覆盖 > 项目 `behavior.approval_mode` > `guard`；`approve`
   逐边确认，`guard` 确认 ANALYSIS → IMPLEMENT 与 VERIFICATION → MEMORY，`confirm` 只在
   ANALYSIS → IMPLEMENT 确认一次，随后各阶段在质量门禁通过后自动推进，`auto` 从开始即
-  自动推进。
+  自动推进。所有模式仅在 VERIFICATION 绿色检查点之后又出现新代码差异时临时暂停：展示
+  精确 diff 与摘要，由用户确认该摘要后继续；这不会把 `auto` 永久降级为人工审批。
 - 工作流模式优先级为 session 覆盖 > 项目 `behavior.workflow_mode` > `adaptive`。Adaptive
   以 Standard 作为普通业务默认：单仓单 Unit、非并行且不超过 5 个文件的低风险局部修改
   优先 Fast；只有明确高风险与真实复杂度/大影响面同时存在才进入 Strict。仓库数只按当前
@@ -97,7 +98,10 @@ any stage --[user abort via ec-task-close]--> CLOSED
 - 显式 `doc` / `analysis` / `report` 只读任务不生成 `test-strategy.md`；展示完整报告后按生效模式进入 COMPLETE，不执行 REVIEW、VERIFICATION 或 MEMORY，也不写任务记忆。
 - `VERIFICATION` 是验证硬门控：Fast 运行最小充分检查，Standard 运行受影响范围检查，
   Strict 运行项目适用的完整 lint/typecheck/test/build；所选模式要求的检查未真实执行
-  并留下当前指纹下的绿色证据，就不算通过。
+  并留下当前指纹下的绿色证据，就不算通过。绿色后会冻结验收检查点；若代码随后变化，
+  Harness 展示完整差异并绑定 `diff_sha256`。用户确认后不重跑 REVIEW：纯非执行差异可沿用
+  原验证，可执行差异补定向验证，显式风险豁免单独记录。配置、方案或 Canonical 设计漂移
+  不能走这条例外。
 - `MEMORY` 先写入本次任务短期记忆，再执行长期记忆阈值门禁；未超过阈值时长期沉淀为 no-op。
 
 ## Canonical Dev Spec
@@ -123,7 +127,10 @@ Canonical Spec 的静态设计由 design revision + `design_sha256` 冻结；共
 `execution_revision` CAS、幂等键和断点对账，执行区变化不会使本地 plan/review/verify
 指纹失效，设计变化或 revision 回滚仍会阻塞。显式项目外路径受支持，迁移后只能通过
 身份一致的 rebind 修复定位。静态设计调整必须 revision +1、READY 并执行 `sync-design`；
-机器执行区禁止手工编辑。无 Canonical manifest 的历史 Dev-Spec 继续走原有整文分析流程。
+机器执行区禁止手工编辑。Canonical task 在 Harness 本地校验完成后仍保持 `implemented`，
+只有 VERIFICATION → MEMORY 边界按显式确认或既有审批模式真正应用时才写为 `verified`，
+并携带验收差异摘要；MEMORY 完成后再写为 `completed`。无 Canonical manifest 的历史
+Dev-Spec 继续走原有整文分析流程。
 
 ## Supermodule 模型
 

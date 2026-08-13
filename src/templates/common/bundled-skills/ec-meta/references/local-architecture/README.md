@@ -49,11 +49,15 @@ automatic edges. A validated read-only `doc` / `analysis` / `report` task also a
 from IMPLEMENT after its full deliverable is shown, without REVIEW, VERIFICATION, MEMORY, or
 task memory. Approval mode controls non-mechanical edge waiting: approve confirms each edge,
 guard confirms two critical gates, confirm waits only at ANALYSIS -> IMPLEMENT, and auto
-advances every legal edge after mechanical gates.
+advances every legal edge after mechanical gates. After green VERIFICATION, Harness freezes an
+acceptance checkpoint. A later code diff temporarily pauses every mode so the exact digest can be
+accepted; unchanged `confirm`/`auto` tasks remain automatic.
 Workflow mode is independently configured as adaptive/fast/standard/strict; ANALYSIS freezes
 adaptive to a concrete mode, and every new code task still enters REVIEW. REVIEW evidence is
 bound to the final implementation fingerprint, VERIFICATION evidence is bound to implementation
-and config fingerprints, and MEMORY keeps the conditional long-memory threshold gate.
+and config fingerprints, and an accepted post-checkpoint diff records its authorization plus
+carry-forward/targeted/waived policy without forcing a second REVIEW. MEMORY keeps the conditional
+long-memory threshold gate.
 
 Java TDD is a third independent, default-off control managed by `ec-config`. Session overrides
 project configuration; ANALYSIS freezes enabled state and the 1..100 changed-line threshold
@@ -78,7 +82,7 @@ stage in `task.json`; no data is lost. Each task folder is self-contained.
 Each task is a folder. `task.json` is metadata, including the current stage, workflow proposal,
 frozen concrete mode, and any `pending_transition`; `dev-spec.md` is the human-readable plan;
 `execution.jsonl` is an append-only plan-and-log (one `plan` record, then `dispatch`/`result`
-/`review`/`verify`/`handoff` records). Because plan and log live on disk, not in an agent's
+/`review`/`verify`/`acceptance`/`handoff` records). Because plan and log live on disk, not in an agent's
 context window, a task survives session end and agent switches with zero information loss.
 
 ## Canonical Spec integration
@@ -98,7 +102,9 @@ and integration dependencies block end-to-end completion until evidence is recor
 keeps detailed evidence locally and projects cross-application Task/Step/dependency outcomes into
 `EDS:EXECUTION` through one CAS/idempotent writer. Static changes use revision + READY +
 `sync-spec-design`; agents never hand-edit the machine ledger. Explicit external locators are
-allowed and rebind only by exact Canonical identity.
+allowed and rebind only by exact Canonical identity. Source tasks stay `implemented` after local
+checks and become `verified` only when VERIFICATION -> MEMORY is applied under explicit or
+standing approval-mode authorization; the shared event includes the acceptance digest.
 
 ## Memory system
 

@@ -65,7 +65,7 @@ export async function config(): Promise<void> {
       {
         value: "auto",
         label: "auto — advance workflow stages automatically",
-        hint: "task closure remains explicit",
+        hint: "only new post-verification code drift pauses for exact acceptance",
       },
     ],
   });

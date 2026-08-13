@@ -26,6 +26,27 @@ export interface PendingTransition {
   requested_at: string;
   requested_by: string;
   reason?: string;
+  /** 自动边仅在验证快照漂移后临时转为人工确认。 */
+  confirmation_override?: "evidence-drift";
+}
+
+export interface VerificationCheckpoint {
+  /** 验收快照结构版本。 */
+  schema: 1;
+  /** 绿色验证完成时的实现指纹。 */
+  implementation_fingerprint: string;
+  /** 绿色验证完成时的行为配置指纹。 */
+  config_fingerprint: string;
+  /** 计划、Workflow、TDD 与 Canonical 绑定组成的验证合同指纹。 */
+  contract_fingerprint: string;
+  /** 项目内 `.easy-coding/sessions` 下的临时快照路径。 */
+  snapshot_file: string;
+  /** 临时快照规范化 JSON 的 SHA-256。 */
+  snapshot_sha256: string;
+  /** 检查点冻结时间。 */
+  recorded_at: string;
+  /** 冻结检查点的规范化 Agent 身份。 */
+  recorded_by: string;
 }
 
 export interface MemoryInstruction {
@@ -226,6 +247,8 @@ export interface TaskJson {
   workflow_mode_legacy?: boolean;
   workflow_mode_legacy_direct_edge?: boolean;
   workflow_mode_legacy_review_bypass_fingerprint?: string;
+  /** VERIFICATION 通过后、进入 MEMORY 前冻结的本地验收快照。 */
+  verification_checkpoint?: VerificationCheckpoint;
   tdd_enabled?: boolean;
   tdd_coverage_threshold?: number;
   tdd_confirmed_at?: string;
@@ -362,6 +385,35 @@ export type ExecutionRecord =
         report_paths: string[];
         report_sha256: string;
       };
+    }
+  | {
+      type: "acceptance";
+      /** 绿色验证检查点对应的实现指纹。 */
+      from_implementation_fingerprint: string;
+      /** 用户决策或审批模式授权时的实现指纹。 */
+      implementation_fingerprint: string;
+      /** 验收边界使用的行为配置指纹。 */
+      config_fingerprint: string;
+      /** 检查点后精确差异的稳定 SHA-256。 */
+      diff_sha256: string;
+      /** 检查点后发生变化的仓库限定文件列表。 */
+      changed_files: string[];
+      /** 本次边界来自显式用户确认还是既有审批模式授权。 */
+      authorization: "explicit-user" | "approval-policy";
+      /** 应用验收边界时生效的审批模式。 */
+      approval_mode: ApprovalMode;
+      /** 是否沿用检查点前 REVIEW 证据。 */
+      review_policy: "current" | "user-accepted-without-rereview";
+      /** 当前差异采用的验证处理策略。 */
+      verification_policy: "current" | "carry-forward" | "targeted" | "waived";
+      /** Canonical 可执行差异必须补当前指纹定向验证的来源任务。 */
+      required_targeted_source_tasks: string[];
+      /** 可供 MEMORY 与 Canonical 写回消费的决策摘要。 */
+      summary: string;
+      /** 记录验收事实的规范化 Agent 身份。 */
+      recorded_by: string;
+      /** 验收事实写入时间。 */
+      timestamp: string;
     }
   | { type: "handoff"; from: string; stage: Stage; summary: string; timestamp: string }
   | {

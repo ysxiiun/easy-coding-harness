@@ -6,6 +6,23 @@
 - `y`：常规功能升级
 - `z`：日常 bug 修复
 
+## 0.10.0-beta.8
+
+- VERIFICATION 绿色后新增可审计验收检查点。无漂移时 `confirm` / `auto` 继续按原审批模式
+  自动流转；检查点后出现代码变化时，所有模式只临时暂停一次，返回完整文本 diff、二进制/
+  mode 变化、逐文件 old/new SHA-256 和稳定 `diff_sha256`，防止把同一次外部保存误判成必须
+  重走完整流程；执行计划中的非 Git 文件同样支持精确差异确认。
+- 用户确认精确差异后保留原 REVIEW 结论，不回退 IMPLEMENT 或重复审查；非执行差异可
+  `carry-forward` 原验证，可执行差异必须补当前指纹的 `targeted` 验证，`waived` 仅用于用户
+  显式接受未验证风险；Canonical 多任务只要求实际受影响 source task 留下当前指纹的定向
+  验证。配置、计划、Workflow、Canonical 设计或嵌套仓状态变化仍按正常门禁返回相应阶段。
+- Canonical task 在 Harness 本地验证完成后保持 `implemented`，仅在
+  VERIFICATION → MEMORY 边界按显式确认或既有 `confirm` / `auto` 授权真正应用时写为
+  `verified`；共享事件包含验收摘要，MEMORY → COMPLETE 仍负责写回 `completed`。
+- `execution.jsonl` 新增 immutable acceptance 记录，短期记忆门禁会校验用户接受的授权来源、
+  差异摘要、Review/验证策略、变更文件和完整 digest；状态 API 新增检查点、差异检查及精确
+  确认参数，并补齐 Auto、定向验证、Canonical 边界与无重复 REVIEW 的回归测试。
+
 ## 0.10.0-beta.7
 
 - Workflow floor 改为 Standard 居中的复合判定：单仓、单 Unit、非并行且最多 5 个文件的

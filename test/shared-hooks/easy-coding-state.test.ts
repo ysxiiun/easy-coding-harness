@@ -233,6 +233,102 @@ async function writeConfirmModeConfig(
   );
 }
 
+async function writeVerificationAcceptanceFixture(
+  taskId: string,
+  mode: "guard" | "auto" = "auto",
+  initializeGit = true,
+): Promise<{
+  executionPath: string;
+  sourcePath: string;
+  implementationFingerprint: string;
+  configFingerprint: string;
+}> {
+  await writeConfirmModeConfig(mode);
+  await writeSessionFixture(taskId);
+  await writeTaskFixture(taskId, "VERIFICATION", "codex", {
+    workflow_mode: "fast",
+    tdd_enabled: false,
+    tdd_coverage_threshold: 90,
+  });
+  const sourcePath = path.join(tempDir, "src", "example.ts");
+  await mkdir(path.dirname(sourcePath), { recursive: true });
+  await writeFile(sourcePath, "export const value = 1;\n", "utf8");
+  if (initializeGit) {
+    execFileSync("git", ["init", "-q"], { cwd: tempDir });
+  }
+  const executionPath = path.join(
+    tempDir,
+    ".easy-coding",
+    "tasks",
+    taskId,
+    "execution.jsonl",
+  );
+  await writeFile(
+    executionPath,
+    `${JSON.stringify({
+      type: "plan",
+      strategy: "single",
+      units: [
+        {
+          id: "U1",
+          title: "accept verified code",
+          type: "backend",
+          files: ["src/example.ts"],
+          depends_on: [],
+        },
+      ],
+    })}\n`,
+    "utf8",
+  );
+  const fingerprints = JSON.parse(
+    execFileSync(
+      "python3",
+      [
+        stateApiPath(),
+        "evidence-fingerprints",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    ),
+  ) as { implementation_fingerprint: string; config_fingerprint: string };
+  await appendFile(
+    executionPath,
+    `${[
+      {
+        type: "review",
+        dimension: "combined",
+        passed: true,
+        implementation_fingerprint: fingerprints.implementation_fingerprint,
+        reviewer: "codex-reviewer",
+        timestamp: "2026-08-13T00:00:00Z",
+        findings: [],
+      },
+      {
+        type: "verify",
+        check: "targeted-test",
+        check_type: "test",
+        command: "npm test -- targeted",
+        passed: true,
+        implementation_fingerprint: fingerprints.implementation_fingerprint,
+        config_fingerprint: fingerprints.config_fingerprint,
+        timestamp: "2026-08-13T00:01:00Z",
+      },
+    ]
+      .map((record) => JSON.stringify(record))
+      .join("\n")}\n`,
+    "utf8",
+  );
+  return {
+    executionPath,
+    sourcePath,
+    implementationFingerprint: fingerprints.implementation_fingerprint,
+    configFingerprint: fingerprints.config_fingerprint,
+  };
+}
+
 function memoryFixtureId(index: number): string {
   return `SM-019f69d3-5c86-7a10-87a1-${index.toString(16).padStart(12, "0")}`;
 }
@@ -959,6 +1055,118 @@ describe("easy_coding_state.py MEMORY instruction", () => {
     );
     expect(reused.status).toBe(1);
     expect(reused.stderr).toContain("does not match current task 06-23-invalid-memory");
+  });
+
+  it("requires the complete accepted post-verification decision in short memory", async () => {
+    const taskId = "08-13-accepted-memory";
+    await writeSessionFixture(taskId);
+    await writeTaskFixture(taskId, "MEMORY", "codex", { memory_progress: {} });
+    const acceptanceDigest = "a".repeat(64);
+    await writeFile(
+      path.join(tempDir, ".easy-coding", "tasks", taskId, "execution.jsonl"),
+      `${JSON.stringify({
+        type: "acceptance",
+        from_implementation_fingerprint: "before",
+        implementation_fingerprint: "after",
+        config_fingerprint: "config",
+        diff_sha256: acceptanceDigest,
+        changed_files: ["src/example.ts"],
+        authorization: "explicit-user",
+        approval_mode: "auto",
+        review_policy: "user-accepted-without-rereview",
+        verification_policy: "carry-forward",
+        summary: "User accepted a documentation-only edit",
+        recorded_by: "codex",
+        timestamp: "2026-08-13T00:00:00Z",
+      })}\n`,
+      "utf8",
+    );
+    const memoryId = memoryFixtureId(77);
+    const memoryName = `${memoryId}_20260813_accepted-diff.md`;
+    const memoryPath = path.join(tempDir, ".easy-coding", "memory", "short", memoryName);
+    await mkdir(path.dirname(memoryPath), { recursive: true });
+    const memoryText = [
+      "---",
+      "memory_schema: 2",
+      `id: ${memoryId}`,
+      "date: 2026-08-13",
+      `source_task: ${taskId}`,
+      "---",
+      "",
+      "User accepted a documentation-only edit.",
+      "",
+    ].join("\n");
+    await writeFile(memoryPath, memoryText, "utf8");
+
+    const missingDigest = spawnSync(
+      "python3",
+      [
+        stateApiPath(),
+        "memory-short-complete",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--file",
+        `.easy-coding/memory/short/${memoryName}`,
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    expect(missingDigest.status).toBe(1);
+    expect(missingDigest.stderr).toContain(
+      "must record the complete accepted post-verification decision",
+    );
+
+    await writeFile(memoryPath, `${memoryText}diff_sha256: ${acceptanceDigest}\n`, "utf8");
+    const missingDecision = spawnSync(
+      "python3",
+      [
+        stateApiPath(),
+        "memory-short-complete",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--file",
+        `.easy-coding/memory/short/${memoryName}`,
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    expect(missingDecision.status).toBe(1);
+    expect(missingDecision.stderr).toContain("authorization");
+    expect(missingDecision.stderr).toContain("changed_file:src/example.ts");
+
+    await writeFile(
+      memoryPath,
+      [
+        memoryText,
+        `diff_sha256: ${acceptanceDigest}`,
+        "authorization: explicit-user",
+        "approval_mode: auto",
+        "review_policy: user-accepted-without-rereview",
+        "verification_policy: carry-forward",
+        "changed_files: src/example.ts",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    const accepted = JSON.parse(
+      execFileSync(
+        "python3",
+        [
+          stateApiPath(),
+          "memory-short-complete",
+          "--session-file",
+          ".easy-coding/sessions/test.json",
+          "--file",
+          `.easy-coding/memory/short/${memoryName}`,
+          "--agent",
+          "codex",
+        ],
+        { cwd: tempDir, encoding: "utf8" },
+      ),
+    ) as { memory_progress: { short_memory_written: boolean } };
+    expect(accepted.memory_progress.short_memory_written).toBe(true);
   });
 
   it("rejects a UUIDv7 id that does not match the filename prefix", async () => {
@@ -6590,6 +6798,490 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
       from: "VERIFICATION",
       to: "MEMORY",
     });
+  });
+
+  it("keeps auto mode automatic when the verified implementation is unchanged", async () => {
+    const taskId = "08-13-auto-acceptance";
+    const fixture = await writeVerificationAcceptanceFixture(taskId);
+
+    const transitioned = JSON.parse(
+      execFileSync(
+        "python3",
+        [
+          stateApiPath(),
+          "auto-transition",
+          "--session-file",
+          ".easy-coding/sessions/test.json",
+          "--stage",
+          "MEMORY",
+          "--agent",
+          "codex",
+        ],
+        { cwd: tempDir, encoding: "utf8" },
+      ),
+    ) as { status: string; action: string };
+
+    expect(transitioned).toMatchObject({ status: "MEMORY", action: "auto-transition" });
+    const task = JSON.parse(
+      await readFile(
+        path.join(tempDir, ".easy-coding", "tasks", taskId, "task.json"),
+        "utf8",
+      ),
+    );
+    expect(task.verification_checkpoint).toBeUndefined();
+    const records = (await readFile(fixture.executionPath, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(records.filter((record) => record.type === "acceptance")).toEqual([
+      expect.objectContaining({
+        changed_files: [],
+        authorization: "approval-policy",
+        approval_mode: "auto",
+        review_policy: "current",
+        verification_policy: "current",
+      }),
+    ]);
+  });
+
+  it("pauses auto mode on exact post-verification drift and honors user acceptance without rereview", async () => {
+    const taskId = "08-13-drift-acceptance";
+    const fixture = await writeVerificationAcceptanceFixture(taskId);
+    execFileSync(
+      "python3",
+      [
+        stateApiPath(),
+        "verification-checkpoint",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    await writeFile(
+      fixture.sourcePath,
+      "export const value = 1;\n// user-approved documentation\n",
+      "utf8",
+    );
+    const repeatedCheckpoint = JSON.parse(
+      execFileSync(
+        "python3",
+        [
+          stateApiPath(),
+          "verification-checkpoint",
+          "--session-file",
+          ".easy-coding/sessions/test.json",
+          "--agent",
+          "codex",
+        ],
+        { cwd: tempDir, encoding: "utf8" },
+      ),
+    ) as { checkpoint_unchanged: boolean };
+    expect(repeatedCheckpoint.checkpoint_unchanged).toBe(true);
+
+    const paused = JSON.parse(
+      execFileSync(
+        "python3",
+        [
+          stateApiPath(),
+          "auto-transition",
+          "--session-file",
+          ".easy-coding/sessions/test.json",
+          "--stage",
+          "MEMORY",
+          "--agent",
+          "codex",
+        ],
+        { cwd: tempDir, encoding: "utf8" },
+      ),
+    ) as {
+      status: string;
+      action: string;
+      status_context: string;
+      pending_transition: { confirmation_override: string };
+      acceptance_drift: {
+        diff_sha256: string;
+        changed_files: string[];
+        changes: Array<{ patch: string }>;
+      };
+    };
+    expect(paused).toMatchObject({
+      status: "VERIFICATION",
+      action: "acceptance-drift",
+      pending_transition: { confirmation_override: "evidence-drift" },
+    });
+    expect(paused.acceptance_drift.changed_files).toHaveLength(1);
+    expect(paused.acceptance_drift.changes[0].patch).toContain(
+      "+// user-approved documentation",
+    );
+    expect(paused.status_context).toContain(
+      "[easy-coding:acceptance-drift-confirmation-required]",
+    );
+    expect(paused.status_context).not.toContain(
+      "[easy-coding:auto-transition-ready:VERIFICATION->MEMORY]",
+    );
+
+    const accepted = JSON.parse(
+      execFileSync(
+        "python3",
+        [
+          stateApiPath(),
+          "confirm-transition",
+          "--session-file",
+          ".easy-coding/sessions/test.json",
+          "--stage",
+          "MEMORY",
+          "--diff-sha256",
+          paused.acceptance_drift.diff_sha256,
+          "--verification-policy",
+          "carry-forward",
+          "--decision-summary",
+          "User accepted the documentation-only edit",
+          "--agent",
+          "codex",
+        ],
+        { cwd: tempDir, encoding: "utf8" },
+      ),
+    ) as { status: string };
+    expect(accepted.status).toBe("MEMORY");
+
+    const records = (await readFile(fixture.executionPath, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(records.filter((record) => record.type === "review")).toHaveLength(1);
+    expect(records.filter((record) => record.type === "acceptance")).toEqual([
+      expect.objectContaining({
+        from_implementation_fingerprint: fixture.implementationFingerprint,
+        changed_files: expect.arrayContaining([expect.stringContaining("src/example.ts")]),
+        authorization: "explicit-user",
+        review_policy: "user-accepted-without-rereview",
+        verification_policy: "carry-forward",
+        summary: "User accepted the documentation-only edit",
+      }),
+    ]);
+  });
+
+  it("returns per-file hashes for an exact binary acceptance diff", async () => {
+    const taskId = "08-13-binary-acceptance";
+    const fixture = await writeVerificationAcceptanceFixture(taskId);
+    execFileSync(
+      "python3",
+      [
+        stateApiPath(),
+        "verification-checkpoint",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    const binary = Buffer.from([0, 1, 2, 3, 255]);
+    await writeFile(fixture.sourcePath, binary);
+
+    const paused = JSON.parse(
+      execFileSync(
+        "python3",
+        [
+          stateApiPath(),
+          "auto-transition",
+          "--session-file",
+          ".easy-coding/sessions/test.json",
+          "--stage",
+          "MEMORY",
+          "--agent",
+          "codex",
+        ],
+        { cwd: tempDir, encoding: "utf8" },
+      ),
+    ) as {
+      acceptance_drift: {
+        changes: Array<{
+          binary: boolean;
+          old_sha256: string;
+          new_sha256: string;
+          repository: string;
+          path: string;
+        }>;
+      };
+    };
+
+    expect(paused.acceptance_drift.changes).toEqual([
+      expect.objectContaining({
+        binary: true,
+        old_sha256: createHash("sha256")
+          .update("export const value = 1;\n")
+          .digest("hex"),
+        new_sha256: createHash("sha256").update(binary).digest("hex"),
+        repository: ".",
+        path: "src/example.ts",
+      }),
+    ]);
+  });
+
+  it("shows and accepts exact post-verification drift outside a Git repository", async () => {
+    const taskId = "08-13-non-git-acceptance";
+    const fixture = await writeVerificationAcceptanceFixture(taskId, "auto", false);
+    execFileSync(
+      "python3",
+      [
+        stateApiPath(),
+        "verification-checkpoint",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    await writeFile(fixture.sourcePath, "export const value = 2;\n", "utf8");
+
+    const paused = JSON.parse(
+      execFileSync(
+        "python3",
+        [
+          stateApiPath(),
+          "auto-transition",
+          "--session-file",
+          ".easy-coding/sessions/test.json",
+          "--stage",
+          "MEMORY",
+          "--agent",
+          "codex",
+        ],
+        { cwd: tempDir, encoding: "utf8" },
+      ),
+    ) as {
+      status: string;
+      acceptance_drift: {
+        diff_sha256: string;
+        metadata_changed: boolean;
+        changes: Array<{ file: string; patch: string }>;
+      };
+    };
+
+    expect(paused.status).toBe("VERIFICATION");
+    expect(paused.acceptance_drift.metadata_changed).toBe(false);
+    expect(paused.acceptance_drift.changes).toEqual([
+      expect.objectContaining({
+        file: ".:src/example.ts",
+        patch: expect.stringContaining("+export const value = 2;"),
+      }),
+    ]);
+    const accepted = JSON.parse(
+      execFileSync(
+        "python3",
+        [
+          stateApiPath(),
+          "confirm-transition",
+          "--session-file",
+          ".easy-coding/sessions/test.json",
+          "--stage",
+          "MEMORY",
+          "--diff-sha256",
+          paused.acceptance_drift.diff_sha256,
+          "--verification-policy",
+          "waived",
+          "--decision-summary",
+          "User accepted the non-Git executable edit risk",
+          "--agent",
+          "codex",
+        ],
+        { cwd: tempDir, encoding: "utf8" },
+      ),
+    ) as { status: string };
+    expect(accepted.status).toBe("MEMORY");
+  });
+
+  it("requires targeted verification for every affected Canonical source task", async () => {
+    const moduleDir = path.join(
+      process.cwd(),
+      "src",
+      "templates",
+      "shared-hooks",
+    );
+    const output = execFileSync(
+      "python3",
+      [
+        "-c",
+        [
+          "import json, sys",
+          "from pathlib import Path",
+          `sys.path.insert(0, ${JSON.stringify(moduleDir)})`,
+          "import easy_coding_state as state",
+          "root = Path(sys.argv[1])",
+          "task = {'spec_source': {}, 'tdd_enabled': False, 'workflow_mode': 'fast'}",
+          "current = 'c' * 64",
+          "config = 'd' * 64",
+          "acceptance = {'verification_policy': 'targeted', 'required_targeted_source_tasks': ['R1-T1', 'R2-T1']}",
+          "records = [{'type': 'verify', 'check': 'r1-targeted', 'check_type': 'test', 'command': 'test-r1', 'passed': True, 'implementation_fingerprint': current, 'config_fingerprint': config, 'timestamp': '2026-08-13T00:00:00Z', 'repo_id': 'R1', 'source_task_id': 'R1-T1'}]",
+          "plan = {'type': 'plan', 'strategy': 'single', 'units': [{'id': 'U1', 'title': 'R1', 'type': 'backend', 'files': ['a.ts'], 'depends_on': [], 'repo_id': 'R1', 'source_task_id': 'R1-T1'}, {'id': 'U2', 'title': 'R2', 'type': 'backend', 'files': ['b.ts'], 'depends_on': [], 'repo_id': 'R2', 'source_task_id': 'R2-T1'}]}",
+          "state.evidence_fingerprints = lambda *_: {'implementation_fingerprint': current, 'config_fingerprint': config}",
+          "state.accepted_verification_fingerprints = lambda *_: ({current}, acceptance)",
+          "state.validate_review_readiness = lambda *_: None",
+          "state.execution_records = lambda *_: records",
+          "state.latest_execution_plan = lambda *_: plan",
+          "mapping_task = {'spec_source': {}, 'repo_paths': {'R1': str(root / 'repo-r1'), 'R2': str(root / 'repo-r2')}}",
+          "mapped = state.targeted_source_tasks_for_changes(root, 'task', mapping_task, [{'repository': 'repo-r2', 'path': 'b.ts'}])",
+          "print(json.dumps(mapped))",
+          "try:",
+          "    state.validate_verification_readiness(root, 'task', task)",
+          "except state.StateError as exc:",
+          "    print(str(exc))",
+          "else:",
+          "    raise SystemExit('expected affected source-task coverage failure')",
+        ].join("\n"),
+        tempDir,
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+
+    expect(output).toContain('["R2-T1"]');
+    expect(output).toContain("affected source tasks: R2-T1");
+  });
+
+  it("requires current-fingerprint targeted verification for accepted executable drift", async () => {
+    const taskId = "08-13-targeted-acceptance";
+    const fixture = await writeVerificationAcceptanceFixture(taskId);
+    execFileSync(
+      "python3",
+      [
+        stateApiPath(),
+        "verification-checkpoint",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    await writeFile(fixture.sourcePath, "export const value = 2;\n", "utf8");
+    const paused = JSON.parse(
+      execFileSync(
+        "python3",
+        [
+          stateApiPath(),
+          "auto-transition",
+          "--session-file",
+          ".easy-coding/sessions/test.json",
+          "--stage",
+          "MEMORY",
+          "--agent",
+          "codex",
+        ],
+        { cwd: tempDir, encoding: "utf8" },
+      ),
+    ) as { acceptance_drift: { diff_sha256: string } };
+    const confirmationArgs = [
+      stateApiPath(),
+      "confirm-transition",
+      "--session-file",
+      ".easy-coding/sessions/test.json",
+      "--stage",
+      "MEMORY",
+      "--diff-sha256",
+      paused.acceptance_drift.diff_sha256,
+      "--verification-policy",
+      "targeted",
+      "--decision-summary",
+      "User accepted the executable edit after a targeted check",
+      "--agent",
+      "codex",
+    ];
+    const missingTargetedCheck = spawnSync("python3", confirmationArgs, {
+      cwd: tempDir,
+      encoding: "utf8",
+    });
+    expect(missingTargetedCheck.status).toBe(1);
+    expect(missingTargetedCheck.stderr).toContain(
+      "requires at least one passed targeted verification record",
+    );
+
+    const current = JSON.parse(
+      execFileSync(
+        "python3",
+        [
+          stateApiPath(),
+          "evidence-fingerprints",
+          "--session-file",
+          ".easy-coding/sessions/test.json",
+          "--agent",
+          "codex",
+        ],
+        { cwd: tempDir, encoding: "utf8" },
+      ),
+    ) as { implementation_fingerprint: string; config_fingerprint: string };
+    await appendFile(
+      fixture.executionPath,
+      `${JSON.stringify({
+        type: "verify",
+        check: "accepted-drift-targeted-test",
+        check_type: "test",
+        command: "npm test -- accepted-drift",
+        passed: true,
+        implementation_fingerprint: current.implementation_fingerprint,
+        config_fingerprint: current.config_fingerprint,
+        timestamp: "2026-08-13T00:02:00Z",
+      })}\n`,
+      "utf8",
+    );
+    const accepted = JSON.parse(
+      execFileSync("python3", confirmationArgs, { cwd: tempDir, encoding: "utf8" }),
+    ) as { status: string };
+    expect(accepted.status).toBe("MEMORY");
+  });
+
+  it("rejects verification-contract drift instead of offering code-diff acceptance", async () => {
+    const taskId = "08-13-contract-drift";
+    const fixture = await writeVerificationAcceptanceFixture(taskId);
+    execFileSync(
+      "python3",
+      [
+        stateApiPath(),
+        "verification-checkpoint",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    await appendFile(
+      fixture.executionPath,
+      `${JSON.stringify({
+        type: "plan",
+        strategy: "single",
+        units: [
+          {
+            id: "U1",
+            title: "changed execution contract",
+            type: "backend",
+            files: ["src/example.ts"],
+            depends_on: [],
+          },
+        ],
+      })}\n`,
+      "utf8",
+    );
+
+    const rejected = spawnSync(
+      "python3",
+      [
+        stateApiPath(),
+        "auto-transition",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--stage",
+        "MEMORY",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    expect(rejected.status).toBe(1);
+    expect(rejected.stderr).toContain("Non-code verification metadata changed");
   });
 
   it("requires auditable verification fields for new tasks and accepts a corrected latest record", async () => {

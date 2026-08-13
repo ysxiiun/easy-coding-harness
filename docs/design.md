@@ -51,7 +51,10 @@ easy-coding-harness 是从 Easy Coding Skill（v4.3.2）升级而来，而非另
 3. **VERIFICATION 门控**——Fast 执行最小充分的定向检查，Standard 执行受影响范围的 lint/typecheck/test，Strict 执行项目适用的完整 lint/typecheck/test/build；所选模式要求的检查都必须留下当前指纹下的新鲜绿色证据。只读任务不进入该阶段。
 4. **MEMORY 长期门控**——MEMORY 先写短期记忆，再由状态 API 按阈值决定长期沉淀或 no-op；提示词不能绕过机械指令。
 
-**修复循环有范围守卫**：验收阶段的修改请求会对照 dev-spec 判断范围——范围内修复回到 IMPLEMENT 并重新进入 REVIEW；范围外建议创建新任务。
+**修复循环有范围守卫**：用户提出新的修复要求时会对照 dev-spec 判断范围——范围内修复回到
+IMPLEMENT 并重新进入 REVIEW，范围外建议创建新任务。若只是 VERIFICATION 绿色检查点后
+检测到用户或外部工具已经保存的代码差异，则先展示精确 diff；用户接受当前 digest 后沿用原
+REVIEW 结论，只按差异性质沿用验证、补定向验证或记录风险豁免，不因保存动作本身重走流程。
 
 **CLOSED 是独立终态**：从任何阶段都可由用户中断到 CLOSED，且不执行记忆流程——未完成任务的记忆是脏数据。
 
@@ -419,11 +422,15 @@ IMPLEMENT 展示报告后已直接结束，不进入 REVIEW。
 
 #### 6.3 验收修复循环
 
-验证通过后进入用户验收窗口：
-- 用户满意 → 触发归档流程
-- 小修复（在 dev-spec 范围内）→ 回退 IMPLEMENT，完成后重新进入 REVIEW
-- 超出 dev-spec 范围 → 建议创建新任务
-- 取消 → ec-task-close
+验证通过后按 `approval_mode` 处理 MEMORY 边界：`approve` / `guard` 等待用户验收，
+`confirm` / `auto` 在绿色检查点未变化时自动进入 MEMORY。此时按以下边界处理：
+
+- 用户提出新的范围内修复要求 → 回退 IMPLEMENT，完成后重新进入 REVIEW；
+- 用户提出超出 dev-spec 的新要求 → 建议创建新任务；
+- 仅检测到检查点后的现有代码差异 → 展示完整差异与 `diff_sha256`。用户接受后不回退
+  IMPLEMENT、不重跑 REVIEW；非执行差异沿用原验证，可执行差异补当前指纹的定向验证，
+  或由用户显式接受未验证风险；
+- 用户取消任务 → `ec-task-close`。
 
 ---
 

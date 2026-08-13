@@ -35,6 +35,13 @@ Name it `{memory_id}_{YYYYMMDD}_{smart_name}.md` and set
 `.easy-coding/memory/short/`, then register it with
 `memory-short-complete`. Never invent test results or commit hashes.
 
+Copy the final `acceptance` record from `execution.jsonl` into the checkpoint as a concise
+decision fact: authorization source, decision summary, `diff_sha256`, review policy, verification
+policy, changed files, and any Canonical source tasks that required targeted verification.
+`memory-short-complete` rejects a checkpoint that omits any of those decision fields. This records
+the user's accepted exception without re-reviewing or re-analyzing the code. Canonical writeback
+already carries the same digest and authorization as shared `acceptance` evidence.
+
 When frozen TDD is enabled, add its threshold, lifecycle evidence, passed local unit-test result,
 and local changed-line result to the short memory's execution evidence. Remote CI status is not
 part of Harness acceptance or task memory. When TDD is off, omit TDD fields entirely so ordinary

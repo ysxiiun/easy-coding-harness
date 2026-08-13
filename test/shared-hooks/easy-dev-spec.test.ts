@@ -1784,6 +1784,207 @@ describe("Canonical Spec v1 runtime integration", () => {
     }
   });
 
+  it("keeps Canonical tasks implemented until the accepted MEMORY boundary is applied", async () => {
+    const fixture = await writeCanonicalFixture();
+    initializeSpecExecution(fixture.specPath);
+    runState([
+      "create-task-from-spec",
+      "--spec",
+      fixture.specPath,
+      "--spec-task",
+      "R1-T1",
+      "--task-id",
+      "accepted-memory-boundary",
+      "--type",
+      "feature",
+      "--title",
+      "Accepted memory boundary",
+      "--repo-path",
+      `R1=${fixture.repoA}`,
+      "--agent",
+      "codex",
+    ]);
+    await writeFile(
+      path.join(tempDir, ".easy-coding", "config.yaml"),
+      "version: 3\nbehavior:\n  approval_mode: auto\n  workflow_mode: adaptive\n",
+      "utf8",
+    );
+    const taskDir = path.join(
+      tempDir,
+      ".easy-coding",
+      "tasks",
+      "accepted-memory-boundary",
+    );
+    const executionPath = path.join(taskDir, "execution.jsonl");
+    const unit = {
+      id: "U1",
+      title: "Publish event",
+      type: "backend",
+      files: ["order-domain/src/main/java/com/example/order/OrderEventPublisher.java"],
+      depends_on: [],
+      acceptance_criteria: ["event publisher is available"],
+      test_points: ["publisher contract test"],
+      contracts: ["C1"],
+      risks: ["none"],
+      local_baseline: [
+        "order-domain/src/main/java/com/example/order/OrderEventPublisher.java follows the local publisher style",
+      ],
+      repo_id: "R1",
+      source_task_id: "R1-T1",
+      source_step_ids: ["S1"],
+      symbols: ["OrderEventPublisher#publish"],
+      test_commands: ["mvn -Dtest=OrderEventPublisherTest test"],
+    };
+    await writeFile(
+      executionPath,
+      `${JSON.stringify({ type: "plan", strategy: "single", units: [unit] })}\n`,
+      "utf8",
+    );
+    runState([
+      "writeback-spec-task",
+      "--spec-task",
+      "R1-T1",
+      "--status",
+      "in_progress",
+      "--summary",
+      "Implementation started",
+      "--idempotency-key",
+      "accepted-memory-boundary:start",
+      "--agent",
+      "codex",
+    ]);
+    runState([
+      "writeback-spec-step",
+      "--spec-task",
+      "R1-T1",
+      "--step",
+      "S1",
+      "--status",
+      "completed",
+      "--summary",
+      "Publisher test passed",
+      "--evidence",
+      JSON.stringify({
+        kind: "test",
+        status: "passed",
+        ref: "execution.jsonl#verify",
+        test_id: "T1",
+      }),
+      "--idempotency-key",
+      "accepted-memory-boundary:step:S1",
+      "--agent",
+      "codex",
+    ]);
+    runState([
+      "writeback-spec-task",
+      "--spec-task",
+      "R1-T1",
+      "--status",
+      "implemented",
+      "--summary",
+      "Implementation and local checks completed",
+      "--idempotency-key",
+      "accepted-memory-boundary:implemented",
+      "--agent",
+      "codex",
+    ]);
+
+    const beforeBoundary = JSON.parse(
+      runState(["inspect-dev-spec", "--spec", fixture.specPath]),
+    );
+    expect(
+      beforeBoundary.execution.tasks.find(
+        (task: { task_id: string }) => task.task_id === "R1-T1",
+      ),
+    ).toMatchObject({ status: "implemented" });
+
+    const taskPath = path.join(taskDir, "task.json");
+    const task = JSON.parse(await readFile(taskPath, "utf8"));
+    task.status = "VERIFICATION";
+    task.workflow_mode = "fast";
+    task.tdd_enabled = false;
+    task.tdd_coverage_threshold = 90;
+    task.stage_history.push({
+      stage: "VERIFICATION",
+      agent: "codex",
+      entered_at: "2026-08-13T00:00:00Z",
+    });
+    await writeFile(taskPath, JSON.stringify(task, null, 2), "utf8");
+    const fingerprints = JSON.parse(
+      runState(["evidence-fingerprints", "--agent", "codex"]),
+    );
+    await appendFile(
+      executionPath,
+      `${[
+        {
+          type: "dispatch",
+          unit_id: "U1",
+          timestamp: "2026-08-13T00:00:00Z",
+          repo_id: "R1",
+          source_task_id: "R1-T1",
+        },
+        {
+          type: "result",
+          unit_id: "U1",
+          status: "completed",
+          changed_files: unit.files,
+          summary: "Publisher completed",
+          issues: [],
+          needs_attention: [],
+          repo_id: "R1",
+          source_task_id: "R1-T1",
+        },
+        {
+          type: "review",
+          dimension: "combined",
+          passed: true,
+          implementation_fingerprint: fingerprints.implementation_fingerprint,
+          reviewer: "codex-reviewer",
+          timestamp: "2026-08-13T00:01:00Z",
+          findings: [],
+          repo_id: "R1",
+          source_task_id: "R1-T1",
+        },
+        {
+          type: "verify",
+          check: "publisher-test",
+          check_type: "test",
+          command: "mvn -Dtest=OrderEventPublisherTest test",
+          passed: true,
+          implementation_fingerprint: fingerprints.implementation_fingerprint,
+          config_fingerprint: fingerprints.config_fingerprint,
+          timestamp: "2026-08-13T00:02:00Z",
+          repo_id: "R1",
+          source_task_id: "R1-T1",
+        },
+      ]
+        .map((record) => JSON.stringify(record))
+        .join("\n")}\n`,
+      "utf8",
+    );
+
+    const transitioned = JSON.parse(
+      runState(["auto-transition", "--stage", "MEMORY", "--agent", "codex"]),
+    );
+    expect(transitioned.status).toBe("MEMORY");
+    const afterBoundary = JSON.parse(
+      runState(["inspect-dev-spec", "--spec", fixture.specPath]),
+    );
+    const canonicalTask = afterBoundary.execution.tasks.find(
+      (item: { task_id: string }) => item.task_id === "R1-T1",
+    );
+    expect(canonicalTask).toMatchObject({ status: "verified" });
+    expect(canonicalTask.evidence).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "acceptance",
+          status: "recorded",
+          sha256: expect.any(String),
+        }),
+      ]),
+    );
+  });
+
   it("writes the complete shared task lifecycle idempotently without changing the design digest", async () => {
     const fixture = await writeCanonicalFixture();
     initializeSpecExecution(fixture.specPath);

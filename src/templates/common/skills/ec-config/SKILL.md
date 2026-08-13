@@ -33,6 +33,12 @@ Explain precedence as `session override > project config > defaults`. Defaults a
 task freezes its effective TDD values when ANALYSIS advances to IMPLEMENT; later project/session
 changes affect future tasks and ANALYSIS only.
 
+Approval semantics stay independent from verification depth: `approve` waits at each
+non-mechanical edge, `guard` waits at ANALYSIS -> IMPLEMENT and VERIFICATION -> MEMORY, `confirm`
+waits only for the plan, and `auto` advances legal green edges immediately. Every mode temporarily
+pauses only when code changes after the frozen VERIFICATION checkpoint, because the user must see
+and accept that exact new diff; this exception does not convert `auto` into `guard`.
+
 ## Project configuration
 
 Use `easy-coding config` for project settings. The CLI confirms one atomic update of Approval,

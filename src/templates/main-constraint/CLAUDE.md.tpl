@@ -43,8 +43,10 @@ First run `/ec-init`; daily work goes through `/ec-workflow`.
   is session override > project `behavior.workflow_mode` > `adaptive`. Approval controls waiting;
   workflow controls execution depth. ANALYSIS shows and freezes adaptive to fast/standard/strict.
   Confirm approval waits only at ANALYSIS -> IMPLEMENT, then advances green later stages
-  automatically. Every new code task runs REVIEW; no mode changes scope, delivery form, or
-  evidence gates.
+  automatically; Auto advances all legal green edges. A new code diff after the VERIFICATION
+  checkpoint is the only exceptional pause across all modes: show the exact diff, bind acceptance
+  to its digest, and continue without rereview when the user accepts.
+  Every new code task runs REVIEW; no mode changes scope, delivery form, or evidence gates.
 - TDD is session override > project `behavior.tdd_enabled` > `false`; its changed-line threshold
   is session override > project `behavior.tdd_coverage_threshold` > `90`. ANALYSIS -> IMPLEMENT
   freezes both. TDD may be enabled only after `ec-tdd-init` records valid infrastructure readiness;
@@ -85,18 +87,24 @@ First run `/ec-init`; daily work goes through `/ec-workflow`.
 - REVIEW and VERIFICATION are fingerprinted hard gates. Review evidence must match the final
   implementation; verification evidence must match final implementation and config. The frozen
   workflow mode selects targeted, impacted, or full commands without weakening the green gate.
+  Freeze a verification checkpoint after green checks. Unchanged checkpoints follow approval
+  mode normally; post-checkpoint code drift requires exact digest acceptance and
+  carry-forward/targeted/waived verification policy, but never an automatic second REVIEW.
 - Canonical-backed tasks bind static validity to design revision + `design_sha256`, while
   `document_sha256` and `execution_revision` may advance through shared writer commands. Project-
   external explicit Spec paths are allowed and may be repaired only with identity-checked rebind.
   Runtime progress must use the shared writer with CAS/idempotency and reconciliation; static
   design changes require revision + READY + `sync-spec-design`. Never hand-edit `EDS:EXECUTION`.
+  Selected source tasks remain `implemented` through local VERIFICATION and become `verified`
+  only when the accepted VERIFICATION -> MEMORY boundary is actually applied.
 - Canonical routing is two-pass: first use manifest-only discovery for the current worktree, then
   inspect only the explicitly selected task IDs and repositories. A remote-confirmed worktree
   overrides a stale `path_hint`; never mirror the source Spec or re-check unselected repositories.
   ANALYSIS reads the selected consumption closure once and treats exact/scope-unchanged as a fast
   projection, while shared execution is the dependency fact source.
 - MEMORY combines short-memory creation and the conditional long-memory gate. Entry follows the
-  effective confirmation mode; once memory processing completes, COMPLETE is automatic.
+  effective confirmation mode; its checkpoint records any accepted post-verification diff digest
+  and decision. Once memory processing completes, COMPLETE is automatic.
 - NO CODE-TASK COMPLETION CLAIMS WITHOUT FRESH VERIFICATION EVIDENCE.
 - All cross-platform modules (skills, hooks, references) must use universal agent protocols.
   Do not rely on any specific agent's proprietary conventions unless the module is explicitly
@@ -107,7 +115,8 @@ First run `/ec-init`; daily work goes through `/ec-workflow`.
 
 - Workflow state operations go through `{{platform_config_dir}}/hooks/easy_coding_state.py`;
   do not hand-edit session files, `current_task`, task `status`, `stage_history`,
-  `pending_transition`, workflow/TDD proposal or freeze fields, `memory_progress`, or `last_agent`.
+  `pending_transition`, `verification_checkpoint`, workflow/TDD proposal or freeze fields,
+  `memory_progress`, or `last_agent`.
 - The hook injects `[easy-coding:session-file:P]`; pass that path to the state script with
   `--session-file <P>` when changing the current task or stage.
 - Workflow session files live at `{{workflow_state_path}}`; the CLI only installs files and

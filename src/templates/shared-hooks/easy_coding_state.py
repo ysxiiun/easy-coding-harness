@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 import argparse
+import base64
+import difflib
 import hashlib
 import json
 import os
@@ -139,6 +141,8 @@ ARCHITECTURE_ABSTRACT_PATH = Path(".easy-coding/ABSTRACT.md")
 ARCHITECTURE_CHANGELOG_PATH = Path(".easy-coding/CHANGELOG.md")
 # MEMORY 架构评估唯一允许的动作集合；状态 API 和 CLI 参数共享该契约。
 ARCHITECTURE_ACTIONS = {"no-op", "backfill", "update"}
+ACCEPTANCE_SNAPSHOT_SCHEMA = 1
+ACCEPTANCE_VERIFICATION_POLICIES = {"carry-forward", "targeted", "waived"}
 SESSION_STALE_THRESHOLD_HOURS = 30 * 24
 SESSION_COMPONENT_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
 SESSION_AGENT_NAMESPACES = {"claude-code", "codex", "qoder", "unknown"}
@@ -2751,6 +2755,665 @@ def evidence_fingerprints(root: Path, task_id: str) -> dict[str, str]:
     }
 
 
+def acceptance_snapshot_path(root: Path, task_id: str) -> Path:
+    assert_safe_task_id(task_id)
+    return root / ".easy-coding" / "sessions" / "acceptance" / f"{task_id}.json"
+
+
+def canonical_json_sha256(value: object) -> str:
+    payload = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def verification_contract_fingerprint(root: Path, task_id: str, task: dict) -> str:
+    plan = latest_execution_plan(root, task_id)
+    if plan is None:
+        raise StateError("Cannot fingerprint verification contract without a valid plan.")
+    source = task.get("spec_source") if isinstance(task.get("spec_source"), dict) else {}
+    contract = {
+        "workflow_mode": task.get("workflow_mode"),
+        "tdd_enabled": task.get("tdd_enabled"),
+        "tdd_coverage_threshold": task.get("tdd_coverage_threshold"),
+        "tdd_baselines": task.get("tdd_baselines"),
+        "plan": plan,
+        "canonical": {
+            "schema": source.get("schema"),
+            "spec_id": source.get("spec_id"),
+            "revision": source.get("revision"),
+            "design_sha256": source.get("design_sha256"),
+            "selected_tasks": task.get("selected_spec_tasks"),
+            "repository_bindings": task.get("spec_repositories"),
+            "repo_paths": task.get("repo_paths"),
+        }
+        if source
+        else None,
+    }
+    return canonical_json_sha256(contract)
+
+
+def acceptance_repository_entries(repository: Path, scopes: list[Path]) -> list[dict]:
+    pathspecs = repository_scope_pathspecs(repository, scopes)
+    index_entries = git_index_entries(repository, pathspecs)
+    listed = run_git(
+        repository,
+        "ls-files",
+        "--cached",
+        "--others",
+        "--exclude-standard",
+        "-z",
+        "--",
+        *pathspecs,
+    )
+    modified = run_git(
+        repository,
+        "diff-files",
+        "--name-only",
+        "-z",
+        "--ignore-submodules=none",
+        "--",
+        *pathspecs,
+    )
+    if listed is None or listed.returncode != 0 or modified is None or modified.returncode != 0:
+        raise StateError(f"Cannot capture verification snapshot for {repository}.")
+    modified_paths = set(filter(None, modified.stdout.split(b"\0")))
+    raw_paths = set(filter(None, listed.stdout.split(b"\0"))) | set(index_entries)
+    entries: list[dict] = []
+    for raw_path in sorted(raw_paths):
+        relative_name = os.fsdecode(raw_path)
+        if is_easy_coding_state_path(repository, relative_name, scopes):
+            continue
+        candidate = repository / relative_name
+        index_entry = index_entries.get(raw_path)
+        if index_entry is not None and index_entry[0] == b"160000":
+            entries.append(
+                {
+                    "path": relative_name,
+                    "exists": True,
+                    "mode": "160000",
+                    "git_oid": index_entry[1].decode("ascii", errors="replace"),
+                    "sha256": hashlib.sha256(index_entry[1]).hexdigest(),
+                }
+            )
+            continue
+        exists = candidate.exists() or candidate.is_symlink()
+        if not exists:
+            entries.append(
+                {
+                    "path": relative_name,
+                    "exists": False,
+                    "mode": None,
+                    "sha256": None,
+                }
+            )
+            continue
+        try:
+            content = (
+                os.fsencode(os.readlink(candidate))
+                if candidate.is_symlink()
+                else candidate.read_bytes()
+            )
+        except OSError as exc:
+            raise StateError(f"Cannot read verification snapshot file: {relative_name}") from exc
+        mode = worktree_git_mode(candidate).decode("ascii", errors="replace")
+        entry = {
+            "path": relative_name,
+            "exists": True,
+            "mode": mode,
+            "sha256": hashlib.sha256(content).hexdigest(),
+        }
+        if index_entry is not None and raw_path not in modified_paths:
+            entry["git_oid"] = index_entry[1].decode("ascii", errors="replace")
+        else:
+            # 仅无法从 Git object 还原的工作区内容进入被忽略的临时快照。
+            entry["content_b64"] = base64.b64encode(content).decode("ascii")
+        entries.append(entry)
+    return entries
+
+
+def acceptance_filesystem_repositories(
+    root: Path,
+    plan: dict,
+    git_scopes: list[tuple[Path, list[Path]]],
+) -> list[dict]:
+    files_by_root: dict[Path, set[Path]] = {}
+    for unit in plan.get("units", []):
+        if not isinstance(unit, dict):
+            continue
+        for file_name in unit.get("files", []):
+            if not is_non_empty_string(file_name):
+                continue
+            raw_path = Path(str(file_name))
+            base = root.resolve()
+            candidate = raw_path if raw_path.is_absolute() else base / raw_path
+            resolved = candidate.resolve()
+            if not raw_path.is_absolute() and not is_path_within(resolved, base):
+                raise StateError(f"Execution plan file escapes project: {file_name}")
+            if any(
+                is_path_within(resolved, scope)
+                for _repository, scopes in git_scopes
+                for scope in scopes
+            ):
+                continue
+            snapshot_root = resolved.parent if raw_path.is_absolute() else base
+            files_by_root.setdefault(snapshot_root, set()).add(resolved)
+
+    repositories: list[dict] = []
+    for snapshot_root, files in sorted(
+        files_by_root.items(), key=lambda item: item[0].as_posix()
+    ):
+        entries = []
+        for candidate in sorted(files, key=lambda item: item.as_posix()):
+            relative_name = candidate.relative_to(snapshot_root).as_posix()
+            exists = candidate.exists() or candidate.is_symlink()
+            if not exists:
+                entries.append(
+                    {
+                        "path": relative_name,
+                        "exists": False,
+                        "mode": None,
+                        "sha256": None,
+                    }
+                )
+                continue
+            try:
+                content = (
+                    os.fsencode(os.readlink(candidate))
+                    if candidate.is_symlink()
+                    else candidate.read_bytes()
+                )
+            except OSError as exc:
+                raise StateError(
+                    f"Cannot read verification snapshot file: {candidate}"
+                ) from exc
+            entries.append(
+                {
+                    "path": relative_name,
+                    "exists": True,
+                    "mode": worktree_git_mode(candidate).decode("ascii", errors="replace"),
+                    "sha256": hashlib.sha256(content).hexdigest(),
+                    "content_b64": base64.b64encode(content).decode("ascii"),
+                }
+            )
+        repositories.append(
+            {
+                "root": str(snapshot_root),
+                "display": display_path(root, snapshot_root),
+                "scopes": [],
+                "entries": entries,
+            }
+        )
+    return repositories
+
+
+def build_acceptance_snapshot(root: Path, task_id: str, task: dict) -> dict:
+    plan = latest_execution_plan(root, task_id)
+    if plan is None:
+        raise StateError("Cannot capture verification snapshot without a valid plan.")
+    fingerprints = evidence_fingerprints(root, task_id)
+    repository_scopes = task_repository_scopes(root, task, plan)
+    repositories = []
+    for repository, scopes in repository_scopes:
+        repositories.append(
+            {
+                "root": str(repository.resolve()),
+                "display": display_path(root, repository.resolve()),
+                "scopes": [
+                    scope.relative_to(repository.resolve()).as_posix() for scope in scopes
+                ],
+                "entries": acceptance_repository_entries(repository.resolve(), scopes),
+            }
+        )
+    repositories.extend(acceptance_filesystem_repositories(root, plan, repository_scopes))
+    return {
+        "schema": ACCEPTANCE_SNAPSHOT_SCHEMA,
+        **fingerprints,
+        "contract_fingerprint": verification_contract_fingerprint(root, task_id, task),
+        "repositories": repositories,
+    }
+
+
+def load_acceptance_snapshot(root: Path, task: dict) -> dict:
+    checkpoint = task.get("verification_checkpoint")
+    if not isinstance(checkpoint, dict):
+        raise StateError("VERIFICATION has no frozen acceptance checkpoint.")
+    raw_path = checkpoint.get("snapshot_file")
+    if not is_non_empty_string(raw_path):
+        raise StateError("Verification checkpoint has no snapshot file.")
+    candidate = (root / str(raw_path)).resolve()
+    sessions_root = (root / ".easy-coding" / "sessions").resolve()
+    if not is_path_within(candidate, sessions_root):
+        raise StateError("Verification checkpoint snapshot escapes .easy-coding/sessions.")
+    snapshot = load_json(candidate)
+    if not isinstance(snapshot, dict) or snapshot.get("schema") != ACCEPTANCE_SNAPSHOT_SCHEMA:
+        raise StateError("Verification checkpoint snapshot is missing or invalid.")
+    if canonical_json_sha256(snapshot) != checkpoint.get("snapshot_sha256"):
+        raise StateError("Verification checkpoint snapshot fingerprint changed.")
+    if (
+        snapshot.get("implementation_fingerprint")
+        != checkpoint.get("implementation_fingerprint")
+        or snapshot.get("config_fingerprint") != checkpoint.get("config_fingerprint")
+        or snapshot.get("contract_fingerprint") != checkpoint.get("contract_fingerprint")
+    ):
+        raise StateError("Verification checkpoint metadata does not match its snapshot.")
+    return snapshot
+
+
+def snapshot_entry_content(repository: Path, entry: dict | None) -> bytes | None:
+    if not isinstance(entry, dict) or entry.get("exists") is not True:
+        return None
+    encoded = entry.get("content_b64")
+    if isinstance(encoded, str):
+        try:
+            return base64.b64decode(encoded, validate=True)
+        except ValueError as exc:
+            raise StateError("Verification checkpoint contains invalid file content.") from exc
+    object_id = entry.get("git_oid")
+    if not is_non_empty_string(object_id):
+        return None
+    if entry.get("mode") == "160000":
+        return str(object_id).encode("ascii", errors="replace")
+    result = run_git(repository, "cat-file", "blob", str(object_id))
+    if result is None or result.returncode != 0:
+        raise StateError(f"Cannot restore verification checkpoint Git object: {object_id}")
+    return result.stdout
+
+
+def acceptance_snapshot_entries(snapshot: dict) -> dict[tuple[str, str], tuple[Path, dict]]:
+    entries: dict[tuple[str, str], tuple[Path, dict]] = {}
+    for repository in snapshot.get("repositories", []):
+        if not isinstance(repository, dict) or not is_non_empty_string(repository.get("root")):
+            continue
+        repository_root = Path(str(repository["root"]))
+        for entry in repository.get("entries", []):
+            if isinstance(entry, dict) and is_non_empty_string(entry.get("path")):
+                entries[(str(repository_root), str(entry["path"]))] = (repository_root, entry)
+    return entries
+
+
+def acceptance_change_patch(
+    path_name: str,
+    previous: bytes | None,
+    current: bytes | None,
+) -> tuple[bool, str]:
+    if (previous is not None and b"\0" in previous) or (current is not None and b"\0" in current):
+        return True, ""
+    try:
+        previous_text = previous.decode("utf-8") if previous is not None else ""
+        current_text = current.decode("utf-8") if current is not None else ""
+    except UnicodeDecodeError:
+        return True, ""
+    patch = "".join(
+        difflib.unified_diff(
+            previous_text.splitlines(keepends=True),
+            current_text.splitlines(keepends=True),
+            fromfile=f"a/{path_name}" if previous is not None else "/dev/null",
+            tofile=f"b/{path_name}" if current is not None else "/dev/null",
+        )
+    )
+    return False, patch
+
+
+def inspect_acceptance_drift(root: Path, task_id: str, task: dict) -> dict:
+    checkpoint = task.get("verification_checkpoint")
+    baseline = load_acceptance_snapshot(root, task)
+    current = build_acceptance_snapshot(root, task_id, task)
+    baseline_entries = acceptance_snapshot_entries(baseline)
+    current_entries = acceptance_snapshot_entries(current)
+    changes: list[dict] = []
+    digest_changes: list[dict] = []
+    nested_repository_changed = False
+    for key in sorted(set(baseline_entries) | set(current_entries)):
+        previous_repository, previous_entry = baseline_entries.get(key, (Path(key[0]), None))
+        current_repository, current_entry = current_entries.get(key, (Path(key[0]), None))
+        if (
+            isinstance(previous_entry, dict)
+            and isinstance(current_entry, dict)
+            and previous_entry.get("exists") == current_entry.get("exists")
+            and previous_entry.get("mode") == current_entry.get("mode")
+            and previous_entry.get("sha256") == current_entry.get("sha256")
+        ):
+            continue
+        repository = current_repository if isinstance(current_entry, dict) else previous_repository
+        previous_content = snapshot_entry_content(previous_repository, previous_entry)
+        current_content = snapshot_entry_content(current_repository, current_entry)
+        binary, patch = acceptance_change_patch(key[1], previous_content, current_content)
+        change_type = (
+            "added"
+            if previous_content is None and current_content is not None
+            else "deleted"
+            if previous_content is not None and current_content is None
+            else "modified"
+        )
+        label = f"{display_path(root, repository)}:{key[1]}"
+        detail = {
+            "file": label,
+            "repository": display_path(root, repository),
+            "path": key[1],
+            "change_type": change_type,
+            "old_mode": previous_entry.get("mode") if isinstance(previous_entry, dict) else None,
+            "new_mode": current_entry.get("mode") if isinstance(current_entry, dict) else None,
+            "old_sha256": previous_entry.get("sha256")
+            if isinstance(previous_entry, dict)
+            else None,
+            "new_sha256": current_entry.get("sha256")
+            if isinstance(current_entry, dict)
+            else None,
+            "binary": binary,
+            "patch": patch,
+        }
+        if detail["old_mode"] == "160000" or detail["new_mode"] == "160000":
+            nested_repository_changed = True
+        changes.append(detail)
+        digest_changes.append(
+            {key_name: value for key_name, value in detail.items() if key_name != "patch"}
+        )
+    current_implementation = str(current["implementation_fingerprint"])
+    baseline_implementation = str(checkpoint["implementation_fingerprint"])
+    config_changed = current.get("config_fingerprint") != checkpoint.get("config_fingerprint")
+    contract_changed = current.get("contract_fingerprint") != checkpoint.get(
+        "contract_fingerprint"
+    )
+    metadata_changed = bool(
+        contract_changed
+        or nested_repository_changed
+        or (current_implementation != baseline_implementation and not changes)
+    )
+    metadata_reasons = [
+        reason
+        for condition, reason in (
+            (contract_changed, "verification-contract-changed"),
+            (nested_repository_changed, "nested-repository-changed"),
+            (
+                current_implementation != baseline_implementation
+                and not changes
+                and not contract_changed,
+                "unclassified-implementation-drift",
+            ),
+        )
+        if condition
+    ]
+    digest_payload = {
+        "from": baseline_implementation,
+        "to": current_implementation,
+        "config_changed": config_changed,
+        "metadata_changed": metadata_changed,
+        "changes": digest_changes,
+    }
+    return {
+        "status": "drift" if changes or config_changed or metadata_changed else "clean",
+        "from_implementation_fingerprint": baseline_implementation,
+        "implementation_fingerprint": current_implementation,
+        "config_fingerprint": str(current["config_fingerprint"]),
+        "config_changed": config_changed,
+        "metadata_changed": metadata_changed,
+        "metadata_reasons": metadata_reasons,
+        "diff_sha256": canonical_json_sha256(digest_payload),
+        "changed_files": [str(change["file"]) for change in changes],
+        "changes": changes,
+    }
+
+
+def cleanup_verification_checkpoint(root: Path, task_id: str, task: dict) -> None:
+    checkpoint = task.pop("verification_checkpoint", None)
+    if not isinstance(checkpoint, dict):
+        return
+    raw_path = checkpoint.get("snapshot_file")
+    if not is_non_empty_string(raw_path):
+        return
+    candidate = (root / str(raw_path)).resolve()
+    sessions_root = (root / ".easy-coding" / "sessions").resolve()
+    if not is_path_within(candidate, sessions_root):
+        return
+    try:
+        candidate.unlink()
+    except FileNotFoundError:
+        pass
+    try:
+        candidate.parent.rmdir()
+    except OSError:
+        pass
+
+
+def record_verification_checkpoint(
+    root: Path,
+    agent: str,
+    task_id: str | None = None,
+    session_file: str | Path | None = None,
+) -> dict:
+    session, resolved_task_id, task = resolve_current_task(root, task_id, session_file)
+    if task.get("status") != "VERIFICATION":
+        raise StateError("Verification checkpoint can only be recorded during VERIFICATION.")
+    if isinstance(task.get("verification_checkpoint"), dict):
+        load_acceptance_snapshot(root, task)
+        result = snapshot_state(root, session_file, session)
+        result["action"] = "verification-checkpoint"
+        result["verification_checkpoint"] = task["verification_checkpoint"]
+        result["checkpoint_unchanged"] = True
+        return result
+    validate_verification_readiness(root, resolved_task_id, task)
+    snapshot = build_acceptance_snapshot(root, resolved_task_id, task)
+    path = acceptance_snapshot_path(root, resolved_task_id)
+    write_json(path, snapshot)
+    task["verification_checkpoint"] = {
+        "schema": ACCEPTANCE_SNAPSHOT_SCHEMA,
+        "implementation_fingerprint": snapshot["implementation_fingerprint"],
+        "config_fingerprint": snapshot["config_fingerprint"],
+        "contract_fingerprint": snapshot["contract_fingerprint"],
+        "snapshot_file": display_path(root, path),
+        "snapshot_sha256": canonical_json_sha256(snapshot),
+        "recorded_at": now_iso(),
+        "recorded_by": agent,
+    }
+    task["last_agent"] = agent
+    write_task(root, resolved_task_id, task)
+    result = snapshot_state(root, session_file, session)
+    result["action"] = "verification-checkpoint"
+    result["verification_checkpoint"] = task["verification_checkpoint"]
+    return result
+
+
+def latest_acceptance_record(root: Path, task_id: str, task: dict) -> dict | None:
+    latest_implement = max(
+        (
+            str(entry.get("entered_at"))
+            for entry in task.get("stage_history", [])
+            if isinstance(entry, dict)
+            and entry.get("stage") == "IMPLEMENT"
+            and is_non_empty_string(entry.get("entered_at"))
+        ),
+        default="",
+    )
+    latest: dict | None = None
+    for record in execution_records(root, task_id):
+        if record.get("type") != "acceptance" or not is_non_empty_string(
+            record.get("timestamp")
+        ):
+            continue
+        if latest_implement and str(record["timestamp"]) < latest_implement:
+            continue
+        latest = record
+    return latest
+
+
+def ensure_verification_checkpoint(
+    root: Path,
+    task_id: str,
+    task: dict,
+    agent: str,
+    session_file: str | Path | None,
+) -> dict:
+    if isinstance(task.get("verification_checkpoint"), dict):
+        load_acceptance_snapshot(root, task)
+        return task
+    record_verification_checkpoint(root, agent, task_id, session_file)
+    refreshed = load_task(root, task_id)
+    if not isinstance(refreshed, dict):
+        raise StateError(f"Task not found after verification checkpoint: {task_id}")
+    return refreshed
+
+
+def inspect_transition_drift(
+    root: Path,
+    agent: str,
+    task_id: str | None = None,
+    session_file: str | Path | None = None,
+) -> dict:
+    session, resolved_task_id, task = resolve_current_task(root, task_id, session_file)
+    if task.get("status") != "VERIFICATION":
+        raise StateError("Transition drift can only be inspected during VERIFICATION.")
+    task = ensure_verification_checkpoint(root, resolved_task_id, task, agent, session_file)
+    result = snapshot_state(root, session_file, session)
+    result["acceptance_drift"] = inspect_acceptance_drift(root, resolved_task_id, task)
+    result["action"] = "inspect-transition-drift"
+    return result
+
+
+def append_transition_acceptance(
+    root: Path,
+    task_id: str,
+    task: dict,
+    agent: str,
+    approval_mode: str,
+    authorization: str,
+    expected_diff_sha256: str | None = None,
+    verification_policy: str | None = None,
+    summary: str | None = None,
+) -> dict:
+    drift = inspect_acceptance_drift(root, task_id, task)
+    if drift["config_changed"]:
+        raise StateError(
+            "Behavior config changed after verification; rerun verification before MEMORY."
+        )
+    if drift["metadata_changed"]:
+        raise StateError(
+            "Execution plan, workflow, Canonical design, or nested repository state changed "
+            "after verification; return to ANALYSIS or IMPLEMENT instead of accepting it as a code diff."
+        )
+    changed_files = list(drift["changed_files"])
+    if changed_files:
+        if expected_diff_sha256 != drift["diff_sha256"]:
+            raise StateError(
+                "Verified code changed after the acceptance checkpoint. Inspect the exact drift "
+                "and confirm its current diff_sha256 before entering MEMORY."
+            )
+        if verification_policy not in ACCEPTANCE_VERIFICATION_POLICIES:
+            raise StateError(
+                "Accepted code drift requires verification policy carry-forward, targeted, or waived."
+            )
+        review_policy = "user-accepted-without-rereview"
+    else:
+        verification_policy = "current"
+        review_policy = "current"
+    required_targeted_source_tasks = (
+        targeted_source_tasks_for_changes(root, task_id, task, drift["changes"])
+        if verification_policy == "targeted"
+        else []
+    )
+    normalized_summary = (
+        summary.strip()
+        if isinstance(summary, str) and summary.strip()
+        else "User accepted the verified implementation"
+        if authorization == "explicit-user"
+        else f"Approval mode {approval_mode} authorized the verified implementation"
+    )
+    record = {
+        "type": "acceptance",
+        "from_implementation_fingerprint": drift["from_implementation_fingerprint"],
+        "implementation_fingerprint": drift["implementation_fingerprint"],
+        "config_fingerprint": drift["config_fingerprint"],
+        "diff_sha256": drift["diff_sha256"],
+        "changed_files": changed_files,
+        "authorization": authorization,
+        "approval_mode": approval_mode,
+        "review_policy": review_policy,
+        "verification_policy": verification_policy,
+        "required_targeted_source_tasks": required_targeted_source_tasks,
+        "summary": normalized_summary,
+        "recorded_by": agent,
+        "timestamp": now_iso(),
+    }
+    existing = latest_acceptance_record(root, task_id, task)
+    identity_fields = (
+        "from_implementation_fingerprint",
+        "implementation_fingerprint",
+        "config_fingerprint",
+        "diff_sha256",
+        "authorization",
+        "approval_mode",
+        "review_policy",
+        "verification_policy",
+        "required_targeted_source_tasks",
+        "summary",
+    )
+    if not (
+        isinstance(existing, dict)
+        and existing.get("changed_files") == changed_files
+        and all(existing.get(field) == record.get(field) for field in identity_fields)
+    ):
+        append_execution_record(root, task_id, record)
+    return record
+
+
+def targeted_source_tasks_for_changes(
+    root: Path,
+    task_id: str,
+    task: dict,
+    changes: list[dict],
+) -> list[str]:
+    if not isinstance(task.get("spec_source"), dict):
+        return []
+    plan = latest_execution_plan(root, task_id)
+    repo_paths = task.get("repo_paths")
+    if plan is None or not isinstance(repo_paths, dict):
+        raise StateError("Canonical targeted verification requires a valid repository plan.")
+
+    units_by_repository: dict[str, list[dict]] = {}
+    for unit in plan.get("units", []):
+        if not isinstance(unit, dict) or not is_non_empty_string(unit.get("repo_id")):
+            continue
+        raw_repository = repo_paths.get(str(unit["repo_id"]))
+        if not is_non_empty_string(raw_repository):
+            continue
+        candidate = Path(str(raw_repository))
+        repository = (candidate if candidate.is_absolute() else root / candidate).resolve()
+        units_by_repository.setdefault(display_path(root, repository), []).append(unit)
+
+    impacted: set[str] = set()
+    for change in changes:
+        if not isinstance(change, dict):
+            continue
+        repository_units = units_by_repository.get(str(change.get("repository") or ""), [])
+        if not repository_units:
+            continue
+        changed_path = str(change.get("path") or "")
+        matched_units = [
+            unit
+            for unit in repository_units
+            if any(
+                changed_path == str(file_name)
+                or changed_path.startswith(str(file_name).rstrip("/") + "/")
+                for file_name in unit.get("files", [])
+                if is_non_empty_string(file_name)
+            )
+        ]
+        scoped_units = matched_units or repository_units
+        impacted.update(
+            str(unit["source_task_id"])
+            for unit in scoped_units
+            if is_non_empty_string(unit.get("source_task_id"))
+        )
+    if not impacted:
+        raise StateError(
+            "Canonical executable drift could not be mapped to a selected source task."
+        )
+    return sorted(impacted)
+
+
 def command_option_value(command: str, option: str) -> str | None:
     try:
         tokens = shlex.split(command)
@@ -2780,6 +3443,68 @@ def coverage_command_matches_frozen_contract(
         and command_option_value(str(command), "--base") == baseline
         and command_option_value(str(command), "--threshold") == str(threshold)
     )
+
+
+def current_acceptance_record(
+    root: Path,
+    task_id: str,
+    task: dict,
+    implementation_fingerprint_value: str,
+    config_fingerprint_value: str,
+) -> dict | None:
+    record = latest_acceptance_record(root, task_id, task)
+    if not isinstance(record, dict):
+        return None
+    if (
+        record.get("implementation_fingerprint") != implementation_fingerprint_value
+        or record.get("config_fingerprint") != config_fingerprint_value
+        or not is_non_empty_string(record.get("from_implementation_fingerprint"))
+        or record.get("review_policy")
+        not in {"current", "user-accepted-without-rereview"}
+        or record.get("verification_policy")
+        not in {"current", *ACCEPTANCE_VERIFICATION_POLICIES}
+        or not is_string_list(record.get("required_targeted_source_tasks"))
+    ):
+        return None
+    return record
+
+
+def accepted_review_fingerprints(
+    root: Path, task_id: str, task: dict, current_fingerprint: str
+) -> set[str]:
+    accepted = {current_fingerprint}
+    record = current_acceptance_record(
+        root,
+        task_id,
+        task,
+        current_fingerprint,
+        behavior_config_fingerprint(root, task),
+    )
+    if record and record.get("review_policy") == "user-accepted-without-rereview":
+        accepted.add(str(record["from_implementation_fingerprint"]))
+    return accepted
+
+
+def accepted_verification_fingerprints(
+    root: Path,
+    task_id: str,
+    task: dict,
+    current_implementation: str,
+    current_config: str,
+) -> tuple[set[str], dict | None]:
+    record = current_acceptance_record(
+        root,
+        task_id,
+        task,
+        current_implementation,
+        current_config,
+    )
+    if not record or record.get("verification_policy") == "current":
+        return {current_implementation}, record
+    previous = str(record["from_implementation_fingerprint"])
+    if record.get("verification_policy") == "targeted":
+        return {previous, current_implementation}, record
+    return {previous}, record
 
 
 def validate_spec_implementation_results(root: Path, task_id: str, task: dict) -> None:
@@ -2858,11 +3583,12 @@ def validate_review_readiness(root: Path, task_id: str, task: dict) -> None:
     if task.get("workflow_mode_legacy") is True and not is_spec_task:
         return
     expected = implementation_fingerprint(root, task_id)
+    accepted_fingerprints = accepted_review_fingerprints(root, task_id, task, expected)
     latest_by_dimension: dict[str, dict] = {}
     for record in execution_records(root, task_id):
         if (
             record.get("type") == "review"
-            and record.get("implementation_fingerprint") == expected
+            and record.get("implementation_fingerprint") in accepted_fingerprints
             and is_non_empty_string(record.get("dimension"))
         ):
             dimension = str(record["dimension"])
@@ -2977,6 +3703,13 @@ def validate_review_readiness(root: Path, task_id: str, task: dict) -> None:
 
 def validate_verification_readiness(root: Path, task_id: str, task: dict) -> None:
     fingerprints = evidence_fingerprints(root, task_id)
+    accepted_fingerprints, acceptance = accepted_verification_fingerprints(
+        root,
+        task_id,
+        task,
+        fingerprints["implementation_fingerprint"],
+        fingerprints["config_fingerprint"],
+    )
     is_spec_task = isinstance(task.get("spec_source"), dict)
     if (
         (task.get("workflow_mode_legacy") is not True or is_spec_task)
@@ -2988,8 +3721,7 @@ def validate_verification_readiness(root: Path, task_id: str, task: dict) -> Non
     for record in execution_records(root, task_id):
         if (
             record.get("type") == "verify"
-            and record.get("implementation_fingerprint")
-            == fingerprints["implementation_fingerprint"]
+            and record.get("implementation_fingerprint") in accepted_fingerprints
             and record.get("config_fingerprint") == fingerprints["config_fingerprint"]
             and is_non_empty_string(record.get("check"))
         ):
@@ -3067,6 +3799,32 @@ def validate_verification_readiness(root: Path, task_id: str, task: dict) -> Non
         raise StateError(
             "VERIFICATION cannot advance to MEMORY while current verification evidence contains failures."
         )
+    if acceptance and acceptance.get("verification_policy") == "targeted":
+        current_records = [
+            record
+            for record in applicable_records
+            if record.get("implementation_fingerprint")
+            == fingerprints["implementation_fingerprint"]
+        ]
+        if not current_records or any(record.get("passed") is not True for record in current_records):
+            raise StateError(
+                "Accepted executable drift requires at least one passed targeted verification "
+                "record for the current implementation fingerprint."
+            )
+        if is_spec_task:
+            required_source_tasks = set(acceptance["required_targeted_source_tasks"])
+            current_source_tasks = {
+                str(record.get("source_task_id"))
+                for record in current_records
+                if is_non_empty_string(record.get("source_task_id"))
+            }
+            missing_source_tasks = sorted(required_source_tasks - current_source_tasks)
+            if missing_source_tasks:
+                raise StateError(
+                    "Accepted Canonical executable drift requires a passed current-fingerprint "
+                    "targeted verification record for affected source tasks: "
+                    + ", ".join(missing_source_tasks)
+                )
     if str(task.get("type") or "").strip().lower() == TDD_INIT_TASK_TYPE:
         readiness = tdd_readiness(root)
         if readiness["status"] != "ready":
@@ -4223,6 +4981,11 @@ def build_machine_breadcrumbs(
                     lines.append(
                         "[easy-coding:lite-review-bypass-required:IMPLEMENT->REVIEW]"
                     )
+                elif pending.get("confirmation_override") == "evidence-drift":
+                    lines.append(
+                        "[easy-coding:acceptance-drift-confirmation-required]"
+                    )
+                    lines.append("[easy-coding:transition-confirmation-required]")
                 elif is_automatic_transition(
                     source,
                     target,
@@ -5687,6 +6450,7 @@ def sync_spec_design_state(
     )
     progress.pop("pending_action", None)
     if task.get("status") not in {"INIT", "ANALYSIS"}:
+        cleanup_verification_checkpoint(root, resolved_task_id, task)
         task["status"] = "ANALYSIS"
         append_stage_history(task, "ANALYSIS", agent)
     task.pop("pending_transition", None)
@@ -5851,6 +6615,134 @@ def require_shared_task_statuses(root: Path, task: dict, allowed: set[str]) -> N
         )
 
 
+def effective_verification_records(root: Path, task_id: str, task: dict) -> list[dict]:
+    fingerprints = evidence_fingerprints(root, task_id)
+    accepted_fingerprints, _ = accepted_verification_fingerprints(
+        root,
+        task_id,
+        task,
+        fingerprints["implementation_fingerprint"],
+        fingerprints["config_fingerprint"],
+    )
+    latest: dict[tuple[str, str, str], dict] = {}
+    for record in execution_records(root, task_id):
+        if (
+            record.get("type") != "verify"
+            or record.get("implementation_fingerprint") not in accepted_fingerprints
+            or record.get("config_fingerprint") != fingerprints["config_fingerprint"]
+            or record.get("applicable") is False
+        ):
+            continue
+        key = (
+            str(record.get("source_task_id") or ""),
+            str(record.get("repo_id") or ""),
+            str(record.get("command") or record.get("check") or ""),
+        )
+        latest[key] = record
+    return list(latest.values())
+
+
+def acceptance_spec_evidence(acceptance: dict) -> dict:
+    digest = str(acceptance.get("diff_sha256") or "")
+    reference = (
+        "execution.jsonl#acceptance="
+        + digest
+        + ";authorization="
+        + str(acceptance.get("authorization") or "")
+        + ";approval_mode="
+        + str(acceptance.get("approval_mode") or "")
+        + ";review_policy="
+        + str(acceptance.get("review_policy") or "")
+        + ";verification_policy="
+        + str(acceptance.get("verification_policy") or "")
+        + ";targeted_source_tasks="
+        + ",".join(str(value) for value in acceptance.get("required_targeted_source_tasks", []))
+    )
+    return {
+        "kind": "acceptance",
+        "status": "recorded",
+        "ref": reference,
+        "sha256": digest,
+    }
+
+
+def writeback_verified_tasks(
+    root: Path,
+    harness_task_id: str,
+    task: dict,
+    agent: str,
+    session_file: str | Path | None = None,
+) -> None:
+    inspection, selection = inspect_task_spec(root, task)
+    snapshots = _selected_execution_snapshots(inspection, task)
+    acceptance = latest_acceptance_record(root, harness_task_id, task)
+    if not isinstance(acceptance, dict):
+        raise StateError("Canonical verification writeback requires an acceptance record.")
+    verification_records = effective_verification_records(root, harness_task_id, task)
+    selected_tasks = {
+        str(item.get("task_id")): item
+        for item in selection.get("selected_tasks", [])
+        if isinstance(item, dict)
+    }
+    tests_by_task: dict[str, list[dict]] = {}
+    for test in selection.get("selected_tests", []):
+        if isinstance(test, dict):
+            tests_by_task.setdefault(str(test.get("task_id")), []).append(test)
+    for source_task_id in task.get("selected_spec_tasks") or []:
+        source_task_id = str(source_task_id)
+        status_value = snapshots.get(source_task_id, {}).get("status")
+        if status_value in {"verified", "completed"}:
+            continue
+        if status_value != "implemented":
+            raise StateError(
+                f"Canonical task {source_task_id} must remain implemented until MEMORY entry is applied."
+            )
+        repo_id = str(selected_tasks.get(source_task_id, {}).get("repo_id") or "")
+        evidence = []
+        for test in tests_by_task.get(source_task_id, []):
+            command = str(test.get("command") or "")
+            matching = next(
+                (
+                    record
+                    for record in verification_records
+                    if record.get("passed") is True
+                    and str(record.get("source_task_id") or "") == source_task_id
+                    and str(record.get("repo_id") or "") == repo_id
+                    and str(record.get("command") or "") == command
+                ),
+                None,
+            )
+            if matching is None:
+                raise StateError(
+                    f"Canonical Test {test.get('test_id')} has no accepted verification command: {command}"
+                )
+            evidence.append(
+                {
+                    "kind": "test",
+                    "status": "passed",
+                    "ref": f"execution.jsonl#verify;command={command}",
+                    "test_id": str(test.get("test_id")),
+                }
+            )
+        evidence.append(acceptance_spec_evidence(acceptance))
+        acceptance_key = str(acceptance.get("diff_sha256") or "")[:16]
+        key = (
+            f"{harness_task_id}:{source_task_id}:verified-after-acceptance:"
+            f"{task['spec_source']['revision']}:{acceptance_key}"
+        )
+        writeback_spec_task(
+            root,
+            source_task_id,
+            "verified",
+            "Harness verification was accepted when the MEMORY boundary was applied",
+            evidence,
+            key,
+            agent,
+            harness_task_id,
+            session_file,
+        )
+
+
 def writeback_completed_tasks(
     root: Path,
     harness_task_id: str,
@@ -5859,6 +6751,10 @@ def writeback_completed_tasks(
 ) -> None:
     inspection, _ = inspect_task_spec(root, task)
     snapshots = _selected_execution_snapshots(inspection, task)
+    acceptance = latest_acceptance_record(root, harness_task_id, task)
+    acceptance_evidence = (
+        [acceptance_spec_evidence(acceptance)] if isinstance(acceptance, dict) else []
+    )
     for source_task_id in task.get("selected_spec_tasks") or []:
         status_value = snapshots.get(str(source_task_id), {}).get("status")
         if status_value == "completed":
@@ -5867,13 +6763,21 @@ def writeback_completed_tasks(
             raise StateError(
                 f"Canonical task {source_task_id} must be verified before Harness COMPLETE."
             )
-        key = f"{harness_task_id}:{source_task_id}:complete:{task['spec_source']['revision']}"
+        acceptance_key = (
+            str(acceptance.get("diff_sha256") or "")[:16]
+            if isinstance(acceptance, dict)
+            else "legacy"
+        )
+        key = (
+            f"{harness_task_id}:{source_task_id}:complete:"
+            f"{task['spec_source']['revision']}:{acceptance_key}"
+        )
         action = {
             "kind": "task",
             "source_task_id": source_task_id,
             "status": "completed",
             "summary": "Harness MEMORY completed and the Canonical task is complete",
-            "evidence": [],
+            "evidence": acceptance_evidence,
             "idempotency_key": key,
             "agent": agent,
         }
@@ -5892,6 +6796,7 @@ def writeback_completed_tasks(
                 spec_writeback_agent(agent),
                 design_digest,
                 execution_revision,
+                evidence=acceptance_evidence,
                 run_id=harness_task_id,
                 idempotency_key=key,
             ),
@@ -6351,8 +7256,22 @@ def request_transition(
             )
     if previous == "REVIEW" and stage == "VERIFICATION":
         validate_review_readiness(root, resolved_task_id, task)
+    acceptance_drift: dict | None = None
     if previous == "VERIFICATION" and stage == "MEMORY":
-        validate_verification_readiness(root, resolved_task_id, task)
+        task = ensure_verification_checkpoint(
+            root, resolved_task_id, task, agent, session_file
+        )
+        acceptance_drift = inspect_acceptance_drift(root, resolved_task_id, task)
+        if acceptance_drift["config_changed"]:
+            raise StateError(
+                "Behavior config changed after verification; rerun verification before MEMORY."
+            )
+        if acceptance_drift["metadata_changed"]:
+            raise StateError(
+                "Non-code verification metadata changed; return to ANALYSIS or IMPLEMENT."
+            )
+        if acceptance_drift["status"] == "clean":
+            validate_verification_readiness(root, resolved_task_id, task)
     existing = task.get("pending_transition")
     if isinstance(existing, dict):
         if existing.get("from") != previous or existing.get("to") != stage:
@@ -6372,6 +7291,8 @@ def request_transition(
 
     snapshot = snapshot_state(root, session_file, session)
     snapshot["action"] = "request-transition"
+    if acceptance_drift is not None:
+        snapshot["acceptance_drift"] = acceptance_drift
     return snapshot
 
 
@@ -6412,6 +7333,10 @@ def apply_transition(
     if previous == "VERIFICATION" and stage == "MEMORY":
         validate_verification_readiness(root, resolved_task_id, task)
         if isinstance(task.get("spec_source"), dict):
+            writeback_verified_tasks(
+                root, resolved_task_id, task, agent, session_file
+            )
+            task = load_task(root, resolved_task_id) or task
             require_shared_task_statuses(root, task, {"verified", "completed"})
     if previous == "MEMORY" and stage == "COMPLETE":
         progress = task.get("memory_progress")
@@ -6433,6 +7358,8 @@ def apply_transition(
         task.pop("workflow_mode_legacy_direct_edge", None)
         if stage in {"ANALYSIS", "IMPLEMENT", "MEMORY", "COMPLETE", "CLOSED"}:
             task.pop("workflow_mode_legacy_review_bypass_fingerprint", None)
+    if stage in {"ANALYSIS", "IMPLEMENT", "MEMORY", "COMPLETE", "CLOSED"}:
+        cleanup_verification_checkpoint(root, resolved_task_id, task)
     task.pop("pending_transition", None)
     if stage == "MEMORY" and previous != stage:
         task["memory_progress"] = {}
@@ -6457,7 +7384,7 @@ def auto_transition(
     task_id: str | None = None,
     session_file: str | Path | None = None,
 ) -> dict:
-    session, _, task = resolve_current_task(root, task_id, session_file)
+    session, resolved_task_id, task = resolve_current_task(root, task_id, session_file)
     previous = str(task.get("status") or "idle")
     task_type = str(task.get("type") or "")
     approval_mode = resolve_approval_mode(root, session)[2]
@@ -6474,6 +7401,43 @@ def auto_transition(
             "A different transition is already pending. Cancel it before automatic transition."
         )
 
+    if previous == "VERIFICATION" and stage == "MEMORY":
+        task = ensure_verification_checkpoint(
+            root, resolved_task_id, task, agent, session_file
+        )
+        drift = inspect_acceptance_drift(root, resolved_task_id, task)
+        if drift["config_changed"]:
+            raise StateError(
+                "Behavior config changed after verification; rerun verification before MEMORY."
+            )
+        if drift["metadata_changed"]:
+            raise StateError(
+                "Non-code verification metadata changed; return to ANALYSIS or IMPLEMENT."
+            )
+        if drift["changed_files"]:
+            task["pending_transition"] = {
+                "from": previous,
+                "to": stage,
+                "requested_at": now_iso(),
+                "requested_by": agent,
+                "reason": "verification checkpoint drift requires exact user acceptance",
+                "confirmation_override": "evidence-drift",
+            }
+            task["last_agent"] = agent
+            write_task(root, resolved_task_id, task)
+            snapshot = snapshot_state(root, session_file, session)
+            snapshot["action"] = "acceptance-drift"
+            snapshot["acceptance_drift"] = drift
+            return snapshot
+        append_transition_acceptance(
+            root,
+            resolved_task_id,
+            task,
+            agent,
+            approval_mode,
+            "approval-policy",
+        )
+
     snapshot = apply_transition(root, stage, agent, task_id, session_file)
     snapshot["action"] = "auto-transition"
     snapshot["automatic_transition"] = {"from": previous, "to": stage}
@@ -6486,8 +7450,11 @@ def confirm_transition(
     stage: str | None = None,
     task_id: str | None = None,
     session_file: str | Path | None = None,
+    expected_diff_sha256: str | None = None,
+    verification_policy: str | None = None,
+    decision_summary: str | None = None,
 ) -> dict:
-    session, _, task = resolve_current_task(root, task_id, session_file)
+    session, resolved_task_id, task = resolve_current_task(root, task_id, session_file)
     pending = task.get("pending_transition")
     if not isinstance(pending, dict):
         raise StateError("No transition is pending user confirmation.")
@@ -6502,10 +7469,27 @@ def confirm_transition(
         )
     if stage and stage != target:
         raise StateError(f"Pending transition targets {target}, not {stage}.")
-    if is_automatic_transition(source, target, task_type, approval_mode):
+    drift_override = pending.get("confirmation_override") == "evidence-drift"
+    if is_automatic_transition(source, target, task_type, approval_mode) and not drift_override:
         raise StateError(
             f"Transition {source} -> {target} is automatic in {approval_mode} mode; "
             "use auto-transition instead."
+        )
+
+    if source == "VERIFICATION" and target == "MEMORY":
+        task = ensure_verification_checkpoint(
+            root, resolved_task_id, task, agent, session_file
+        )
+        append_transition_acceptance(
+            root,
+            resolved_task_id,
+            task,
+            agent,
+            approval_mode,
+            "explicit-user",
+            expected_diff_sha256,
+            verification_policy,
+            decision_summary,
         )
 
     snapshot = apply_transition(root, target, agent, task_id, session_file)
@@ -6548,6 +7532,46 @@ def memory_short_complete(
         memory_file.strip(),
         require_current_id=True,
     )
+    acceptance = latest_acceptance_record(root, resolved_task_id, task)
+    if isinstance(acceptance, dict) and acceptance.get("changed_files"):
+        try:
+            memory_text = resolved_memory_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            raise StateError(f"Cannot read short-memory file: {resolved_memory_path}") from exc
+        required_decision_fields = {
+            "diff_sha256": str(acceptance.get("diff_sha256") or ""),
+            "authorization": str(acceptance.get("authorization") or ""),
+            "approval_mode": str(acceptance.get("approval_mode") or ""),
+            "review_policy": str(acceptance.get("review_policy") or ""),
+            "verification_policy": str(acceptance.get("verification_policy") or ""),
+            "summary": str(acceptance.get("summary") or ""),
+        }
+        missing_decision_fields = [
+            field_name
+            for field_name, value in required_decision_fields.items()
+            if not value or value not in memory_text
+        ]
+        missing_changed_files = [
+            str(file_name)
+            for file_name in acceptance.get("changed_files", [])
+            if not is_non_empty_string(file_name) or str(file_name) not in memory_text
+        ]
+        missing_targeted_tasks = [
+            str(source_task_id)
+            for source_task_id in acceptance.get("required_targeted_source_tasks", [])
+            if not is_non_empty_string(source_task_id)
+            or str(source_task_id) not in memory_text
+        ]
+        if missing_decision_fields or missing_changed_files or missing_targeted_tasks:
+            missing_labels = [
+                *missing_decision_fields,
+                *(f"changed_file:{file_name}" for file_name in missing_changed_files),
+                *(f"targeted_source_task:{task_name}" for task_name in missing_targeted_tasks),
+            ]
+            raise StateError(
+                "Short memory must record the complete accepted post-verification decision; "
+                "missing: " + ", ".join(missing_labels)
+            )
     progress = task.get("memory_progress")
     if not isinstance(progress, dict):
         progress = {}
@@ -6676,6 +7700,7 @@ def close_current_task(
     if isinstance(task.get("spec_source"), dict) and task.get("status") not in TERMINAL_STATUSES:
         cancel_shared_tasks(root, str(task_id), task, reason, agent)
     if task.get("status") != "CLOSED":
+        cleanup_verification_checkpoint(root, str(task_id), task)
         task["status"] = "CLOSED"
         append_stage_history(task, "CLOSED", agent)
     task.pop("pending_transition", None)
@@ -6969,6 +7994,18 @@ def main() -> int:
     fingerprints_parser.add_argument("--agent", required=True)
     fingerprints_parser.add_argument("--task-id")
 
+    verification_checkpoint_parser = subcommands.add_parser(
+        "verification-checkpoint", parents=[common]
+    )
+    verification_checkpoint_parser.add_argument("--agent", required=True)
+    verification_checkpoint_parser.add_argument("--task-id")
+
+    inspect_transition_drift_parser = subcommands.add_parser(
+        "inspect-transition-drift", parents=[common]
+    )
+    inspect_transition_drift_parser.add_argument("--agent", required=True)
+    inspect_transition_drift_parser.add_argument("--task-id")
+
     disable_harness_parser = subcommands.add_parser("disable-harness", parents=[common])
     disable_harness_parser.add_argument("--agent", required=True)
 
@@ -6994,6 +8031,11 @@ def main() -> int:
     confirm_transition_parser.add_argument("--stage")
     confirm_transition_parser.add_argument("--agent", required=True)
     confirm_transition_parser.add_argument("--task-id")
+    confirm_transition_parser.add_argument("--diff-sha256")
+    confirm_transition_parser.add_argument(
+        "--verification-policy", choices=sorted(ACCEPTANCE_VERIFICATION_POLICIES)
+    )
+    confirm_transition_parser.add_argument("--decision-summary")
 
     auto_transition_parser = subcommands.add_parser("auto-transition", parents=[common])
     auto_transition_parser.add_argument("--stage", required=True)
@@ -7005,6 +8047,11 @@ def main() -> int:
     transition.add_argument("--stage")
     transition.add_argument("--agent", required=True)
     transition.add_argument("--task-id")
+    transition.add_argument("--diff-sha256")
+    transition.add_argument(
+        "--verification-policy", choices=sorted(ACCEPTANCE_VERIFICATION_POLICIES)
+    )
+    transition.add_argument("--decision-summary")
 
     cancel_transition_parser = subcommands.add_parser("cancel-transition", parents=[common])
     cancel_transition_parser.add_argument("--agent", required=True)
@@ -7413,6 +8460,28 @@ def main() -> int:
                     session_file,
                 )
             )
+        elif command == "verification-checkpoint":
+            emit(
+                attach_status_context(
+                    root,
+                    record_verification_checkpoint(
+                        root, agent, args.task_id, session_file
+                    ),
+                    agent,
+                    session_file,
+                )
+            )
+        elif command == "inspect-transition-drift":
+            emit(
+                attach_status_context(
+                    root,
+                    inspect_transition_drift(
+                        root, agent, args.task_id, session_file
+                    ),
+                    agent,
+                    session_file,
+                )
+            )
         elif command == "disable-harness":
             emit(
                 attach_status_context(
@@ -7469,7 +8538,16 @@ def main() -> int:
             emit(
                 attach_status_context(
                     root,
-                    confirm_transition(root, agent, args.stage, args.task_id, session_file),
+                    confirm_transition(
+                        root,
+                        agent,
+                        args.stage,
+                        args.task_id,
+                        session_file,
+                        args.diff_sha256,
+                        args.verification_policy,
+                        args.decision_summary,
+                    ),
                     agent,
                     session_file,
                 )

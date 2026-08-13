@@ -303,10 +303,14 @@ lint、typecheck、test、build。验证证据绑定实现与配置指纹；未�
 自动进入 MEMORY。Confirm 与 Auto 的区别是前者仍在 ANALYSIS → IMPLEMENT 等待一次
 方案确认。
 
-验收期间：
-- 小修复：Agent 修复后重新验证
-- 满意：确认归档
-- 取消：中断任务
+验收期间必须区分“用户提出新修复”和“外部保存已产生差异”：
+
+- 用户提出新的范围内修复：回退 IMPLEMENT，修复后重新进入 REVIEW 与 VERIFICATION；
+- 检查点后仅检测到用户或外部工具已经保存的代码差异：展示完整 diff 与
+  `diff_sha256`。用户接受当前 digest 后保留原 REVIEW 结论；非执行差异可沿用原验证，
+  可执行差异补当前指纹的定向验证，或显式记录风险豁免；
+- 用户接受且检查点未变化：按生效审批模式确认或自动进入 MEMORY；
+- 用户取消：中断任务。
 
 #### 7. 归档（MEMORY → COMPLETE）
 
