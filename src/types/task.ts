@@ -13,10 +13,17 @@ export type ApprovalMode = "approve" | "guard" | "confirm" | "auto";
 export type ConfiguredWorkflowMode = "adaptive" | "fast" | "standard" | "strict";
 export type WorkflowMode = Exclude<ConfiguredWorkflowMode, "adaptive">;
 export type WorkflowModeSource = "project" | "session" | "adaptive" | "user" | "migration";
+export type WorkflowAgentIdentity = "claude-code" | "codex" | "qoder";
+export type WorkflowActorIdentity =
+  | WorkflowAgentIdentity
+  | "cli"
+  | "cli-init"
+  | "upgrade-migration"
+  | "legacy-migration";
 
 export interface StageHistoryEntry {
   stage: Stage;
-  agent: string;
+  agent: WorkflowAgentIdentity;
   entered_at: string;
 }
 
@@ -24,7 +31,7 @@ export interface PendingTransition {
   from: Stage;
   to: Stage;
   requested_at: string;
-  requested_by: string;
+  requested_by: WorkflowActorIdentity;
   reason?: string;
   /** 自动边仅在验证快照漂移后临时转为人工确认。 */
   confirmation_override?: "evidence-drift";
@@ -46,7 +53,7 @@ export interface VerificationCheckpoint {
   /** 检查点冻结时间。 */
   recorded_at: string;
   /** 冻结检查点的规范化 Agent 身份。 */
-  recorded_by: string;
+  recorded_by: WorkflowAgentIdentity;
 }
 
 export interface MemoryInstruction {
@@ -109,7 +116,7 @@ export interface ArchitectureAssessment {
   /** 架构评估写入任务状态的 UTC 时间。 */
   recorded_at: string;
   /** 提交架构评估的规范化 Agent 身份。 */
-  recorded_by: string;
+  recorded_by: WorkflowAgentIdentity;
 }
 
 export interface MemoryProgress {
@@ -128,6 +135,8 @@ export interface MemoryProgress {
 export interface SessionFile {
   current_task: string | null;
   created_at: string;
+  agent?: WorkflowAgentIdentity;
+  last_agent?: WorkflowAgentIdentity;
   approval_mode?: ApprovalMode;
   workflow_mode?: ConfiguredWorkflowMode;
   tdd_enabled?: boolean;
@@ -213,7 +222,7 @@ export interface SpecDependencyEvidence {
     | "manual-evidence";
   evidence?: string;
   satisfied_at?: string;
-  satisfied_by?: string;
+  satisfied_by?: WorkflowAgentIdentity;
 }
 
 export interface TaskJson {
@@ -221,8 +230,8 @@ export interface TaskJson {
   title?: string;
   status: TaskStatus;
   created_at: string;
-  created_by: string;
-  last_agent: string;
+  created_by: WorkflowActorIdentity;
+  last_agent: WorkflowAgentIdentity | "cli";
   stage_history: StageHistoryEntry[];
   pending_transition?: PendingTransition;
   workflow_mode_proposal?: {
@@ -232,17 +241,17 @@ export interface TaskJson {
     source: WorkflowModeSource;
     reasons: string[];
     proposed_at: string;
-    proposed_by: string;
+    proposed_by: WorkflowAgentIdentity;
   };
   workflow_mode?: WorkflowMode;
   workflow_mode_confirmed_at?: string;
-  workflow_mode_confirmed_by?: string;
+  workflow_mode_confirmed_by?: WorkflowActorIdentity;
   workflow_mode_escalations?: Array<{
     from: WorkflowMode;
     to: WorkflowMode;
     reason: string;
     raised_at: string;
-    raised_by: string;
+    raised_by: WorkflowAgentIdentity;
   }>;
   workflow_mode_legacy?: boolean;
   workflow_mode_legacy_direct_edge?: boolean;
@@ -252,7 +261,7 @@ export interface TaskJson {
   tdd_enabled?: boolean;
   tdd_coverage_threshold?: number;
   tdd_confirmed_at?: string;
-  tdd_confirmed_by?: string;
+  tdd_confirmed_by?: WorkflowActorIdentity;
   tdd_baselines?: Record<string, string>;
   memory_progress?: MemoryProgress;
   confirmed_by_user?: boolean;
@@ -411,11 +420,28 @@ export type ExecutionRecord =
       /** 可供 MEMORY 与 Canonical 写回消费的决策摘要。 */
       summary: string;
       /** 记录验收事实的规范化 Agent 身份。 */
-      recorded_by: string;
+      recorded_by: WorkflowAgentIdentity;
       /** 验收事实写入时间。 */
       timestamp: string;
     }
-  | { type: "handoff"; from: string; stage: Stage; summary: string; timestamp: string }
+  | {
+      type: "handoff";
+      from: WorkflowAgentIdentity;
+      stage: Stage;
+      summary: string;
+      timestamp: string;
+    }
+  | {
+      type: "claim";
+      /** 接手任务的规范工作流 Agent 身份。 */
+      agent: WorkflowAgentIdentity;
+      /** 接手前 task.json 中记录的 owner；首次接手时可为空。 */
+      previous_agent: string | null;
+      /** 同一 Agent 继续任务或不同 Agent 接管任务。 */
+      action: "continue" | "takeover";
+      /** claim 审计记录的 UTC 时间。 */
+      timestamp: string;
+    }
   | {
       type: "spec-writeback";
       /** 已投影到共享 Spec 的薄动作描述。 */

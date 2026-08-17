@@ -586,6 +586,106 @@ describe("upgrade command", () => {
     expect(config.harness_version).toBe(VERSION);
   });
 
+  it("repairs beta.8 owner drift and shared Codex/Qoder constraints during upgrade", async () => {
+    await init({ agent: "codex,qoder", yes: true });
+    await markProjectInitComplete();
+    await setHarnessVersion("0.10.0-beta.8");
+
+    const taskDir = path.join(tempDir, ".easy-coding", "tasks", "08-13-forter-r1-t3");
+    const taskPath = path.join(taskDir, "task.json");
+    const executionPath = path.join(taskDir, "execution.jsonl");
+    await mkdir(taskDir, { recursive: true });
+    await writeFile(
+      taskPath,
+      `${JSON.stringify(
+        {
+          type: "feature",
+          title: "Forter fixture",
+          status: "REVIEW",
+          created_at: "2026-08-14T00:00:00Z",
+          created_by: "Codex with Easy Coding",
+          last_agent: "Codex with Easy Coding",
+          stage_history: [
+            {
+              stage: "REVIEW",
+              agent: "Codex with Easy Coding",
+              entered_at: "2026-08-14T00:01:00Z",
+            },
+          ],
+          workflow_mode: "standard",
+          workflow_mode_confirmed_by: "Codex with Easy Coding",
+          tdd_enabled: false,
+          tdd_confirmed_by: "Codex with Easy Coding",
+        },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+    const historicalExecution = `${JSON.stringify({
+      type: "handoff",
+      from: "Codex with Easy Coding",
+      stage: "REVIEW",
+      summary: "Historical audit attribution",
+      timestamp: "2026-08-14T00:02:00Z",
+    })}\n`;
+    await writeFile(executionPath, historicalExecution, "utf8");
+
+    const sessionPath = path.join(
+      tempDir,
+      ".easy-coding",
+      "sessions",
+      "codex-upgrade-fixture.json",
+    );
+    await writeFile(
+      sessionPath,
+      `${JSON.stringify(
+        {
+          current_task: "08-13-forter-r1-t3",
+          created_at: "2026-08-14T00:00:00Z",
+          agent: "codex",
+          last_agent: "Codex with Easy Coding",
+        },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+
+    const constraintPath = path.join(tempDir, "AGENTS.md");
+    await writeFile(
+      constraintPath,
+      (await readFile(constraintPath, "utf8")).replace(
+        "## Runtime contract",
+        "## Runtime contract\n\n- stale platform route: `.qoder/hooks/easy_coding_state.py` only",
+      ),
+      "utf8",
+    );
+
+    await upgrade({ yes: true });
+
+    const migratedTask = JSON.parse(await readFile(taskPath, "utf8"));
+    expect(migratedTask).toMatchObject({
+      created_by: "codex",
+      last_agent: "codex",
+      workflow_mode_confirmed_by: "codex",
+      tdd_confirmed_by: "codex",
+    });
+    expect(migratedTask.stage_history[0].agent).toBe("codex");
+    expect(JSON.parse(await readFile(sessionPath, "utf8"))).toMatchObject({
+      agent: "codex",
+      last_agent: "codex",
+    });
+    expect(await readFile(executionPath, "utf8")).toBe(historicalExecution);
+
+    const refreshedConstraint = await readFile(constraintPath, "utf8");
+    expect(refreshedConstraint).not.toContain("stale platform route");
+    expect(refreshedConstraint).toContain("`.codex/hooks/easy_coding_state.py`");
+    expect(refreshedConstraint).toContain("`.qoder/hooks/easy_coding_state.py`");
+    const config = await readConfigYaml(path.join(tempDir, ".easy-coding", "config.yaml"));
+    expect(config.harness_version).toBe(VERSION);
+  });
+
   it("refreshes stale supermodule parent topology even when all targets are current", async () => {
     await writeFile(
       path.join(tempDir, ".gitmodules"),

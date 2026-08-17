@@ -8,12 +8,10 @@ const STALE_THRESHOLD_MS = 30 * 24 * 60 * 60 * 1000;
 const SESSION_KEY_PATTERN = /^[A-Za-z0-9._-]+$/;
 
 export type SessionFileWithMetadata = SessionFile & {
-  agent?: string;
   external_session_id?: string | null;
   session_key?: string;
   session_source?: string;
   last_active_at?: string;
-  last_agent?: string;
 };
 
 export interface SessionEntry {

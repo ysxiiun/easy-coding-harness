@@ -1,6 +1,7 @@
 export type AgentPlatform = "claude-code" | "codex" | "qoder";
 
 export interface TemplateContext {
+  workflow_agent_id: AgentPlatform;
   sub_agent_dispatch: string;
   platform_spawn_instruction: string;
   skill_trigger: "/" | "$";
@@ -46,6 +47,7 @@ export const PLATFORM_META: Record<AgentPlatform, PlatformMeta> = {
     stateInjectEvent: ["SessionStart", "UserPromptSubmit"],
     hasSubagentContext: true,
     templateContext: {
+      workflow_agent_id: "claude-code",
       sub_agent_dispatch: "Agent tool",
       platform_spawn_instruction:
         'Use the Agent tool with run_in_background when useful; use isolation: "worktree" for parallel file edits.',
@@ -70,6 +72,7 @@ export const PLATFORM_META: Record<AgentPlatform, PlatformMeta> = {
     stateInjectEvent: ["SessionStart", "UserPromptSubmit"],
     hasSubagentContext: false,
     templateContext: {
+      workflow_agent_id: "codex",
       sub_agent_dispatch: "Codex sub-agent dispatch",
       platform_spawn_instruction:
         "Use Codex sub-agent delegation where available; pass the full task card in the prompt.",
@@ -95,6 +98,7 @@ export const PLATFORM_META: Record<AgentPlatform, PlatformMeta> = {
     hasSubagentContext: true,
     cnVariant: ".qodercn",
     templateContext: {
+      workflow_agent_id: "qoder",
       sub_agent_dispatch: "Agent tool",
       platform_spawn_instruction:
         "Use the Agent tool with worktree isolation for parallel file edits.",

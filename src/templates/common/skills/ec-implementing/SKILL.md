@@ -40,7 +40,9 @@ Communicate with the user in the user's language.
    author value must be `<Current Agent Name> with Easy Coding`, for example
    `Codex with Easy Coding`. `Current Agent Name` means the user-facing host Agent (for example,
    Codex, Claude, or Qoder), never an implementation sub-agent role such as `ec-implementer`.
-   Never copy a previous human or Agent name into newly authored code.
+   This value is display attribution only: never pass it to the workflow state API's `--agent`,
+   which accepts only `claude-code`, `codex`, or `qoder`. Never copy a previous human or Agent name
+   into newly authored code.
 9. Every newly added field in a data-bearing model must have a meaningful field-level comment.
    This includes new or extended entity/DO/DTO/VO/BO, request/response, configuration, and similar
    model types. Every new enum member and every new declared constant requires the same treatment.

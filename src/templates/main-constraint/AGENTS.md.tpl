@@ -115,8 +115,14 @@ First run `ec-init`; daily work goes through `ec-workflow`.
 
 ## Runtime contract
 
-- Workflow state operations go through `{{platform_config_dir}}/hooks/easy_coding_state.py`;
-  do not hand-edit session files, `current_task`, task `status`, `stage_history`,
+- Workflow state operations use the script installed for the active host: Codex uses
+  `.codex/hooks/easy_coding_state.py`, while Qoder uses its installed `.qoder/hooks/easy_coding_state.py`
+  or `.qodercn/hooks/easy_coding_state.py` variant.
+  Never substitute one platform's script for the other, and pass only the canonical owner ID
+  (`codex` or `qoder`) to `--agent`; display attribution such as `Codex with Easy Coding` is not
+  a workflow identity. The installed script's embedded platform identity, canonical owner, and
+  injected session namespace must agree. Do not hand-edit session files, `current_task`, task
+  `status`, `stage_history`,
   `pending_transition`, `verification_checkpoint`, workflow/TDD proposal or freeze fields,
   `memory_progress`, or `last_agent`.
 - The hook injects `[easy-coding:session-file:P]`; pass that path to the state script with

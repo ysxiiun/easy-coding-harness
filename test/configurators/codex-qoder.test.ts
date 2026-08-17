@@ -1,4 +1,4 @@
-import { execFileSync, execSync } from "node:child_process";
+import { execFileSync, execSync, spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -373,6 +373,106 @@ describe("configureCodex", () => {
     );
     expect(hookPaths).toContain(".codex/hooks/session-start.py");
   }, 15_000);
+});
+
+describe("shared Codex and Qoder constraints", () => {
+  it("keeps the shared AGENTS generated region independent of installation order", async () => {
+    const codexFirst = path.join(tempDir, "codex-first");
+    const qoderFirst = path.join(tempDir, "qoder-first");
+
+    await configureCodex(codexFirst);
+    await configureQoder(codexFirst);
+    await configureQoder(qoderFirst);
+    await configureCodex(qoderFirst);
+
+    const codexFirstConstraint = await readFile(path.join(codexFirst, "AGENTS.md"), "utf8");
+    const qoderFirstConstraint = await readFile(path.join(qoderFirst, "AGENTS.md"), "utf8");
+    expect(codexFirstConstraint).toBe(qoderFirstConstraint);
+    expect(codexFirstConstraint).toContain("Codex uses\n  `.codex/hooks/easy_coding_state.py`");
+    expect(codexFirstConstraint).toContain(
+      "Qoder uses its installed `.qoder/hooks/easy_coding_state.py`",
+    );
+    expect(codexFirstConstraint).toContain("`.qodercn/hooks/easy_coding_state.py` variant");
+    expect(codexFirstConstraint).toContain("Never substitute one platform's script");
+  });
+
+  it("rejects a canonical Codex owner when the Qoder state script is invoked", async () => {
+    await configureCodex(tempDir);
+    await configureQoder(tempDir);
+    await mkdir(path.join(tempDir, ".easy-coding"), { recursive: true });
+    const codexStateApi = path.join(tempDir, ".codex", "hooks", "easy_coding_state.py");
+    const qoderStateApi = path.join(tempDir, ".qoder", "hooks", "easy_coding_state.py");
+    expect(await readFile(codexStateApi, "utf8")).toContain(
+      'INSTALLED_WORKFLOW_AGENT = "codex"',
+    );
+    expect(await readFile(qoderStateApi, "utf8")).toContain(
+      'INSTALLED_WORKFLOW_AGENT = "qoder"',
+    );
+
+    const mismatch = spawnSync(
+      "python3",
+      [
+        qoderStateApi,
+        "create-task",
+        "--task-id",
+        "08-13-cross-platform",
+        "--type",
+        "feature",
+        "--title",
+        "Cross-platform mismatch",
+        "--agent",
+        "codex",
+        "--no-set-current",
+      ],
+      { cwd: tempDir, encoding: "utf8", env: cleanAgentEnvironment() },
+    );
+
+    expect(mismatch.status).toBe(1);
+    expect(mismatch.stderr).toContain(
+      "Workflow agent mismatch: script belongs to qoder, but --agent resolved to codex",
+    );
+    expect(
+      await pathExists(
+        path.join(tempDir, ".easy-coding", "tasks", "08-13-cross-platform", "task.json"),
+      ),
+    ).toBe(false);
+
+    const sessionMismatch = spawnSync(
+      "python3",
+      [
+        qoderStateApi,
+        "create-task",
+        "--session-file",
+        ".easy-coding/sessions/codex-thread.json",
+        "--task-id",
+        "08-13-cross-session",
+        "--type",
+        "feature",
+        "--title",
+        "Cross-session mismatch",
+        "--agent",
+        "qoder",
+        "--no-set-current",
+      ],
+      { cwd: tempDir, encoding: "utf8", env: cleanAgentEnvironment() },
+    );
+    expect(sessionMismatch.status).toBe(1);
+    expect(sessionMismatch.stderr).toContain(
+      "Workflow session mismatch: session belongs to codex, but the state operation resolved to qoder",
+    );
+    expect(
+      await pathExists(
+        path.join(tempDir, ".easy-coding", "tasks", "08-13-cross-session", "task.json"),
+      ),
+    ).toBe(false);
+    expect(
+      execFileSync("python3", [qoderStateApi, "memory-new-id", "--agent", "qoder"], {
+        cwd: tempDir,
+        encoding: "utf8",
+        env: cleanAgentEnvironment(),
+      }),
+    ).toContain('"memory_id": "SM-');
+  });
 });
 
 describe("configureQoder", () => {

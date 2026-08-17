@@ -4975,6 +4975,65 @@ describe("easy_coding_state.py handoff and claim", () => {
     expect(statusContext).not.toContain("[easy-coding:handoff-from:root]");
   });
 
+  it("does not infer a handoff from a legacy display attribution without a handoff record", async () => {
+    await writeSessionFixture("08-13-forter-r1-t3");
+    await writeTaskFixture("08-13-forter-r1-t3", "IMPLEMENT", "Codex with Easy Coding");
+
+    const statusContext = execFileSync(
+      "python3",
+      [
+        "-c",
+        [
+          "import sys",
+          "from pathlib import Path",
+          "sys.path.insert(0, str(Path(sys.argv[1]).parent))",
+          "import easy_coding_state as state",
+          "root = Path.cwd()",
+          "session = state.load_session(root, '.easy-coding/sessions/test.json')",
+          "print(state.build_status_context(root, session, 'codex', '.easy-coding/sessions/test.json'))",
+        ].join("; "),
+        stateApiPath(),
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+
+    expect(statusContext).not.toContain("Handoff ->");
+    expect(statusContext).not.toContain("[easy-coding:handoff-from:");
+  });
+
+  it("rejects display attribution as workflow ownership without mutating the task", async () => {
+    await writeSessionFixture(null);
+    await writeTaskFixture("08-13-display-owner", "IMPLEMENT", "codex");
+
+    const result = spawnSync(
+      "python3",
+      [
+        stateApiPath(),
+        "claim-task",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--task-id",
+        "08-13-display-owner",
+        "--agent",
+        "Codex with Easy Coding",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("display attribution");
+    const task = JSON.parse(
+      await readFile(
+        path.join(tempDir, ".easy-coding", "tasks", "08-13-display-owner", "task.json"),
+        "utf8",
+      ),
+    );
+    expect(task.last_agent).toBe("codex");
+    expect(
+      await readFile(path.join(tempDir, ".easy-coding", "sessions", "test.json"), "utf8"),
+    ).not.toContain("08-13-display-owner");
+  });
+
   it("writes a target-less handoff record and clears the current session pointer", async () => {
     await writeSessionFixture("06-26-handoff");
     await writeTaskFixture("06-26-handoff", "ANALYSIS", "codex", {
@@ -5037,6 +5096,27 @@ describe("easy_coding_state.py handoff and claim", () => {
       ),
     );
     expect(task.pending_transition).toMatchObject({ from: "ANALYSIS", to: "IMPLEMENT" });
+
+    await writeSessionFixture("06-26-handoff");
+    const pendingContext = execFileSync(
+      "python3",
+      [
+        "-c",
+        [
+          "import sys",
+          "from pathlib import Path",
+          "sys.path.insert(0, str(Path(sys.argv[1]).parent))",
+          "import easy_coding_state as state",
+          "root = Path.cwd()",
+          "session = state.load_session(root, '.easy-coding/sessions/test.json')",
+          "print(state.build_status_context(root, session, 'qoder', '.easy-coding/sessions/test.json'))",
+        ].join("; "),
+        stateApiPath(),
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    expect(pendingContext).toContain("Handoff -> `codex`");
+    expect(pendingContext).toContain("[easy-coding:handoff-from:codex]");
   });
 
   it("marks task list entries as continue or takeover for the current agent", async () => {
@@ -5122,6 +5202,7 @@ describe("easy_coding_state.py handoff and claim", () => {
     expect(snapshot.previous_agent).toBe("claude-code");
     expect(snapshot.latest_handoff.summary).toBe("Continue from unit B.");
     expect(snapshot.status_context).toContain("[current-task:06-26-claim]");
+    expect(snapshot.status_context).not.toContain("Handoff ->");
 
     const task = JSON.parse(
       await readFile(path.join(tempDir, ".easy-coding", "tasks", "06-26-claim", "task.json"), "utf8"),
@@ -5131,6 +5212,21 @@ describe("easy_coding_state.py handoff and claim", () => {
     );
     expect(task.last_agent).toBe("codex");
     expect(session.current_task).toBe("06-26-claim");
+    const execution = (
+      await readFile(
+        path.join(tempDir, ".easy-coding", "tasks", "06-26-claim", "execution.jsonl"),
+        "utf8",
+      )
+    )
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(execution.at(-1)).toMatchObject({
+      type: "claim",
+      agent: "codex",
+      previous_agent: "claude-code",
+      action: "takeover",
+    });
   });
 
   it("canonicalizes a Codex root caller for session resolution and persisted ownership", async () => {

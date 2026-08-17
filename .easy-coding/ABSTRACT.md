@@ -52,11 +52,19 @@
 
 安装后的 workflow 以 `.easy-coding/` 作为跨 agent dead-drop 状态目录，核心产物包括 `task.json`、`execution.jsonl`、dev-spec、memory 与配置文件。流程强调阶段流转、确认门控、验证门控和用户验收后记忆归档。
 
+工作流 owner 只使用 `claude-code` / `codex` / `qoder` 规范平台身份，与作者/
+Canonical 展示归属（如 `Codex with Easy Coding`）分离。显式 `handoff` 与 `claim`
+记录是交接状态的事实源，`last_agent` 差异只能用于判断 continue/takeover，不能
+单独推导已发生 handoff。安装后的状态脚本会固化所属平台身份；该身份、规范 owner 与
+session 命名空间必须一致，否则在落盘前拒绝。
+
 ## 平台适配模型
 
 - 平台无关层：skill 模板、shared hooks、runtime 数据结构。
 - 平台适配层：目录路径、配置文件格式、hook 配置、agent 定义格式、主约束文件。
 - 模板变量：`{{placeholder}}` 在安装时按平台替换，例如触发符、agent 名称、路径和配置差异。
+- Codex 与 Qoder 共用 `AGENTS.md`；共用生成区必须与平台安装顺序无关，并同时声明
+  两者各自的状态脚本路径，不得由最后一个 configurator 覆盖成单平台路径。
 
 ## 关键约束
 

@@ -145,8 +145,18 @@ ACCEPTANCE_SNAPSHOT_SCHEMA = 1
 ACCEPTANCE_VERIFICATION_POLICIES = {"carry-forward", "targeted", "waived"}
 SESSION_STALE_THRESHOLD_HOURS = 30 * 24
 SESSION_COMPONENT_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
+WORKFLOW_AGENT_IDENTITIES = {"claude-code", "codex", "qoder"}
+# 安装时固化的宿主身份是生产事实源；未渲染源码保留占位符供本仓测试直接加载。
+INSTALLED_WORKFLOW_AGENT = "{{workflow_agent_id}}"
 SESSION_AGENT_NAMESPACES = {"claude-code", "codex", "qoder", "unknown"}
 CODEX_AGENT_PATH_PATTERN = re.compile(r"^/?root(?:/[a-z0-9._-]+)*$")
+LEGACY_DISPLAY_AGENT_IDENTITIES = {
+    "claude with easy coding": "claude-code",
+    "claude-code with easy coding": "claude-code",
+    "claude code with easy coding": "claude-code",
+    "codex with easy coding": "codex",
+    "qoder with easy coding": "qoder",
+}
 LEGACY_STATE_LOCK_TIMEOUT_SECONDS = 5.0
 LEGACY_STATE_LOCK_STALE_SECONDS = 60.0
 LEGACY_STATE_LOCK_POLL_SECONDS = 0.02
@@ -226,14 +236,25 @@ def short_memory_id_sort_key(memory_id: str) -> tuple[int, str]:
     return (2, memory_id)
 
 
-def normalize_agent_identity(agent: str | None) -> str:
+def canonical_agent_identity(agent: str | None, allow_legacy_display: bool = False) -> str | None:
     raw_agent = str(agent or "unknown").strip()
     normalized = raw_agent.lower()
     # Codex 可能把根执行者写成 root 或 /root；两者及其协作子路径都属于同一平台身份。
     if CODEX_AGENT_PATH_PATTERN.fullmatch(normalized):
         return "codex"
-    if normalized in SESSION_AGENT_NAMESPACES:
+    if normalized in WORKFLOW_AGENT_IDENTITIES:
         return normalized
+    if allow_legacy_display:
+        return LEGACY_DISPLAY_AGENT_IDENTITIES.get(normalized)
+    return None
+
+
+def normalize_agent_identity(agent: str | None) -> str:
+    raw_agent = str(agent or "unknown").strip()
+    # 旧数据可能误把展示署名写入 owner；只在读取兼容边界将其还原为规范身份。
+    canonical = canonical_agent_identity(raw_agent, allow_legacy_display=True)
+    if canonical is not None:
+        return canonical
     return raw_agent
 
 
@@ -247,6 +268,9 @@ def agents_equivalent(first: str | None, second: str | None) -> bool:
 
 
 def detect_runtime_agent() -> str:
+    if INSTALLED_WORKFLOW_AGENT in WORKFLOW_AGENT_IDENTITIES:
+        return INSTALLED_WORKFLOW_AGENT
+    # 仅供未渲染源码和旧安装兼容；新安装脚本始终走上面的固化身份。
     script_path = Path(sys.argv[0]).as_posix()
     if ".qoder/" in script_path or ".qodercn/" in script_path:
         return "qoder"
@@ -260,6 +284,45 @@ def detect_runtime_agent() -> str:
     if os.environ.get("CLAUDE_PROJECT_DIR"):
         return "claude-code"
     return "unknown"
+
+
+def resolve_state_agent(explicit_agent: str | None) -> str:
+    runtime_agent = detect_runtime_agent()
+    explicit_identity = None
+    if explicit_agent is not None:
+        explicit_identity = canonical_agent_identity(explicit_agent)
+        if explicit_identity is None:
+            raise StateError(
+                "Workflow --agent must be one of claude-code, codex, or qoder; "
+                "display attribution such as 'Codex with Easy Coding' is not an agent identity."
+            )
+    if runtime_agent in WORKFLOW_AGENT_IDENTITIES:
+        if explicit_identity is not None and explicit_identity != runtime_agent:
+            raise StateError(
+                f"Workflow agent mismatch: script belongs to {runtime_agent}, "
+                f"but --agent resolved to {explicit_identity}. Use the active platform's state script."
+            )
+        return runtime_agent
+    return explicit_identity or "unknown"
+
+
+def validate_session_agent(agent: str, session_file: str | Path | None) -> None:
+    if session_file is None or agent not in WORKFLOW_AGENT_IDENTITIES:
+        return
+    session_name = Path(str(session_file)).name
+    session_agent = next(
+        (
+            candidate
+            for candidate in WORKFLOW_AGENT_IDENTITIES
+            if session_name.startswith(f"{candidate}-")
+        ),
+        None,
+    )
+    if session_agent is not None and session_agent != agent:
+        raise StateError(
+            f"Workflow session mismatch: session belongs to {session_agent}, "
+            f"but the state operation resolved to {agent}. Use the active session's state script."
+        )
 
 
 def normalize_session_component(value: str) -> str:
@@ -1183,9 +1246,17 @@ def normalize_legacy_stage(stage: object) -> object:
 
 
 def normalize_legacy_task(task: dict) -> bool:
-    """Normalize pre-0.6 stage names without touching task artifacts outside task.json."""
+    """Normalize legacy task state without touching artifacts outside task.json."""
     legacy_status = str(task.get("status") or "")
     changed = False
+
+    for field in ("created_by", "last_agent"):
+        normalized_agent = canonical_agent_identity(
+            task.get(field), allow_legacy_display=True
+        )
+        if normalized_agent is not None and normalized_agent != task.get(field):
+            task[field] = normalized_agent
+            changed = True
 
     if legacy_status in LEGACY_STAGE_MAP:
         task["status"] = LEGACY_STAGE_MAP[legacy_status]
@@ -1201,6 +1272,12 @@ def normalize_legacy_task(task: dict) -> bool:
             mapped_stage = normalize_legacy_stage(entry.get("stage"))
             if mapped_stage != entry.get("stage"):
                 entry["stage"] = mapped_stage
+                changed = True
+            normalized_agent = canonical_agent_identity(
+                entry.get("agent"), allow_legacy_display=True
+            )
+            if normalized_agent is not None and normalized_agent != entry.get("agent"):
+                entry["agent"] = normalized_agent
                 changed = True
             if normalized_history and normalized_history[-1].get("stage") == entry.get("stage"):
                 changed = True
@@ -1316,7 +1393,12 @@ def migrate_legacy_state(root: Path, agent: str) -> dict | None:
             if "stage_history" not in task or not task["stage_history"]:
                 task["stage_history"] = old_state.get("stage_history", [])
             if "last_agent" not in task or not task["last_agent"]:
-                task["last_agent"] = old_state.get("last_agent", agent)
+                task["last_agent"] = (
+                    canonical_agent_identity(
+                        old_state.get("last_agent"), allow_legacy_display=True
+                    )
+                    or agent
+                )
             if old_state.get("confirmed_by_user"):
                 task["confirmed_by_user"] = True
             if old_state.get("test_strategy_confirmed"):
@@ -4683,6 +4765,28 @@ def latest_handoff_record(root: Path, task_id: str) -> dict | None:
     return latest
 
 
+def pending_handoff_record(root: Path, task_id: str) -> dict | None:
+    path = execution_log_path(root, task_id)
+    if not path.exists():
+        return None
+    latest_coordination: dict | None = None
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(record, dict) and record.get("type") in {"handoff", "claim"}:
+                latest_coordination = record
+    except OSError:
+        return None
+    if latest_coordination and latest_coordination.get("type") == "handoff":
+        return latest_coordination
+    return None
+
+
 def assert_safe_task_id(task_id: str) -> None:
     path = Path(task_id)
     if not task_id or path.is_absolute() or "/" in task_id or "\\" in task_id or ".." in path.parts:
@@ -4912,9 +5016,10 @@ def build_status_line(
     if task_id:
         status = str(state["status"])
         line = f"{status_brand} · `{task_id}` · `{status}`"
-        last_agent = state.get("last_agent")
-        if agent and last_agent and not agents_equivalent(last_agent, agent):
-            line += f" · Handoff -> `{last_agent}`"
+        handoff = pending_handoff_record(root, str(task_id))
+        handoff_from = handoff.get("from") if handoff else None
+        if agent and handoff_from and not agents_equivalent(handoff_from, agent):
+            line += f" · Handoff -> `{handoff_from}`"
         if state["is_terminal"] or state["task_missing"]:
             line += f" · {HELP_SUFFIX}"
         return line
@@ -4961,9 +5066,10 @@ def build_machine_breadcrumbs(
         lines.append(f"[current-task:{task_id}]")
         if state["task_missing"]:
             lines.append(f"[easy-coding:current-task-missing:{task_id}]")
-        last_agent = state.get("last_agent")
-        if agent and last_agent and not agents_equivalent(last_agent, agent):
-            lines.append(f"[easy-coding:handoff-from:{last_agent}]")
+        handoff = pending_handoff_record(root, str(task_id))
+        handoff_from = handoff.get("from") if handoff else None
+        if agent and handoff_from and not agents_equivalent(handoff_from, agent):
+            lines.append(f"[easy-coding:handoff-from:{handoff_from}]")
         pending = state.get("pending_transition")
         if isinstance(pending, dict):
             source = str(pending.get("from") or stage)
@@ -5392,11 +5498,21 @@ def claim_task(root: Path, task_id: str, agent: str, session_file: str | Path | 
     session["last_agent"] = agent
     write_session(root, session, session_file)
 
+    claim = {
+        "type": "claim",
+        "agent": agent,
+        "previous_agent": previous_agent,
+        "action": action,
+        "timestamp": now_iso(),
+    }
+    append_execution_record(root, task_id, claim)
+
     snapshot = snapshot_state(root, session_file, session)
     snapshot["task_id"] = task_id
     snapshot["action"] = action
     snapshot["previous_agent"] = previous_agent
     snapshot["latest_handoff"] = latest_handoff
+    snapshot["claim"] = claim
     return snapshot
 
 
@@ -5531,10 +5647,9 @@ SPEC_WRITEBACK_APP = "easy-coding"
 
 
 def spec_writeback_agent(agent: str) -> str:
-    raw_agent = str(agent).strip()
-    if raw_agent.endswith(" with Easy Coding"):
-        return raw_agent
-    normalized = normalize_agent_identity(raw_agent)
+    normalized = canonical_agent_identity(agent)
+    if normalized is None:
+        raise StateError("Canonical Spec attribution requires a canonical workflow agent identity.")
     display_name = {
         "claude-code": "Claude Code",
         "codex": "Codex",
@@ -8111,9 +8226,8 @@ def main() -> int:
         root = resolve_root(getattr(args, "cwd", None))
         session_file = getattr(args, "session_file", None)
         command = args.command or "snapshot"
-        agent = normalize_agent_identity(
-            getattr(args, "agent", None) or detect_runtime_agent()
-        )
+        agent = resolve_state_agent(getattr(args, "agent", None))
+        validate_session_agent(agent, session_file)
         session_agent = normalize_session_agent(agent)
         visible_agent = None if agent == "unknown" else agent
         if session_file is None and command == "project-init-complete":

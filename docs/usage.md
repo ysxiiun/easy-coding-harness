@@ -276,7 +276,8 @@ Agent 按确认的方案执行编码，严格限制在改动范围表列出的�
 - 允许符合局部惯例、含义直观且作用域很小的魔法值；常量用于复用、稳定领域/配置/协议语义
   或项目既有惯例，不为单个 getter 的 return 单独创建常量
 - 项目需要作者署名时，署名使用当前宿主 Agent 与 Easy Coding 的组合，例如
-  `Codex with Easy Coding`
+  `Codex with Easy Coding`；这只是作者/Canonical 展示名，不得作为状态 API 的
+  `--agent`。工作流 owner 只使用 `claude-code` / `codex` / `qoder`
 - 新增或扩展 DO/DTO/VO/BO、entity、请求/响应、配置等数据模型时，每个新增字段都必须
   写清语义；枚举成员和常量同样逐项注释，并按需说明单位、格式、取值、空值、默认值或兼容约束
 - 新增核心 Java 类的每个方法和字段、已有核心类中新增或实质修改的方法和字段必须有
@@ -442,11 +443,16 @@ handoff 会保留当前阶段、冻结工作流模式和 `pending_transition`。
 > **Easy Coding** · **Approval: Guard** · **Workflow: Standard** · `add-search` · `IMPLEMENT`
 ```
 
-如果是交接来的任务：
+如果存在未被 `claim-task` 消费的显式 `handoff` 记录：
 
 ```
 > **Easy Coding** · **Approval: Guard** · **Workflow: Standard** · `add-search` · `IMPLEMENT` · Handoff -> `claude-code`
 ```
+
+状态行不再仅因 `last_agent` 与当前 Agent 字符串不同就推测 handoff。Codex 和
+Qoder 共用的 `AGENTS.md` 会同时列出 Codex 与 Qoder/Qoder CN 的状态脚本路径，当前宿主
+必须使用自己的脚本；安装后的脚本会固化所属平台身份，该身份、`--agent` 与 session
+命名空间不一致时操作会在落盘前被拒绝。
 
 ---
 

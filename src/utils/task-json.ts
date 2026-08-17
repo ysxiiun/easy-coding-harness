@@ -8,7 +8,7 @@ import {
 } from "../constants/paths.js";
 import { VERSION } from "../constants/version.js";
 import type { AgentPlatform } from "../types/platform.js";
-import type { Stage, TaskJson, TaskStatus } from "../types/task.js";
+import type { Stage, TaskJson, TaskStatus, WorkflowAgentIdentity } from "../types/task.js";
 import {
   type ConfiguredWorkflowMode,
   DEFAULT_TDD_COVERAGE_THRESHOLD,
@@ -59,7 +59,11 @@ export function createProjectInitTask(params: {
   };
 }
 
-export function enterTaskStage(task: TaskJson, stage: Stage, agent: string): TaskJson {
+export function enterTaskStage(
+  task: TaskJson,
+  stage: Stage,
+  agent: WorkflowAgentIdentity,
+): TaskJson {
   return {
     ...task,
     status: stage,
@@ -126,6 +130,103 @@ function migrateStage(value: unknown): unknown {
   return isLegacyStage(value) ? LEGACY_STAGE_MAP[value] : value;
 }
 
+const LEGACY_DISPLAY_AGENT_IDENTITIES: Record<string, AgentPlatform> = {
+  "claude with easy coding": "claude-code",
+  "claude-code with easy coding": "claude-code",
+  "claude code with easy coding": "claude-code",
+  "codex with easy coding": "codex",
+  "qoder with easy coding": "qoder",
+};
+
+function migratedAgentIdentity(value: unknown): AgentPlatform | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "claude-code" || normalized === "codex" || normalized === "qoder") {
+    return normalized;
+  }
+  if (/^\/?root(?:\/[a-z0-9._-]+)*$/.test(normalized)) return "codex";
+  return LEGACY_DISPLAY_AGENT_IDENTITIES[normalized];
+}
+
+function migrateAgentFields(record: Record<string, unknown>, fields: string[]): boolean {
+  let changed = false;
+  for (const field of fields) {
+    const migrated = migratedAgentIdentity(record[field]);
+    if (migrated && migrated !== record[field]) {
+      record[field] = migrated;
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+interface AgentFieldGroup {
+  record: Record<string, unknown>;
+  fields: string[];
+}
+
+function taskAgentFieldGroups(task: Record<string, unknown>): AgentFieldGroup[] {
+  const groups: AgentFieldGroup[] = [
+    {
+      record: task,
+      fields: ["created_by", "last_agent", "workflow_mode_confirmed_by", "tdd_confirmed_by"],
+    },
+  ];
+  for (const field of ["pending_transition", "workflow_mode_proposal", "verification_checkpoint"]) {
+    const value = task[field];
+    if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+    const identityField =
+      field === "pending_transition"
+        ? "requested_by"
+        : field === "workflow_mode_proposal"
+          ? "proposed_by"
+          : "recorded_by";
+    groups.push({ record: value as Record<string, unknown>, fields: [identityField] });
+  }
+  if (Array.isArray(task.workflow_mode_escalations)) {
+    for (const escalation of task.workflow_mode_escalations) {
+      if (!escalation || typeof escalation !== "object" || Array.isArray(escalation)) continue;
+      groups.push({ record: escalation as Record<string, unknown>, fields: ["raised_by"] });
+    }
+  }
+  const memoryProgress = task.memory_progress;
+  if (memoryProgress && typeof memoryProgress === "object" && !Array.isArray(memoryProgress)) {
+    const assessment = (memoryProgress as Record<string, unknown>).architecture_assessment;
+    if (assessment && typeof assessment === "object" && !Array.isArray(assessment)) {
+      groups.push({ record: assessment as Record<string, unknown>, fields: ["recorded_by"] });
+    }
+  }
+  if (Array.isArray(task.spec_dependency_evidence)) {
+    for (const evidence of task.spec_dependency_evidence) {
+      if (!evidence || typeof evidence !== "object" || Array.isArray(evidence)) continue;
+      groups.push({ record: evidence as Record<string, unknown>, fields: ["satisfied_by"] });
+    }
+  }
+  if (Array.isArray(task.stage_history)) {
+    for (const entry of task.stage_history) {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+      groups.push({ record: entry as Record<string, unknown>, fields: ["agent"] });
+    }
+  }
+  return groups;
+}
+
+function migrateTaskAgentIdentities(task: Record<string, unknown>): boolean {
+  return taskAgentFieldGroups(task).reduce(
+    (changed, group) => migrateAgentFields(group.record, group.fields) || changed,
+    false,
+  );
+}
+
+function hasLegacyTaskAgentIdentities(task: Record<string, unknown>): boolean {
+  return taskAgentFieldGroups(task).some(({ record, fields }) =>
+    fields.some((field) => {
+      const migrated = migratedAgentIdentity(record[field]);
+      return migrated !== undefined && migrated !== record[field];
+    }),
+  );
+}
+
 function migrateStageHistory(task: Record<string, unknown>): boolean {
   if (!Array.isArray(task.stage_history)) return false;
 
@@ -172,7 +273,8 @@ function migrateTaskWorkflowState(task: Record<string, unknown>): boolean {
             (entry as Record<string, unknown>).stage === "WAITING_CONFIRM",
         )
     : null;
-  let changed = migrateStageHistory(task);
+  let changed = migrateTaskAgentIdentities(task);
+  changed = migrateStageHistory(task) || changed;
 
   if (legacyStatus) {
     task.status = LEGACY_STAGE_MAP[legacyStatus];
@@ -242,7 +344,7 @@ function migrateTaskWorkflowState(task: Record<string, unknown>): boolean {
 }
 
 function migrateSessionBehavior(session: Record<string, unknown>): boolean {
-  let changed = false;
+  let changed = migrateAgentFields(session, ["agent", "last_agent"]);
   const legacyMode = session.confirm_mode;
   const legacyLite = legacyMode === "lite";
   if (!["approve", "guard", "confirm", "auto"].includes(String(session.approval_mode ?? ""))) {
@@ -402,6 +504,7 @@ export async function hasLegacyWorkflowState(cwd: string): Promise<boolean> {
     const task = await readJsonRecord(filePath);
     if (!task) continue;
     if (
+      hasLegacyTaskAgentIdentities(task) ||
       isLegacyStage(task.status) ||
       (!["PENDING", "COMPLETE", "CLOSED"].includes(String(task.status ?? "")) &&
         String(task.type ?? "") !== "project-init" &&
@@ -422,7 +525,16 @@ export async function hasLegacyWorkflowState(cwd: string): Promise<boolean> {
   for (const filePath of await sessionFiles(cwd)) {
     const session = await readJsonRecord(filePath);
     if (!session) continue;
-    if (isLegacyStage(session.last_seen_stage) || "confirm_mode" in session) return true;
+    if (
+      ["agent", "last_agent"].some((field) => {
+        const migrated = migratedAgentIdentity(session[field]);
+        return migrated !== undefined && migrated !== session[field];
+      }) ||
+      isLegacyStage(session.last_seen_stage) ||
+      "confirm_mode" in session
+    ) {
+      return true;
+    }
   }
   return false;
 }

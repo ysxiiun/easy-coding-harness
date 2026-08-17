@@ -165,6 +165,97 @@ describe("task-json", () => {
     expect(session.last_seen_stage).toBe("ANALYSIS");
   });
 
+  it("migrates legacy owner aliases without rewriting immutable execution attribution", async () => {
+    const taskPath = getTaskJsonPath(tempDir, "legacy-owner");
+    const executionPath = path.join(path.dirname(taskPath), "execution.jsonl");
+    await mkdir(path.dirname(taskPath), { recursive: true });
+    await writeFile(
+      taskPath,
+      JSON.stringify({
+        type: "feature",
+        status: "REVIEW",
+        created_at: "2026-08-14T00:00:00Z",
+        created_by: "Codex with Easy Coding",
+        last_agent: "Codex with Easy Coding",
+        stage_history: [
+          {
+            stage: "REVIEW",
+            agent: "/root/reviewer",
+            entered_at: "2026-08-14T00:00:00Z",
+          },
+        ],
+        pending_transition: {
+          from: "REVIEW",
+          to: "VERIFICATION",
+          requested_at: "2026-08-14T00:01:00Z",
+          requested_by: "Codex with Easy Coding",
+        },
+        workflow_mode: "standard",
+        workflow_mode_confirmed_by: "Codex with Easy Coding",
+        workflow_mode_proposal: { proposed_by: "Codex with Easy Coding" },
+        workflow_mode_escalations: [{ raised_by: "Qoder with Easy Coding" }],
+        tdd_enabled: false,
+        tdd_confirmed_by: "Codex with Easy Coding",
+        verification_checkpoint: { recorded_by: "Codex with Easy Coding" },
+        memory_progress: {
+          architecture_assessment: { recorded_by: "Claude with Easy Coding" },
+        },
+        spec_dependency_evidence: [{ satisfied_by: "Codex with Easy Coding" }],
+      }),
+      "utf8",
+    );
+    const executionRecord = `${JSON.stringify({
+      type: "handoff",
+      from: "Codex with Easy Coding",
+      stage: "REVIEW",
+      summary: "Historical audit attribution",
+      timestamp: "2026-08-14T00:02:00Z",
+    })}\n`;
+    await writeFile(executionPath, executionRecord, "utf8");
+    const sessionPath = path.join(tempDir, ".easy-coding", "sessions", "legacy-owner.json");
+    await mkdir(path.dirname(sessionPath), { recursive: true });
+    await writeFile(
+      sessionPath,
+      JSON.stringify({
+        current_task: "legacy-owner",
+        agent: "/root",
+        last_agent: "Codex with Easy Coding",
+      }),
+      "utf8",
+    );
+
+    expect(await hasLegacyWorkflowState(tempDir)).toBe(true);
+    expect(await migrateLegacyWorkflowState(tempDir)).toEqual({
+      tasksUpdated: 1,
+      sessionsUpdated: 1,
+    });
+    expect(await migrateLegacyWorkflowState(tempDir)).toEqual({
+      tasksUpdated: 0,
+      sessionsUpdated: 0,
+    });
+    expect(await hasLegacyWorkflowState(tempDir)).toBe(false);
+
+    const task = JSON.parse(await readFile(taskPath, "utf8"));
+    expect(task).toMatchObject({
+      created_by: "codex",
+      last_agent: "codex",
+      workflow_mode_confirmed_by: "codex",
+      tdd_confirmed_by: "codex",
+    });
+    expect(task.stage_history[0].agent).toBe("codex");
+    expect(task.pending_transition.requested_by).toBe("codex");
+    expect(task.workflow_mode_proposal.proposed_by).toBe("codex");
+    expect(task.workflow_mode_escalations[0].raised_by).toBe("qoder");
+    expect(task.verification_checkpoint.recorded_by).toBe("codex");
+    expect(task.memory_progress.architecture_assessment.recorded_by).toBe("claude-code");
+    expect(task.spec_dependency_evidence[0].satisfied_by).toBe("codex");
+    expect(JSON.parse(await readFile(sessionPath, "utf8"))).toMatchObject({
+      agent: "codex",
+      last_agent: "codex",
+    });
+    expect(await readFile(executionPath, "utf8")).toBe(executionRecord);
+  });
+
   it("does not let one stale lite session downgrade a shared migrated task", async () => {
     const taskPath = getTaskJsonPath(tempDir, "shared-task");
     await mkdir(path.dirname(taskPath), { recursive: true });

@@ -6,6 +6,22 @@
 - `y`：常规功能升级
 - `z`：日常 bug 修复
 
+## 0.10.0-beta.9
+
+- 工作流 owner 改为规范平台身份边界：每份安装后的状态脚本固化宿主身份，新写入只接受
+  `claude-code` / `codex` / `qoder`，脚本身份、`--agent` 与已注入 session 命名空间三方
+  不一致时在落盘前拒绝；`Codex with Easy Coding` 等作者/Canonical 展示归属不再允许进入
+  `last_agent`。
+- Codex 与 Qoder 共用的 `AGENTS.md` 生成区改为安装顺序无关的双平台路径合同，
+  明确当前宿主只能调用自己的状态脚本，防止 Qoder 最后写入后误导 Codex 执行
+  `.qoder/hooks/easy_coding_state.py`。
+- handoff 提示改为显式协调事件驱动：只有未消费的 `handoff` 记录才显示交接，
+  `claim-task` 新增 immutable `claim` 审计记录并关闭交接；单纯 owner 差异不再被伪造成
+  handoff。
+- upgrade 与首次 SessionStart 幂等迁移旧任务/session 中的 `root` 系列和误写展示名，
+  即使版本号已经更新也能继续检测并自愈，但保留 `execution.jsonl` 及 Canonical Spec 的
+  历史审计展示；新增生产形态、跨平台路径冲突、安装顺序和真实 handoff/claim 回归测试。
+
 ## 0.10.0-beta.8
 
 - VERIFICATION 绿色后新增可审计验收检查点。无漂移时 `confirm` / `auto` 继续按原审批模式

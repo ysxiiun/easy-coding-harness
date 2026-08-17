@@ -292,9 +292,12 @@ describe("configureClaude", () => {
     expect(
       await readFile(path.join(tempDir, ".claude", "hooks", "easy_coding_status.py"), "utf8"),
     ).toContain("build_status_context");
-    expect(
-      await readFile(path.join(tempDir, ".claude", "hooks", "easy_coding_state.py"), "utf8"),
-    ).toContain("READY_LINE");
+    const stateApi = await readFile(
+      path.join(tempDir, ".claude", "hooks", "easy_coding_state.py"),
+      "utf8",
+    );
+    expect(stateApi).toContain("READY_LINE");
+    expect(stateApi).toContain('INSTALLED_WORKFLOW_AGENT = "claude-code"');
     expect(
       await readFile(path.join(tempDir, ".claude", "hooks", "easy_dev_spec.py"), "utf8"),
     ).toContain("8239a5befae08b41da43b7cfbf41acf07e487d04");
@@ -324,6 +327,9 @@ describe("configureClaude", () => {
     expect(main).toContain("`/ec-meta`");
     expect(main).toContain("`/ec-no-harness`");
     expect(main).toContain("`pending_transition`");
+    expect(main).toContain("canonical owner ID `claude-code`");
+    expect(main).toContain("`Claude with Easy Coding` is not a workflow identity");
+    expect(main).toContain("injected session namespace must agree");
     expect(main).toContain("project `behavior.approval_mode`");
     expect(main).toContain("project `behavior.workflow_mode`");
     expect(main).toContain("`auto-transition`");
@@ -593,7 +599,7 @@ describe("configureClaude", () => {
     expect(stdout).not.toContain("06-12-active");
   });
 
-  it("generated hooks migrate legacy state.json and show task status with handoff", async () => {
+  it("generated hooks migrate legacy state without inventing a handoff event", async () => {
     await configureClaude(tempDir);
     await writeRuntimeScaffold(tempDir, ["claude-code"]);
     await writeProjectInitTask(tempDir, ["claude-code"]);
@@ -608,8 +614,14 @@ describe("configureClaude", () => {
         {
           current_stage: "ANALYSIS",
           current_task: "06-10-demo",
-          last_agent: "codex",
-          stage_history: [],
+          last_agent: "Codex with Easy Coding",
+          stage_history: [
+            {
+              stage: "ANALYSIS",
+              agent: "Codex with Easy Coding",
+              entered_at: "2026-06-10T00:01:00Z",
+            },
+          ],
         },
         null,
         2,
@@ -624,7 +636,7 @@ describe("configureClaude", () => {
           type: "feature",
           status: "IMPLEMENT",
           created_at: "2026-06-10T00:00:00Z",
-          created_by: "codex",
+          created_by: "Codex with Easy Coding",
         },
         null,
         2,
@@ -640,11 +652,27 @@ describe("configureClaude", () => {
     });
 
     expect(stdout).toContain(
-      "> **Easy Coding** · **Approval: Guard** · **Workflow: Adaptive** · `06-10-demo` · `IMPLEMENT` · Handoff -> `codex`",
+      "> **Easy Coding** · **Approval: Guard** · **Workflow: Adaptive** · `06-10-demo` · `IMPLEMENT`",
     );
     expect(stdout).toContain("[workflow-state:IMPLEMENT]");
     expect(stdout).toContain("[current-task:06-10-demo]");
-    expect(stdout).toContain("[easy-coding:handoff-from:codex]");
+    expect(stdout).not.toContain("Handoff ->");
+    expect(stdout).not.toContain("[easy-coding:handoff-from:");
+    const migratedTask = JSON.parse(
+      await readFile(
+        path.join(tempDir, ".easy-coding", "tasks", "06-10-demo", "task.json"),
+        "utf8",
+      ),
+    );
+    expect(migratedTask.created_by).toBe("codex");
+    expect(migratedTask.last_agent).toBe("codex");
+    expect(migratedTask.stage_history).toEqual([
+      {
+        stage: "ANALYSIS",
+        agent: "codex",
+        entered_at: "2026-06-10T00:01:00Z",
+      },
+    ]);
   });
 
   it("session-start can inject the active Claude status on UserPromptSubmit", async () => {

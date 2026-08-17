@@ -52,6 +52,9 @@ plan decision; Auto continues immediately. Both remove later waiting, not qualit
 
 ## Startup
 
+Throughout this skill, `<agent-id>` is the canonical workflow owner ID: `claude-code`, `codex`,
+or `qoder`. Never use a display or source-author attribution such as `Codex with Easy Coding`.
+
 1. Read the injected state breadcrumbs or call:
 
    ```bash

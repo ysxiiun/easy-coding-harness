@@ -113,8 +113,11 @@ First run `/ec-init`; daily work goes through `/ec-workflow`.
 
 ## Runtime contract
 
-- Workflow state operations go through `{{platform_config_dir}}/hooks/easy_coding_state.py`;
-  do not hand-edit session files, `current_task`, task `status`, `stage_history`,
+- Workflow state operations go through `{{platform_config_dir}}/hooks/easy_coding_state.py` and
+  pass only the canonical owner ID `claude-code` to `--agent`; display attribution such as
+  `Claude with Easy Coding` is not a workflow identity. The installed script's embedded platform
+  identity, canonical owner, and injected session namespace must agree. Do not hand-edit session
+  files, `current_task`, task `status`, `stage_history`,
   `pending_transition`, `verification_checkpoint`, workflow/TDD proposal or freeze fields,
   `memory_progress`, or `last_agent`.
 - The hook injects `[easy-coding:session-file:P]`; pass that path to the state script with

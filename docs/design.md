@@ -316,7 +316,8 @@ ec-analysis 是从需求到可执行方案的翻译器。
 - **字面量策略**：允许符合局部惯例、含义直观且局部的魔法值；常量用于复用、稳定领域/
   配置/协议语义或项目惯例，禁止只为单个 getter return 创建常量。
 - **作者归属**：项目存在作者署名惯例时，新署名固定为当前宿主 Agent 名称加
-  `with Easy Coding`，例如 `Codex with Easy Coding`。
+  `with Easy Coding`，例如 `Codex with Easy Coding`。该值只是作者/Canonical 展示归属，
+  不是工作流 owner；状态 API 只接受 `claude-code` / `codex` / `qoder`。
 - **字段注释**：新增数据模型字段、枚举成员和常量必须逐项解释语义，并按需记录单位、
   格式、取值、空值、默认值或兼容约束；类型级注释不能替代字段级注释。
 - **核心 Java 注释**：新增核心 Java 类的每个方法和字段、已有核心类中新增或实质修改的
@@ -587,13 +588,19 @@ Claude Code 同样将 session 初始化限定在 `SessionStart`；Qoder 没有�
 
 #### 11.2 交接机制
 
-- `task.json.last_agent` 记录最后处理者，接手 Agent 能识别"这是交接过来的任务"
-- 状态 API 在写入和比较 `last_agent` 时统一 Agent 身份；Codex 的 `root`、`/root` 及其协作子路径与平台身份 `codex` 等价，存量任务无需迁移
-- execution.jsonl 的 `handoff` 记录提供快速上下文摘要
+- `task.json.last_agent` 只保存 `claude-code` / `codex` / `qoder` 规范 owner；安装后的
+  状态脚本会固化所属平台身份，该身份、`--agent` 与 session 命名空间三方不一致时拒绝
+  落盘。Codex 的 `root`、
+  `/root` 及其协作子路径
+  仅作为历史兼容输入，upgrade 会将可变状态幂等迁移为 `codex`。
+- `execution.jsonl` 的 `handoff` 记录提供交接上下文，`claim` 记录表示已被接手；
+  交接状态以最新协调事件为准，不从 owner 字符串差异推测。
 - 每个存在 `pending_transition` 的阶段边界都提供显式交接入口
 - ec-workflow 统一承接所有恢复场景
 
 #### 11.3 状态行中的交接提示
+
+只有最新协调事件为未消费 `handoff`，且当前 Agent 不是交出方时才显示：
 
 ```
 > **Easy Coding** · **Guard** · `add-search` · `IMPLEMENT` · Handoff -> `claude-code`

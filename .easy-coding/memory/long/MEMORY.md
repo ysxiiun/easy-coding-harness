@@ -1,7 +1,7 @@
 ---
 memory_schema: 2
 memory_file: MEMORY
-last_updated: 2026-08-05
+last_updated: 2026-08-17
 ---
 
 # 长期记忆索引
@@ -19,6 +19,10 @@ last_updated: 2026-08-05
 | 状态机与 ANALYSIS 交付契约 | technical | auto-transition, dev-spec skeleton, read-only completion, evidence gate | `TECHNICAL.md` | active | 2026-08-05 | SM-20260711-002 |
 | 行为模式与任务/session 面板 | technical | approval_mode, workflow_mode, snapshot, task management, status line | `TECHNICAL.md` | active | 2026-08-05 | SM-20260711-003, SM-20260711-004 |
 | 旧 Lite 跳审语义 | technical | lite, review bypass, legacy direct edge | `TECHNICAL.md` | deprecated | 2026-08-05 | SM-20260713-005 |
+| 原生确认与待决策恢复 | technical | native choice, pending transition, timeout, numbered fallback | `TECHNICAL.md` | active | 2026-08-17 | SM-20260714-006, SM-019f82c7-8558-79cc-9b9f-c6748e807754 |
+| Session、canonical owner 与 Handoff 协调 | technical | session namespace, canonical agent, handoff, claim, root | `TECHNICAL.md` | active | 2026-08-17 | SM-20260722-007, SM-20260804-008, SM-20260806-010, current code |
+| Canonical Spec 共享执行 | technical | easy-dev-spec/v1, selected task closure, normalized remote, execution writer | `TECHNICAL.md` | active | 2026-08-17 | SM-20260805-009, current code |
+| Java 可选 TDD 与本地门禁 | technical | TDD readiness, changed-line coverage, JaCoCo, task freeze | `TECHNICAL.md` | active | 2026-08-17 | SM-20260807-011, current code |
 
 ## 当前重点业务域
 
@@ -28,6 +32,8 @@ last_updated: 2026-08-05
 
 - CLI supermodule 目标解析、父仓拓扑刷新、无参数 TUI 安全默认值
 - Harness 共享产物可移植性、状态机机械门禁、行为配置与任务/session 可观察性
+- 原生确认恢复、canonical Agent 身份、显式 handoff/claim 协调事件
+- Canonical Spec 所选任务闭包与共享 execution、Java TDD readiness 和修改行覆盖门禁
 
 ## 读取策略
 
