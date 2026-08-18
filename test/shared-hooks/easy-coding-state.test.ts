@@ -1,6 +1,6 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readFile, readdir, rm, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -750,7 +750,7 @@ describe("easy_coding_state.py hook session identity", () => {
       path.join(sessionsDir, "4242.json"),
       JSON.stringify({
         current_task: "legacy-task",
-        created_at: "2026-07-01T00:00:00Z",
+        created_at: new Date().toISOString(),
         confirm_mode: "auto",
         harness_disabled: true,
       }),
@@ -830,7 +830,7 @@ describe("easy_coding_state.py hook session identity", () => {
     ).rejects.toThrow();
   });
 
-  it("cleans only stale logical sessions without a current task", async () => {
+  it("cleans expired idle and attached logical sessions", async () => {
     const sessionsDir = path.join(tempDir, ".easy-coding", "sessions");
     await mkdir(sessionsDir, { recursive: true });
     const oldDate = "2020-01-01T00:00:00+00:00";
@@ -844,12 +844,27 @@ describe("easy_coding_state.py hook session identity", () => {
       JSON.stringify({ current_task: "task-active", created_at: oldDate, last_active_at: oldDate }),
       "utf8",
     );
+    const recentAttachedDate = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString();
+    await writeFile(
+      path.join(sessionsDir, "codex-recent-active.json"),
+      JSON.stringify({ current_task: "task-recent", created_at: recentAttachedDate }),
+      "utf8",
+    );
+    await writeFile(
+      path.join(sessionsDir, "codex-invalid-timestamp.json"),
+      JSON.stringify({ created_at: 20200101 }),
+      "utf8",
+    );
+    const malformedPath = path.join(sessionsDir, "legacy-malformed.json");
+    await writeFile(malformedPath, "{not-json", "utf8");
+    const staleMtime = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
+    await utimes(malformedPath, staleMtime, staleMtime);
     const script = [
-      "import sys",
+      "import json,sys",
       "from pathlib import Path",
       "sys.path.insert(0, sys.argv[1])",
-      "from easy_coding_state import clean_stale_sessions",
-      "print(clean_stale_sessions(Path(sys.argv[2]), threshold_hours=1))",
+      "from easy_coding_state import clean_session_runtime",
+      "print(json.dumps(clean_session_runtime(Path(sys.argv[2]))))",
     ].join(";");
 
     const output = execFileSync(
@@ -858,11 +873,133 @@ describe("easy_coding_state.py hook session identity", () => {
       { encoding: "utf8" },
     );
 
-    expect(output.trim()).toBe("1");
+    expect(JSON.parse(output)).toEqual({
+      sessions_removed: 3,
+      acceptance_snapshots_removed: 0,
+    });
     await expect(readFile(path.join(sessionsDir, "codex-old-idle.json"), "utf8")).rejects.toThrow();
-    await expect(readFile(path.join(sessionsDir, "codex-old-active.json"), "utf8")).resolves.toContain(
-      "task-active",
+    await expect(
+      readFile(path.join(sessionsDir, "codex-old-active.json"), "utf8"),
+    ).rejects.toThrow();
+    await expect(
+      readFile(path.join(sessionsDir, "codex-recent-active.json"), "utf8"),
+    ).resolves.toContain("task-recent");
+    await expect(
+      readFile(path.join(sessionsDir, "codex-invalid-timestamp.json"), "utf8"),
+    ).resolves.toContain("20200101");
+    await expect(readFile(malformedPath, "utf8")).rejects.toThrow();
+  });
+
+  it("runs session GC only when a new logical hook session is created", async () => {
+    const sessionsDir = path.join(tempDir, ".easy-coding", "sessions");
+    await mkdir(sessionsDir, { recursive: true });
+    const oldDate = "2020-01-01T00:00:00+00:00";
+    await writeFile(
+      path.join(sessionsDir, "codex-old-idle.json"),
+      JSON.stringify({ current_task: null, created_at: oldDate, last_active_at: oldDate }),
+      "utf8",
     );
+    await writeFile(
+      path.join(sessionsDir, "codex-existing.json"),
+      JSON.stringify({ current_task: null, created_at: new Date().toISOString() }),
+      "utf8",
+    );
+
+    ensureHookSession({ session_id: "existing" }, "codex");
+    await expect(
+      readFile(path.join(sessionsDir, "codex-old-idle.json"), "utf8"),
+    ).resolves.toContain("current_task");
+
+    ensureHookSession({ session_id: "new" }, "codex");
+    await expect(readFile(path.join(sessionsDir, "codex-old-idle.json"), "utf8")).rejects.toThrow();
+    await expect(readFile(path.join(sessionsDir, "codex-new.json"), "utf8")).resolves.toContain(
+      '"session_key": "codex-new"',
+    );
+  });
+
+  it("replaces a non-object logical hook session with a valid session object", async () => {
+    const sessionsDir = path.join(tempDir, ".easy-coding", "sessions");
+    await mkdir(sessionsDir, { recursive: true });
+    await writeFile(path.join(sessionsDir, "codex-invalid.json"), "[]", "utf8");
+
+    const result = ensureHookSession({ session_id: "invalid" }, "codex");
+
+    expect(result.session).toMatchObject({
+      current_task: null,
+      agent: "codex",
+      session_key: "codex-invalid",
+    });
+    await expect(readFile(path.join(sessionsDir, "codex-invalid.json"), "utf8")).resolves.toContain(
+      '"current_task": null',
+    );
+  });
+
+  it("reserves one slot before creating the 101st logical hook session", async () => {
+    const sessionsDir = path.join(tempDir, ".easy-coding", "sessions");
+    await mkdir(sessionsDir, { recursive: true });
+    for (let index = 0; index < 100; index += 1) {
+      const timestamp = new Date(Date.now() - index * 60_000).toISOString();
+      await writeFile(
+        path.join(sessionsDir, `codex-${index}.json`),
+        JSON.stringify({ current_task: null, created_at: timestamp }),
+        "utf8",
+      );
+    }
+
+    ensureHookSession({ session_id: "new" }, "codex");
+
+    const sessionFiles = (await readdir(sessionsDir)).filter((name) => name.endsWith(".json"));
+    expect(sessionFiles).toHaveLength(100);
+    expect(sessionFiles).toContain("codex-new.json");
+    expect(sessionFiles).not.toContain("codex-99.json");
+  });
+
+  it("removes orphan acceptance snapshots while preserving active task evidence", async () => {
+    const acceptanceDir = path.join(tempDir, ".easy-coding", "sessions", "acceptance");
+    await mkdir(acceptanceDir, { recursive: true });
+    await writeFile(path.join(acceptanceDir, "active.json"), "{}\n", "utf8");
+    await writeFile(path.join(acceptanceDir, "orphan.json"), "{}\n", "utf8");
+    await writeFile(path.join(acceptanceDir, "invalid-task.json"), "{}\n", "utf8");
+    await writeFile(path.join(acceptanceDir, "terminal.json"), "{}\n", "utf8");
+    await writeFile(path.join(acceptanceDir, "unreferenced.json"), "{}\n", "utf8");
+    await writeTaskFixture("active", "VERIFICATION", "codex", {
+      verification_checkpoint: {
+        snapshot_file: ".easy-coding/sessions/acceptance/active.json",
+      },
+    });
+    const activeTaskPath = path.join(
+      tempDir,
+      ".easy-coding",
+      "tasks",
+      "active",
+      "task.json",
+    );
+    const activeTaskBefore = await readFile(activeTaskPath, "utf8");
+    await mkdir(path.join(tempDir, ".easy-coding", "tasks", "invalid-task"), { recursive: true });
+    await writeFile(
+      path.join(tempDir, ".easy-coding", "tasks", "invalid-task", "task.json"),
+      "[]",
+      "utf8",
+    );
+    await writeTaskFixture("terminal", "COMPLETE", "codex", {
+      verification_checkpoint: {
+        snapshot_file: ".easy-coding/sessions/acceptance/terminal.json",
+      },
+    });
+    await writeTaskFixture("unreferenced", "VERIFICATION", "codex");
+
+    ensureHookSession({ session_id: "new" }, "codex");
+
+    await expect(readFile(path.join(acceptanceDir, "active.json"), "utf8")).resolves.toBe("{}\n");
+    await expect(readFile(path.join(acceptanceDir, "invalid-task.json"), "utf8")).resolves.toBe(
+      "{}\n",
+    );
+    await expect(readFile(path.join(acceptanceDir, "orphan.json"), "utf8")).rejects.toThrow();
+    await expect(readFile(path.join(acceptanceDir, "terminal.json"), "utf8")).rejects.toThrow();
+    await expect(
+      readFile(path.join(acceptanceDir, "unreferenced.json"), "utf8"),
+    ).rejects.toThrow();
+    expect(await readFile(activeTaskPath, "utf8")).toBe(activeTaskBefore);
   });
 });
 

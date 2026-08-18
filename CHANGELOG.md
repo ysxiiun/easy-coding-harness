@@ -6,6 +6,21 @@
 - `y`：常规功能升级
 - `z`：日常 bug 修复
 
+## 0.10.0-beta.10
+
+- `.easy-coding/sessions/` 改为事件触发的有界 GC：只在创建新逻辑 session 前执行，
+  无任务绑定的 session 保留 7 天、仍绑定任务的 session 保留 30 天，并按最近活动时间将
+  根目录 session JSON 控制在 100 个以内；创建前会预留一个名额，已存在 session 的日常
+  turn 不重复扫描。
+- 清理依据 session 内容与活动时间，不依赖 Codex、Claude Code、Qoder、PPID 或旧文件名
+  的字符串匹配；缺失或损坏的时间字段回退到文件修改时间，删除前重新比对内容，避免覆盖
+  并发刷新。
+- `easy-coding upgrade` 在实际升级目标中执行一次存量 GC，`--dry-run` 仅展示影响而不删除；
+  acceptance 快照只清理任务不存在、任务已终态或不再被当前验收检查点引用的孤儿文件，
+  tasks、memory、spec、project.yaml 与项目知识文件保持不变。
+- 新增 TypeScript、共享 Python hook 与 upgrade 集成回归，覆盖双 TTL、LRU 上限、损坏旧
+  session、仅新建触发、dry-run 和活动验收证据保留。
+
 ## 0.10.0-beta.9
 
 - 工作流 owner 改为规范平台身份边界：每份安装后的状态脚本固化宿主身份，新写入只接受

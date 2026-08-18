@@ -143,7 +143,9 @@ ARCHITECTURE_CHANGELOG_PATH = Path(".easy-coding/CHANGELOG.md")
 ARCHITECTURE_ACTIONS = {"no-op", "backfill", "update"}
 ACCEPTANCE_SNAPSHOT_SCHEMA = 1
 ACCEPTANCE_VERIFICATION_POLICIES = {"carry-forward", "targeted", "waived"}
-SESSION_STALE_THRESHOLD_HOURS = 30 * 24
+SESSION_IDLE_RETENTION_HOURS = 7 * 24
+SESSION_ATTACHED_RETENTION_HOURS = 30 * 24
+MAX_SESSION_FILES = 100
 SESSION_COMPONENT_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
 WORKFLOW_AGENT_IDENTITIES = {"claude-code", "codex", "qoder"}
 # 安装时固化的宿主身份是生产事实源；未渲染源码保留占位符供本仓测试直接加载。
@@ -1474,7 +1476,8 @@ def clear_session_pointer(session: dict, agent: str | None = None) -> None:
 
 
 def load_session(root: Path, session_file: str | Path | None = None) -> dict | None:
-    return load_json(resolve_session_path(root, session_file))
+    session = load_json(resolve_session_path(root, session_file))
+    return session if isinstance(session, dict) else None
 
 
 def write_session(root: Path, session: dict, session_file: str | Path | None = None) -> None:
@@ -1537,7 +1540,7 @@ def ensure_hook_session(
         )
 
         if session is None:
-            clean_stale_sessions(root)
+            clean_session_runtime(root, reserve_slots=1)
             session = migrate_legacy_pid_session(root, session_path, identity, resolved_ppid)
         if session is None:
             session = load_session(root, session_path)
@@ -1560,34 +1563,122 @@ def ensure_hook_session(
 
 def clean_stale_sessions(
     root: Path,
-    threshold_hours: int = SESSION_STALE_THRESHOLD_HOURS,
+    threshold_hours: int | None = None,
+    idle_threshold_hours: int = SESSION_IDLE_RETENTION_HOURS,
+    attached_threshold_hours: int = SESSION_ATTACHED_RETENTION_HOURS,
+    max_sessions: int = MAX_SESSION_FILES,
+    reserve_slots: int = 0,
 ) -> int:
     sessions_dir = root / ".easy-coding" / "sessions"
     if not sessions_dir.is_dir():
         return 0
 
     now = datetime.now(timezone.utc)
-    cleaned = 0
-    # 逻辑会话不对应独立进程，仅清理长期空闲且没有当前任务的 session。
+    if threshold_hours is not None:
+        idle_threshold_hours = threshold_hours
+        attached_threshold_hours = threshold_hours
+    candidates: list[tuple[Path, str, dict, datetime]] = []
     for entry in sessions_dir.iterdir():
-        if entry.suffix != ".json":
+        if not entry.is_file() or entry.suffix != ".json":
             continue
         try:
-            session = json.loads(entry.read_text(encoding="utf-8"))
-            if session.get("current_task"):
+            content = entry.read_text(encoding="utf-8")
+            try:
+                session = json.loads(content)
+            except json.JSONDecodeError:
+                session = {}
+            if not isinstance(session, dict):
+                session = {}
+            activity_value = session.get("last_active_at") or session.get("created_at")
+            try:
+                if not isinstance(activity_value, str):
+                    raise ValueError
+                last_active = datetime.fromisoformat(activity_value)
+                if last_active.tzinfo is None:
+                    last_active = last_active.replace(tzinfo=timezone.utc)
+            except (ValueError, TypeError):
+                last_active = datetime.fromtimestamp(entry.stat().st_mtime, tz=timezone.utc)
+            candidates.append((entry, content, session, last_active))
+        except OSError:
+            continue
+
+    removed: set[Path] = set()
+    for entry, content, session, last_active in candidates:
+        retention_hours = (
+            attached_threshold_hours if session.get("current_task") else idle_threshold_hours
+        )
+        age_hours = (now - last_active).total_seconds() / 3600
+        if age_hours <= retention_hours:
+            continue
+        if unlink_session_if_unchanged(entry, content):
+            removed.add(entry)
+
+    allowed_existing = max(0, max_sessions - reserve_slots)
+    remaining = sorted(
+        (candidate for candidate in candidates if candidate[0] not in removed),
+        key=lambda candidate: candidate[3],
+    )
+    overflow = max(0, len(remaining) - allowed_existing)
+    for entry, content, _session, _last_active in remaining[:overflow]:
+        if unlink_session_if_unchanged(entry, content):
+            removed.add(entry)
+    return len(removed)
+
+
+def unlink_session_if_unchanged(entry: Path, expected_content: str) -> bool:
+    try:
+        if entry.read_text(encoding="utf-8") != expected_content:
+            return False
+        entry.unlink()
+        return True
+    except OSError:
+        # GC 采用尽力清理；锁定、并发移除等失败文件留到后续新会话再次处理。
+        return False
+
+
+def clean_orphan_acceptance_snapshots(root: Path) -> int:
+    acceptance_dir = root / ".easy-coding" / "sessions" / "acceptance"
+    if not acceptance_dir.is_dir():
+        return 0
+
+    cleaned = 0
+    for entry in acceptance_dir.iterdir():
+        if not entry.is_file() or entry.suffix != ".json":
+            continue
+        task_path = root / ".easy-coding" / "tasks" / entry.stem / "task.json"
+        if task_path.is_file():
+            try:
+                task = json.loads(task_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
                 continue
-            activity_value = session.get("last_active_at") or session.get("created_at") or ""
-            last_active = datetime.fromisoformat(str(activity_value))
-            if last_active.tzinfo is None:
-                last_active = last_active.replace(tzinfo=timezone.utc)
-            age_hours = (now - last_active).total_seconds() / 3600
-            if age_hours <= threshold_hours:
+            if not isinstance(task, dict):
                 continue
+        else:
+            task = None
+
+        checkpoint = task.get("verification_checkpoint") if task is not None else None
+        snapshot_file = checkpoint.get("snapshot_file") if isinstance(checkpoint, dict) else None
+        referenced = bool(
+            isinstance(snapshot_file, str)
+            and (root / snapshot_file).resolve() == entry.resolve()
+        )
+        terminal = task is not None and task.get("status") in TERMINAL_STATUSES
+        if task is not None and referenced and not terminal:
+            continue
+        try:
             entry.unlink()
             cleaned += 1
-        except (OSError, json.JSONDecodeError, ValueError, TypeError):
+        except OSError:
+            # 验收快照清理失败不能阻断新逻辑会话启动。
             continue
     return cleaned
+
+
+def clean_session_runtime(root: Path, reserve_slots: int = 0) -> dict:
+    return {
+        "sessions_removed": clean_stale_sessions(root, reserve_slots=reserve_slots),
+        "acceptance_snapshots_removed": clean_orphan_acceptance_snapshots(root),
+    }
 
 
 def task_json_path(root: Path, task_id: str) -> Path:

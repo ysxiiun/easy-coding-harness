@@ -497,6 +497,8 @@ easy-coding upgrade
   `behavior.approval_mode` 与 `behavior.workflow_mode`，其中 lite 映射为 guard + fast；
   schema 5 会把没有 readiness 的 beta.1 项目/session TDD 请求迁移为关闭并保留阈值；
   旧 task/session 状态元数据继续幂等迁移，已冻结活动任务合同不被静默改写
+- **有界清理**：实际升级会清理过期 session 和确定性孤儿 acceptance 快照；`--dry-run`
+  不删除，活动验收证据与任务资产保持不变
 - **内容保留**：任务 dev-spec / execution / test-strategy、memory 内容、SOUL.md、RULES.md、ABSTRACT.md 等用户资产不被覆盖
 
 ### easy-coding config
@@ -567,7 +569,7 @@ my-project/
 │
 └── .easy-coding/              # 运行时数据（所有平台共享）
     ├── config.yaml            # 项目配置
-    ├── sessions/              # 会话状态（不入 git）
+    ├── sessions/              # 有界会话状态与验收快照（不入 git）
     ├── SOUL.md                # 项目身份（ec-init 生成）
     ├── RULES.md               # 编码规范（ec-init 生成）
     ├── ABSTRACT.md            # 项目架构（ec-init 生成）
@@ -583,6 +585,10 @@ my-project/
     │   └── long/              # 长期记忆
     └── spec/                  # 设计文档
 ```
+
+session GC 不在每次输入时运行，只在创建新逻辑会话前和实际执行 `easy-coding upgrade` 时
+触发。无任务绑定的会话保留 7 天、仍绑定任务的会话保留 30 天，根目录 session JSON 最多
+保留 100 个；活动任务当前引用的 acceptance 快照不会删除。
 
 ---
 

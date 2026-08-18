@@ -686,6 +686,104 @@ describe("upgrade command", () => {
     expect(config.harness_version).toBe(VERSION);
   });
 
+  it("prunes expired session runtime data during an actual upgrade", async () => {
+    await init({ agent: "codex", yes: true });
+    await markProjectInitComplete();
+    await setHarnessVersion("0.10.0-beta.9");
+
+    const sessionsDir = path.join(tempDir, ".easy-coding", "sessions");
+    const oldDate = "2020-01-01T00:00:00.000Z";
+    await writeFile(
+      path.join(sessionsDir, "codex-expired-idle.json"),
+      JSON.stringify({ current_task: null, created_at: oldDate, last_active_at: oldDate }),
+      "utf8",
+    );
+    await writeFile(
+      path.join(sessionsDir, "codex-expired-attached.json"),
+      JSON.stringify({ current_task: "active", created_at: oldDate, last_active_at: oldDate }),
+      "utf8",
+    );
+    await writeFile(
+      path.join(sessionsDir, "codex-recent.json"),
+      JSON.stringify({ current_task: null, created_at: new Date().toISOString() }),
+      "utf8",
+    );
+
+    const acceptanceDir = path.join(sessionsDir, "acceptance");
+    await mkdir(acceptanceDir, { recursive: true });
+    const activeSnapshot = path.join(acceptanceDir, "active.json");
+    const orphanSnapshot = path.join(acceptanceDir, "missing.json");
+    await writeFile(activeSnapshot, "active evidence\n", "utf8");
+    await writeFile(orphanSnapshot, "orphan evidence\n", "utf8");
+    const activeTaskDir = path.join(tempDir, ".easy-coding", "tasks", "active");
+    await mkdir(activeTaskDir, { recursive: true });
+    await writeFile(
+      path.join(activeTaskDir, "task.json"),
+      `${JSON.stringify(
+        {
+          type: "feature",
+          title: "Active verification fixture",
+          status: "VERIFICATION",
+          created_at: "2026-08-18T00:00:00.000Z",
+          created_by: "codex",
+          last_agent: "codex",
+          stage_history: [
+            {
+              stage: "VERIFICATION",
+              agent: "codex",
+              entered_at: "2026-08-18T00:01:00.000Z",
+            },
+          ],
+          workflow_mode: "standard",
+          tdd_enabled: false,
+          tdd_coverage_threshold: 90,
+          verification_checkpoint: {
+            snapshot_file: ".easy-coding/sessions/acceptance/active.json",
+          },
+        },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+    const memoryPath = path.join(tempDir, ".easy-coding", "memory", "short", "keep.md");
+    await writeFile(memoryPath, "memory stays intact\n", "utf8");
+
+    await upgrade({ yes: true });
+
+    await expect(
+      readFile(path.join(sessionsDir, "codex-expired-idle.json"), "utf8"),
+    ).rejects.toThrow();
+    await expect(
+      readFile(path.join(sessionsDir, "codex-expired-attached.json"), "utf8"),
+    ).rejects.toThrow();
+    await expect(readFile(path.join(sessionsDir, "codex-recent.json"), "utf8")).resolves.toContain(
+      "current_task",
+    );
+    await expect(readFile(activeSnapshot, "utf8")).resolves.toBe("active evidence\n");
+    await expect(readFile(orphanSnapshot, "utf8")).rejects.toThrow();
+    await expect(readFile(memoryPath, "utf8")).resolves.toBe("memory stays intact\n");
+  });
+
+  it("keeps expired session runtime data during an upgrade dry run", async () => {
+    await init({ agent: "codex", yes: true });
+    await markProjectInitComplete();
+    await setHarnessVersion("0.10.0-beta.9");
+
+    const sessionPath = path.join(tempDir, ".easy-coding", "sessions", "codex-expired-idle.json");
+    const oldSession = JSON.stringify({
+      current_task: null,
+      created_at: "2020-01-01T00:00:00.000Z",
+    });
+    await writeFile(sessionPath, oldSession, "utf8");
+
+    await upgrade({ yes: true, dryRun: true });
+
+    await expect(readFile(sessionPath, "utf8")).resolves.toBe(oldSession);
+    const config = await readConfigYaml(path.join(tempDir, ".easy-coding", "config.yaml"));
+    expect(config.harness_version).toBe("0.10.0-beta.9");
+  });
+
   it("refreshes stale supermodule parent topology even when all targets are current", async () => {
     await writeFile(
       path.join(tempDir, ".gitmodules"),

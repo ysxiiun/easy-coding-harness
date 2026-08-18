@@ -22,6 +22,7 @@ import {
 } from "../utils/install-manifest.js";
 import { resolvePlatformMeta } from "../utils/platform-paths.js";
 import { writeRuntimeScaffold } from "../utils/runtime-scaffold.js";
+import { cleanSessionRuntime } from "../utils/session.js";
 import {
   hasLegacyWorkflowState,
   migrateLegacyWorkflowState,
@@ -136,6 +137,7 @@ export async function upgrade(opts: UpgradeOptions): Promise<void> {
     "Will overwrite managed skills, hooks, agents, templates, and generated main-constraint regions.",
     "Will update project-init task to recommend ec-init re-run for version adaptation.",
     "Will migrate behavior config to schema 5 and disable unready project/session TDD settings.",
+    "Will prune expired session bindings and orphan acceptance snapshots in each upgraded target while preserving tasks, memory, spec, and project knowledge.",
     "Will migrate legacy workflow/TDD task metadata; memory content, spec, and project knowledge files remain untouched.",
   ].join("\n");
 
@@ -156,6 +158,15 @@ export async function upgrade(opts: UpgradeOptions): Promise<void> {
   }
 
   for (const { target, config } of pending) {
+    const sessionCleanup = await cleanSessionRuntime(target.dir);
+    if (sessionCleanup.sessionsRemoved > 0 || sessionCleanup.acceptanceSnapshotsRemoved > 0) {
+      console.log(
+        chalk.yellow(
+          `${target.label}: session GC removed ${sessionCleanup.sessionsRemoved} session file(s)` +
+            ` and ${sessionCleanup.acceptanceSnapshotsRemoved} orphan acceptance snapshot(s).`,
+        ),
+      );
+    }
     const beta1ProjectTddRequested =
       Number(config.version) === 4 && config.behavior?.tdd_enabled === true;
     const projectId = await writeRuntimeScaffold(target.dir, config.agents, {

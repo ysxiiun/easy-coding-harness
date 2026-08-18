@@ -77,6 +77,10 @@ workflow --[adaptive => fast / standard / strict]--> stage execution depth
 - 审查发现问题，能走 repair loop 回到实现，或者 replan 回到分析重新对齐；
 - 换个人、换个 agent 接手，通过 handoff / claim 拿到上一任的阶段和交接摘要，不用重新解释。
 
+逻辑 session 采用事件触发的有界保留：仅在创建新 session 前和实际升级时清理，空闲会话
+保留 7 天、仍绑定任务的会话保留 30 天，并按最近活动时间限制为 100 个。任务、记忆、
+Spec、项目知识和活动验收证据不会随 session GC 删除。
+
 ### 一份模板，喂三个平台
 
 Claude Code、Codex、Qoder 用的是**同一份** skill 模板，靠安装时替换占位符（触发符、目录、子代理调度方式）适配各自的原生约定。

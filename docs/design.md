@@ -558,7 +558,17 @@ Agent 自动判断已有项目（iterative）还是初创项目（startup），�
 payload 的 `session_id` 优先级最高；Codex App 未提供该字段时，使用进程环境中的
 `CODEX_THREAD_ID` 保持 thread 级隔离。只有平台逻辑 ID 全部不可用时，才降级为
 `<agent>-ppid-<ppid>.json`。session 同时记录原始 ID、来源、创建时间和最后活跃时间；
-无当前任务的长期空闲 session 才会被清理。
+只有解析到一个尚不存在的新逻辑 session 时才在创建前触发全局 GC，已存在 session 的
+日常 turn 不扫描。GC 不依赖平台前缀、PPID 或旧文件名：无任务绑定的 session 保留 7 天，
+仍绑定任务的 session 保留 30 天，之后再按最后活动时间把根目录 JSON 控制在 100 个以内，
+并为即将创建的 session 预留一个名额。时间字段缺失或损坏时回退到文件 mtime；删除前
+重新读取并比对内容，已被并发刷新则跳过。
+
+`sessions/acceptance/` 独立清理确定性孤儿：对应任务不存在、已经 COMPLETE/CLOSED，或
+当前 `verification_checkpoint.snapshot_file` 不再引用该快照时才删除。活动任务仍引用的
+验收证据始终保留，GC 不修改 tasks、memory、spec、project.yaml 或项目知识。实际执行
+`easy-coding upgrade` 时对每个待升级目标额外运行一次同样的存量 GC；`--dry-run` 只展示
+影响，不执行删除。
 
 Agent 识别以 hook 脚本所在的 `.claude/`、`.codex/`、`.qoder/` 或 `.qodercn/` 平台目录
 为第一优先级；无法从路径判断时，Qoder 专属环境变量优先于 Claude 兼容环境变量，避免

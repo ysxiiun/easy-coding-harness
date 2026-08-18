@@ -203,7 +203,7 @@ Dev-Spec 继续走原有整文分析流程。
 easy-coding upgrade
 ```
 
-`upgrade` 会刷新生成区内的 skills、hooks、agents、主约束模板和运行时模板，不会删除已有任务、spec、memory、project.yaml 或项目知识文件。
+`upgrade` 会刷新生成区内的 skills、hooks、agents、主约束模板和运行时模板，不会删除已有任务、spec、memory、project.yaml 或项目知识文件。0.10.0-beta.10 起，实际升级还会执行一次 session GC；`--dry-run` 不删除数据。
 
 升级到 0.9.0 时，旧 `strict_confirm` / `auto_mode` / `confirm_mode` 会一次性迁移为
 `behavior.approval_mode` 与 `behavior.workflow_mode`；旧 `lite` 映射为 `guard + fast`。
@@ -215,6 +215,10 @@ session 临时覆盖统一通过 `ec-config` 对话修改。升级到 0.10.0-bet
 单测与本地差异覆盖率，历史远程 CI 证据保留但不再参与验收。已经冻结的活动任务合同
 不会被静默改写。0.10.0-beta.4 起，仍停在 ANALYSIS 的旧任务必须补齐决策闭环后才能
 进入 IMPLEMENT；已经进入后续阶段的任务不受影响。
+
+session GC 只在创建新逻辑会话前和实际升级时触发：无任务绑定的会话保留 7 天、仍绑定
+任务的会话保留 30 天，并按最近活动时间将根目录 JSON 控制在 100 个以内。活动任务仍在
+引用的 acceptance 验收快照会被保留；任务、记忆、Spec 和项目知识不参与清理。
 
 若当前会话不希望 Harness 接管，显式调用 `/ec-no-harness`（Codex 使用
 `$ec-no-harness`）。它只旁路 Easy Coding，不关闭其他 hooks，也不忽略其他 skills；
