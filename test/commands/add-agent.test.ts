@@ -22,6 +22,26 @@ afterEach(async () => {
 });
 
 describe("add-agent command", () => {
+  it("requires a full upgrade before adding an agent to an older runtime", async () => {
+    await init({ agent: "codex", yes: true });
+    const configPath = path.join(tempDir, ".easy-coding", "config.yaml");
+    await writeFile(
+      configPath,
+      (await readFile(configPath, "utf8")).replace(
+        /harness_version: .+/,
+        "harness_version: 0.10.0-beta.10",
+      ),
+      "utf8",
+    );
+
+    await expect(addAgent({ agent: "claude-code", yes: true })).rejects.toThrow(
+      "Run easy-coding upgrade before add-agent.",
+    );
+
+    expect(await readFile(configPath, "utf8")).not.toContain("claude-code");
+    await expect(readFile(path.join(tempDir, ".claude", "hooks", "easy_coding_state.py"))).rejects.toThrow();
+  });
+
   it("rejects explicit --submodules in a non-supermodule repository", async () => {
     await init({ agent: "codex", yes: true });
 

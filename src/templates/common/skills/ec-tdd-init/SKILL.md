@@ -71,7 +71,7 @@ evidence only, and never wait for a pipeline URL, job identity, or remote succes
 ## Readiness receipt and verification
 
 At the end of IMPLEMENT, after the infrastructure files are stable, record their fingerprints.
-The receipt is part of the implementation and must exist before REVIEW so review/verification
+The receipt is part of the implementation and must exist before QUALITY so Review/Verification
 fingerprints do not change after review. The recorder automatically includes the harness-managed
 `.easy-coding/tools/easy_coding_java_coverage.py` fingerprint:
 
@@ -84,7 +84,8 @@ python3 .easy-coding/tools/easy_coding_tdd_readiness.py --cwd . record \
   --agent <agent-id>
 ```
 
-REVIEW includes the receipt and its declared infrastructure boundary. VERIFICATION runs the
+QUALITY Review Gate includes the receipt and its declared infrastructure boundary. Its
+Verification Gate runs the
 frozen Workflow Mode's applicable build/test/CI syntax checks, then performs only the read-only
 readiness check:
 
@@ -92,9 +93,9 @@ readiness check:
 python3 .easy-coding/tools/easy_coding_tdd_readiness.py --cwd . check
 ```
 
-The `VERIFICATION -> MEMORY` gate requires the final check to return `ready`. If any recorded
+The `QUALITY -> MEMORY` gate requires the final check to return `ready`. If any recorded
 build or CI file changes after the receipt was created, readiness becomes `needs_init`; return to
-IMPLEMENT, refresh the receipt, and repeat REVIEW before verifying again. Rerun this skill when
+IMPLEMENT, refresh the receipt, and repeat QUALITY. Rerun this skill when
 the same drift occurs after task completion.
 
 After completion, tell the user that TDD remains off and provide the explicit project/session

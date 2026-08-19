@@ -110,6 +110,10 @@ export async function status(): Promise<void> {
     console.log(
       `    harness: ${session.harness_disabled ? "disabled for this session" : "enabled"}`,
     );
+    console.log(`    lite_mode: ${session.lite_mode === true ? "enabled" : "disabled"}`);
+    if (session.lite_proposal) {
+      console.log(`    lite_proposal: ${session.lite_proposal.digest}`);
+    }
     if (!session.current_task) {
       console.log("    current_task: none");
       continue;

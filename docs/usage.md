@@ -14,7 +14,7 @@ Easy Coding Harness 是一个 AI 编码工作流脚手架。它通过 CLI 将一
 - 没有测试策略，完成后说 "should pass" 就交差
 - 跨会话时丢失所有上下文，每次都要重新解释
 
-easy-coding-harness 解决这些问题：**6 个工作阶段 + 2 个终态、审批与执行深度双模式**的状态机控制 AI 行为，**任务持久化**让进度跨会话保存，**记忆系统**让过往决策和教训在新任务中被参考，**跨 Agent 交接**让你在不同 AI 平台间无缝切换。
+easy-coding-harness 解决这些问题：**5 个工作阶段 + 2 个终态、审批与执行深度双模式**的状态机控制 AI 行为，**任务持久化**让进度跨会话保存，**记忆系统**让过往决策和教训在新任务中被参考，**跨 Agent 交接**让你在不同 AI 平台间无缝切换。
 
 ## 技术亮点
 
@@ -175,8 +175,8 @@ Agent：> **Easy Coding** · **Approval: Guard** · **Workflow: Adaptive** · Re
 Agent 会创建任务并进入 INIT；INIT 工作完成后自动进入 ANALYSIS。
 
 状态边是否等待由 `approval_mode` 控制：session 覆盖优先于项目配置。状态内执行深度由
-`workflow_mode` 控制，默认 Adaptive 在 ANALYSIS 结束时解析并冻结具体模式。所有新代码
-任务都进入 REVIEW；任何模式都不会跳过方案、审查、验证或记忆检查点。Confirm 只在
+`workflow_mode` 控制，默认 Adaptive 在 ANALYSIS 结束时解析并冻结具体模式。所有修改
+任务都进入 QUALITY；任何模式都不会跳过方案、质量或记忆检查点。Confirm 只在
 ANALYSIS → IMPLEMENT 等待一次，之后的自动推进仍必须先通过对应检查点。
 
 Java TDD 默认关闭，关闭时状态栏和测试深度保持不变。首次开启前运行 `ec-tdd-init`，只
@@ -196,8 +196,8 @@ Agent 进入 ANALYSIS 后严格按以下顺序工作：
 3. 发现会影响技术路线、接口、模型、状态、范围或验收的问题时，Agent 保持 ANALYSIS，
    逐项提问并把确认结论写入 Dev-Spec；未闭合前不会提示进入 IMPLEMENT。
 4. 所有决策解决后，才将唯一的 `decision_status: closed` 写入完整 `dev-spec.md`，同时生成
-   有效的 `execution.jsonl` plan。代码任务还要生成非空 `test-strategy.md`；显式无代码任务
-   使用受限空文件范围并禁止生成该文件。
+   有效的 `execution.jsonl` plan，并生成非空 `test-strategy.md`。纯只读请求保持 Ready，
+   不创建 Harness 任务或分析产物。
 5. 只有对应交付模式要求的产物完整、无骨架占位符且决策状态已关闭时，状态 API 才允许
    申请或确认进入 IMPLEMENT。
 
@@ -239,9 +239,9 @@ execution，不从其他本地任务或 Git 历史重复证明。
 ```
 
 `approve` 除机械边外逐边确认；`guard` 只确认 ANALYSIS → IMPLEMENT 与
-VERIFICATION → MEMORY；`confirm` 只确认 ANALYSIS → IMPLEMENT，之后自动推进；
-`auto` 不展示状态边确认。自动边仍需通过状态 API 的方案、工作流模式、REVIEW 指纹和
-VERIFICATION 指纹门禁。IMPLEMENT 完成后的代码主链固定进入 REVIEW。
+QUALITY → MEMORY；`confirm` 只确认 ANALYSIS → IMPLEMENT，之后自动推进；
+`auto` 不展示状态边确认。自动边仍需通过状态 API 的方案、工作流模式和 QUALITY 指纹
+门禁。IMPLEMENT 完成后的修改主链固定进入 QUALITY。
 
 Agent 必须实际调用当前平台原生的选项功能展示对应业务分支，并使用原生 free-form Other 承接修改意见。只有平台明确保证永久等待时，Agent 才可仅调用原生选择，并禁用或省略 timeout / auto-resolution；较长的有限超时不算永久等待。无法确认永久等待时，Agent 会先在普通消息中输出完整文本编号兜底，再调用一次原生选择；即使超时直接结束当前轮，编号仍留在会话中。原生选择返回空值、被取消、超时或无法解析时，任务继续停留在当前阶段并保留 `pending_transition`，Agent 不再重试；若此前未预输出编号且控制权返回，则立即补充编号。稍后回复 `1` 确认、`2` 交接，回复 `3` 或 `3: 修改内容` 进入 Other。恢复流程会先消费这个编号，再决定是否重新展示门禁，因此无需重新唤起原生选择框。
 
@@ -251,11 +251,11 @@ Agent 必须实际调用当前平台原生的选项功能展示对应业务分�
 - 修改文件编码声明
 - 在机械风险下限之上调整本任务的 Fast / Standard / Strict 模式
 
-Workflow 分级以 Standard 为普通业务默认。Fast 用于单个实际修改仓库、一个内聚 Unit、
-非并行、最多 5 个文件且无明确高风险或公共/跨仓契约影响的局部任务，例如几个普通模型、
+Workflow 分级以 Standard 为普通业务默认。Fast 用于单个实际修改仓库、最多三个内聚 Unit、
+最多 8 个文件且无明确高风险或公共/跨仓契约影响的局部任务，例如几个普通模型、
 局部参数、字段或映射调整。多文件/Unit、闭合的跨仓修改、范围较大但风险不高，或风险较高
 但范围局部的任务都保持 Standard。Strict 必须同时具备明确高风险和真实复杂度/大影响面，
-例如高风险再叠加实际跨仓修改、至少 4 个 Unit、至少 10 个文件或公共/跨仓契约。并行执行
+例如高风险再叠加实际跨仓修改、至少 5 个 Unit、至少 15 个文件或公共/跨仓契约。并行执行
 本身只作为 Standard 信号，不单独构成 Strict 所需的真实复杂度。
 
 仓库数只统计 execution plan 中实际修改文件所属的 Git root。Canonical Spec 中未选 task、
@@ -268,7 +268,8 @@ Agent 按确认的方案执行编码，严格限制在改动范围表列出的�
 
 - Fast 的单一低风险单元可由主 Agent 直接实现
 - Standard 按复杂度选择主 Agent 或独立 Agent；Strict 对多单元和高风险改动保持独立执行
-- 每个单元都携带验收条件、测试点、跨单元契约和风险，并在单元完成后运行定向测试
+- 每个单元都携带验收条件、测试点、跨单元契约和风险；非 TDD 的 IMPLEMENT 不执行质量
+  命令，测试统一交给 QUALITY 的 Verification Gate
 - 每个单元携带最近邻同类代码形成的 Local Baseline；在正确性、安全、明确需求和项目硬规则
   不冲突时，沿用既有命名、控制流、空值/异常处理、分层、对象建模和方法粒度
 - 优先最小且内聚的实现，不预建 wrapper/factory/层级/扩展点，也不把连贯逻辑拆成大量只调用
@@ -279,43 +280,45 @@ Agent 按确认的方案执行编码，严格限制在改动范围表列出的�
   `Codex with Easy Coding`；这只是作者/Canonical 展示名，不得作为状态 API 的
   `--agent`。工作流 owner 只使用 `claude-code` / `codex` / `qoder`
 - 新增或扩展 DO/DTO/VO/BO、entity、请求/响应、配置等数据模型时，每个新增字段都必须
-  写清语义；枚举成员和常量同样逐项注释，并按需说明单位、格式、取值、空值、默认值或兼容约束
+  写清语义；枚举成员和稳定领域常量按局部风格与非直观语义补充说明，不为注释而提取常量
 - 新增核心 Java 类的每个方法和字段、已有核心类中新增或实质修改的方法和字段必须有
-  有意义的 Javadoc；核心/复杂逻辑用必要行内注释说明意图、约束或非直观取舍，不批量补齐
-  未触碰的历史代码
+  有意义的多行 Javadoc；普通单行说明使用 `//`。核心/复杂逻辑用必要行内注释说明意图、
+  约束或非直观取舍，不批量补齐未触碰的历史代码
+- 修改既有代码坚持最小修改：不顺手改无关注释、格式、导入、命名或结构，撤回格式化器的
+  范围外 diff；不同逻辑段用一个空行分隔
 
-显式 `doc` / `analysis` / `report` 只读任务是例外：不生成 `test-strategy.md`；IMPLEMENT 必须留下匹配的 dispatch/result，由只读执行者返回完整 deliverable，主 Agent 原样展示后按生效模式进入 COMPLETE。此类任务不进入 REVIEW、VERIFICATION 或 MEMORY，也不写任务记忆。
+纯分析、解释、报告和只读 review 保持 Ready，直接对话，不创建任务。文档或配置文件写入
+仍是修改任务，走完整状态机。
 
-#### 5. 代码审查（REVIEW，仅代码任务）
+#### 5. 统一质量检查（QUALITY）
 
-所有新代码任务都进入 REVIEW。Fast 使用最终 diff 自审，Standard 使用一次聚焦独立审查，
-Strict 使用多维独立审查。审查证据绑定实现指纹；代码变化后旧证据自动失效。返工按语义
-单元合并，同类问题连续两轮仍存在时停止盲目循环并重新分析。
+QUALITY 将 Review Gate 与 Verification Gate 绑定到同一候选指纹，并在输入冻结后尽量
+并行。Fast 使用主 Agent 聚焦自审和最小定向验证；Standard 使用一个独立 reviewer 与受
+影响检查；Strict 使用至少两个独立维度，并只对实际修改仓库运行完整适用检查。
 
-审查以 Dev-Spec、RULES 和 Local Baseline 为依据，不会仅凭通用最佳实践要求补 null 判断、
-抽象层或常量；无依据偏离局部风格、过度设计、碎片化方法和缺失核心 Java Javadoc 才作为
-明确合同问题处理。
+Review Gate 不执行测试或写代码，Verification Gate 不修复代码。全部结果完成后一次性汇总
+Repair Bundle，只回 IMPLEMENT 修复一轮。环境故障留在 QUALITY 重试，不重跑 Review；
+契约或范围歧义回 ANALYSIS。审查以 Dev-Spec、RULES 和 Local Baseline 为依据，不会仅凭
+通用最佳实践要求补 null 判断、抽象层或常量，也会阻止无意义的范围外格式/注释改动。
 
-#### 6. 验证（VERIFICATION）
+质量通过后冻结验收快照。approve/guard 等待验收，confirm/auto 在快照未变化时自动进入
+MEMORY。用户在快照后保存的差异会被完整展示并绑定 `diff_sha256`；用户接受后保留原 Review
+结论，按差异选择 carry-forward、targeted 或 waived，不重新走完整流程。
 
-Fast 运行最小充分的定向命令，Standard 运行受影响范围检查，Strict 运行项目适用的完整
-lint、typecheck、test、build。验证证据绑定实现与配置指纹；未变化时可以复用，变化后
-自动失效。全部通过后展示结果；approve/guard 等待手动验收，confirm/auto 按绿色结果
-自动进入 MEMORY。Confirm 与 Auto 的区别是前者仍在 ANALYSIS → IMPLEMENT 等待一次
-方案确认。
+#### 6. 极简模式（ec-lite）
 
-验收期间必须区分“用户提出新修复”和“外部保存已产生差异”：
-
-- 用户提出新的范围内修复：回退 IMPLEMENT，修复后重新进入 REVIEW 与 VERIFICATION；
-- 检查点后仅检测到用户或外部工具已经保存的代码差异：展示完整 diff 与
-  `diff_sha256`。用户接受当前 digest 后保留原 REVIEW 结论；非执行差异可沿用原验证，
-  可执行差异补当前指纹的定向验证，或显式记录风险豁免；
-- 用户接受且检查点未变化：按生效审批模式确认或自动进入 MEMORY；
-- 用户取消：中断任务。
+`ec-lite` 只由用户显式启停，不是 Fast 的别名。它只执行“紧凑方案 → 用户确认 → 最小
+实现”，不创建任务、Dev-Spec、QUALITY、MEMORY 或执行日志，默认不跑测试，并持续到用户
+再次调用退出。若已有活动任务，用户选择取消启动、关闭任务后启动，或只清除当前任务指针
+后启动；Harness 不代替用户选择。方案要求 1..50 个安全项目相对文件，Git 基线会在方案
+生成时纳入待确认 digest，确认后不能重放或改写；确认时若 Git 已偏离提案基线则必须重提
+方案；完成时拒绝范围外改动、无实际目标改动或 HEAD 漂移。Harness 自身
+`.easy-coding/sessions/` 账本不属于业务改动，也不能声明为 Lite 目标；`ec-no-harness`
+临时旁路不会清除 Lite 状态或已确认方案。
 
 #### 7. 归档（MEMORY → COMPLETE）
 
-你确认满意并进入 MEMORY 后，Agent 在同一状态内：
+QUALITY 验收边界进入 MEMORY 后，Agent 在同一状态内：
 1. 生成短期记忆
 2. 调用状态 API 检查长期记忆门禁，按结果沉淀或 no-op
 3. 仅在长期记忆 `distill` 时执行独立架构评估，默认 `no-op`
@@ -429,9 +432,9 @@ easy-coding add-agent --agent=codex
 4. 打开 Qoder（或其他 Agent）
 5. 执行 `/ec-workflow`，自动发现交接任务并恢复
 
-handoff 会保留当前阶段、冻结工作流模式和 `pending_transition`。代码 IMPLEMENT 完成后可
-交给另一个 Agent 继续 REVIEW，REVIEW 完成后也可交给另一个做 VERIFICATION；接手方不会
-重复执行已完成阶段。自动边不提供交接，只读任务展示报告后直接结束。
+handoff 会保留当前阶段、冻结工作流模式和 `pending_transition`。IMPLEMENT 完成后可交给
+另一个 Agent 继续 QUALITY，接手方复用同一候选的有效证据，不重复已完成 Gate。自动边不
+提供交接；纯只读请求不创建任务。
 
 ### 跨会话恢复
 
@@ -474,6 +477,9 @@ easy-coding init --agent=claude-code,codex,qoder
 ### easy-coding add-agent
 
 为已初始化的项目追加 Agent 平台支持。
+
+项目 Harness 必须与当前 CLI 同版本；版本不一致时先执行 `easy-coding upgrade`，避免旧任务
+状态与新 Agent runtime 混装。
 
 ```bash
 # 交互式
@@ -531,15 +537,15 @@ easy-coding status
 | `ec-workflow` | 工作流主入口 | 日常开发——新任务/恢复/交接 |
 | `ec-brainstorming` | 头脑风暴设计 | 编码前探索设计方向 |
 | `ec-analysis` | 需求分析 | ec-workflow 自动派发 |
-| `ec-implementing` | 代码实现或只读交付 | ec-workflow 自动派发 |
-| `ec-reviewing` | 代码审查 | ec-workflow 自动派发 |
-| `ec-verification` | 验证闸门 | ec-workflow 自动派发 |
+| `ec-implementing` | 代码实现；非 TDD 不运行质量命令 | ec-workflow 自动派发 |
+| `ec-quality` | Review/Verification 双门与一次性修复汇总 | ec-workflow 自动派发 |
 | `ec-memory` | 记忆归档 | ec-workflow 自动派发 |
 | `ec-task-management` | 任务面板 | 查看/创建/选择/恢复/交接任务 |
 | `ec-config` | 模式配置面板 | 查看或修改 Approval、Workflow、TDD 与阈值 |
 | `ec-tdd-init` | Java TDD 基础设施初始化 | 首次开启 TDD 前或 readiness 漂移后 |
 | `ec-task-close` | 中断任务 | 取消当前任务 |
 | `ec-no-harness` | 当前 session 旁路 Harness | 临时使用原生 Agent 能力 |
+| `ec-lite` | 用户显式启停的极简直达模式 | 明确的极简修改 |
 | `ec-git` | Git 纪律 | 涉及 git 操作时自动激活 |
 | `ec-meta` | Harness 自身信息 | 理解/定制本地架构 |
 

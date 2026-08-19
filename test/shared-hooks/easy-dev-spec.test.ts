@@ -984,6 +984,45 @@ describe("Canonical Spec v1 runtime integration", () => {
     expect(result).toContain("missing dispatch records for units: U1");
   });
 
+  it("carries QUALITY evidence only for dependency-independent stable sources", () => {
+    const plan = {
+      units: [
+        { id: "U1", source_task_id: "R1-T1", repo_id: "R1", depends_on: [] },
+        { id: "U2", source_task_id: "R2-T1", repo_id: "R2", depends_on: ["U1"] },
+        { id: "U3", source_task_id: "R3-T1", repo_id: "R3", depends_on: [] },
+        { id: "U4", source_task_id: "R4-T1", repo_id: "R4", depends_on: [] },
+      ],
+    };
+    const snapshots = {
+      "R1-T1": { dependencies: [] },
+      "R2-T1": { dependencies: [] },
+      "R3-T1": {
+        dependencies: [{ task_id: "R1-T1", type: "contract" }],
+      },
+      "R4-T1": { dependencies: [] },
+    };
+    const script = [
+      "import json, pathlib, sys",
+      `sys.path.insert(0, ${JSON.stringify(path.dirname(stateApiPath()))})`,
+      "import easy_coding_state as state",
+      "plan = json.loads(sys.argv[1])",
+      "snapshots = json.loads(sys.argv[2])",
+      "state.inspect_task_spec = lambda root, task: ({}, None)",
+      "state._selected_execution_snapshots = lambda inspection, task: snapshots",
+      "eligible = state.canonical_carry_forward_sources(",
+      "    pathlib.Path.cwd(), 'task', {'spec_source': {}}, plan, {'R2', 'R3', 'R4'}, {}",
+      ")",
+      "print(json.dumps(sorted(eligible)))",
+    ].join("\n");
+    const result = execFileSync(
+      pythonCmd,
+      ["-c", script, JSON.stringify(plan), JSON.stringify(snapshots)],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+
+    expect(JSON.parse(result)).toEqual(["R4-T1"]);
+  });
+
   it("requires source-traceable units and blocks MEMORY while integration evidence is pending", async () => {
     const fixture = await writeCanonicalFixture();
     initializeSpecExecution(fixture.specPath);
@@ -1273,8 +1312,8 @@ describe("Canonical Spec v1 runtime integration", () => {
 
     const taskPath = path.join(taskDir, "task.json");
     const task = JSON.parse(await readFile(taskPath, "utf8"));
-    task.status = "VERIFICATION";
-    task.workflow_mode = "standard";
+    task.status = "QUALITY";
+    task.workflow_mode = "fast";
     task.pending_transition = undefined;
     await writeFile(taskPath, JSON.stringify(task, null, 2), "utf8");
     await appendFile(
@@ -1320,6 +1359,7 @@ describe("Canonical Spec v1 runtime integration", () => {
             dimension: "correctness",
             passed: true,
             implementation_fingerprint: fingerprints.implementation_fingerprint,
+            quality_attempt: fingerprints.quality_attempt.attempt,
             reviewer: "codex-reviewer",
             timestamp: "2026-08-06T00:01:00Z",
             findings: [],
@@ -1359,6 +1399,7 @@ describe("Canonical Spec v1 runtime integration", () => {
             timestamp: "2026-08-06T00:02:00Z",
             implementation_fingerprint: fingerprints.implementation_fingerprint,
             config_fingerprint: fingerprints.config_fingerprint,
+            quality_attempt: fingerprints.quality_attempt.attempt,
             source_task_id: ownership.source_task_id,
             repo_id: ownership.repo_id,
           }),
@@ -1497,6 +1538,7 @@ describe("Canonical Spec v1 runtime integration", () => {
         dimension: "correctness",
         passed: true,
         implementation_fingerprint: fingerprints.implementation_fingerprint,
+        quality_attempt: fingerprints.quality_attempt.attempt,
         reviewer: "codex-reviewer",
         timestamp: "2026-08-06T00:03:00Z",
         findings: [],
@@ -1535,6 +1577,7 @@ describe("Canonical Spec v1 runtime integration", () => {
         timestamp: "2026-08-06T00:03:30Z",
         implementation_fingerprint: fingerprints.implementation_fingerprint,
         config_fingerprint: fingerprints.config_fingerprint,
+        quality_attempt: fingerprints.quality_attempt.attempt,
         source_task_id: "R1-T2",
         repo_id: "R1",
       })}\n`,
@@ -1559,6 +1602,7 @@ describe("Canonical Spec v1 runtime integration", () => {
 
     const strictTask = JSON.parse(await readFile(taskPath, "utf8"));
     strictTask.workflow_mode = "strict";
+    strictTask.quality_attempt = undefined;
     await writeFile(taskPath, JSON.stringify(strictTask, null, 2), "utf8");
     const strictFingerprints = JSON.parse(runState(["evidence-fingerprints", "--agent", "codex"]));
     await appendFile(
@@ -1575,6 +1619,7 @@ describe("Canonical Spec v1 runtime integration", () => {
               dimension,
               passed: true,
               implementation_fingerprint: strictFingerprints.implementation_fingerprint,
+              quality_attempt: strictFingerprints.quality_attempt.attempt,
               reviewer: "codex-reviewer",
               timestamp: "2026-08-06T00:03:40Z",
               findings: [],
@@ -1609,13 +1654,13 @@ describe("Canonical Spec v1 runtime integration", () => {
             timestamp: "2026-08-06T00:03:50Z",
             implementation_fingerprint: strictFingerprints.implementation_fingerprint,
             config_fingerprint: strictFingerprints.config_fingerprint,
+            quality_attempt: strictFingerprints.quality_attempt.attempt,
             ...check,
           }),
         )
         .join("\n")}\n`,
       "utf8",
     );
-
     runState([
       "satisfy-spec-dependency",
       "--spec-task",
@@ -1656,6 +1701,7 @@ describe("Canonical Spec v1 runtime integration", () => {
             timestamp: "2026-08-06T00:04:00Z",
             implementation_fingerprint: strictFingerprints.implementation_fingerprint,
             config_fingerprint: strictFingerprints.config_fingerprint,
+            quality_attempt: strictFingerprints.quality_attempt.attempt,
             source_task_id: "R2-T1",
             repo_id: "R2",
           }),
@@ -1666,7 +1712,7 @@ describe("Canonical Spec v1 runtime integration", () => {
     const ready = JSON.parse(
       runState(["request-transition", "--stage", "MEMORY", "--agent", "codex"]),
     );
-    expect(ready.pending_transition).toMatchObject({ from: "VERIFICATION", to: "MEMORY" });
+    expect(ready.pending_transition).toMatchObject({ from: "QUALITY", to: "MEMORY" });
   }, 40_000);
 
   it("stores an explicit external Spec locator and rebinds only an identical Canonical design", async () => {
@@ -1900,12 +1946,12 @@ describe("Canonical Spec v1 runtime integration", () => {
 
     const taskPath = path.join(taskDir, "task.json");
     const task = JSON.parse(await readFile(taskPath, "utf8"));
-    task.status = "VERIFICATION";
+    task.status = "QUALITY";
     task.workflow_mode = "fast";
     task.tdd_enabled = false;
     task.tdd_coverage_threshold = 90;
     task.stage_history.push({
-      stage: "VERIFICATION",
+      stage: "QUALITY",
       agent: "codex",
       entered_at: "2026-08-13T00:00:00Z",
     });
@@ -1939,6 +1985,7 @@ describe("Canonical Spec v1 runtime integration", () => {
           dimension: "combined",
           passed: true,
           implementation_fingerprint: fingerprints.implementation_fingerprint,
+          quality_attempt: fingerprints.quality_attempt.attempt,
           reviewer: "codex-reviewer",
           timestamp: "2026-08-13T00:01:00Z",
           findings: [],
@@ -1953,6 +2000,7 @@ describe("Canonical Spec v1 runtime integration", () => {
           passed: true,
           implementation_fingerprint: fingerprints.implementation_fingerprint,
           config_fingerprint: fingerprints.config_fingerprint,
+          quality_attempt: fingerprints.quality_attempt.attempt,
           timestamp: "2026-08-13T00:02:00Z",
           repo_id: "R1",
           source_task_id: "R1-T1",
@@ -2155,7 +2203,7 @@ describe("Canonical Spec v1 runtime integration", () => {
       dependency_task_status: "completed",
       basis: "dependency-task-completed",
     });
-  });
+  }, 15_000);
 
   it("allows only one bundled writer to commit from the same execution revision", async () => {
     const fixture = await writeCanonicalFixture();
@@ -2604,11 +2652,11 @@ describe("Canonical Spec v1 runtime integration", () => {
       "--spec-task",
       "R2-T1",
       "--status",
-      "implemented",
+      "blocked",
       "--summary",
-      "R2 remains complete",
+      "R2 has an unrelated blocker",
       "--idempotency-key",
-      "scoped-repair:R2-T1:implemented",
+      "scoped-repair:R2-T1:blocked",
       "--agent",
       "codex",
     ]);
@@ -2623,7 +2671,7 @@ describe("Canonical Spec v1 runtime integration", () => {
           "import easy_coding_state as state",
           `root = pathlib.Path(${JSON.stringify(tempDir)})`,
           "task = state.load_task(root, 'scoped-repair')",
-          "state.writeback_ready_tasks_for_implement(root, 'scoped-repair', task, 'codex', {'blocked'})",
+          "state.writeback_ready_tasks_for_implement(root, 'scoped-repair', task, 'codex', {'blocked'}, {'R1-T1'})",
         ].join("; "),
       ],
       { cwd: tempDir },
@@ -2638,8 +2686,965 @@ describe("Canonical Spec v1 runtime integration", () => {
       inspection.execution.tasks.find(
         (task: { task_id: string }) => task.task_id === "R2-T1",
       ),
-    ).toMatchObject({ status: "implemented" });
+    ).toMatchObject({ status: "blocked" });
   }, 25_000);
+
+  it("projects a Canonical QUALITY failure before reopening only its source task", async () => {
+    const fixture = await writeCanonicalFixture();
+    initializeSpecExecution(fixture.specPath);
+    runState([
+      "create-task-from-spec",
+      "--spec",
+      fixture.specPath,
+      "--spec-task",
+      "R1-T1",
+      "--spec-task",
+      "R2-T1",
+      "--task-id",
+      "quality-repair-projection",
+      "--type",
+      "bugfix",
+      "--title",
+      "Quality repair projection",
+      "--repo-path",
+      `R1=${fixture.repoA}`,
+      "--repo-path",
+      `R2=${fixture.repoB}`,
+      "--agent",
+      "codex",
+    ]);
+
+    const completeSourceTask = (sourceTask: string, step: string, testId: string) => {
+      runState([
+        "writeback-spec-task",
+        "--spec-task",
+        sourceTask,
+        "--status",
+        "in_progress",
+        "--summary",
+        `Started ${sourceTask}`,
+        "--idempotency-key",
+        `quality-repair-projection:${sourceTask}:start`,
+        "--agent",
+        "codex",
+      ]);
+      runState([
+        "writeback-spec-step",
+        "--spec-task",
+        sourceTask,
+        "--step",
+        step,
+        "--status",
+        "completed",
+        "--summary",
+        `Completed ${sourceTask}`,
+        "--evidence",
+        JSON.stringify({
+          kind: "test",
+          status: "passed",
+          ref: `execution.jsonl#${sourceTask}`,
+          test_id: testId,
+        }),
+        "--idempotency-key",
+        `quality-repair-projection:${sourceTask}:${step}`,
+        "--agent",
+        "codex",
+      ]);
+      runState([
+        "writeback-spec-task",
+        "--spec-task",
+        sourceTask,
+        "--status",
+        "implemented",
+        "--summary",
+        `Implemented ${sourceTask}`,
+        "--idempotency-key",
+        `quality-repair-projection:${sourceTask}:implemented`,
+        "--agent",
+        "codex",
+      ]);
+    };
+    completeSourceTask("R1-T1", "S1", "T1");
+    completeSourceTask("R2-T1", "S2", "T2");
+    runState([
+      "writeback-spec-task",
+      "--spec-task",
+      "R2-T1",
+      "--status",
+      "blocked",
+      "--summary",
+      "Independent external blocker",
+      "--idempotency-key",
+      "quality-repair-projection:R2-T1:external-blocker",
+      "--agent",
+      "codex",
+    ]);
+
+    const taskDir = path.join(
+      tempDir,
+      ".easy-coding",
+      "tasks",
+      "quality-repair-projection",
+    );
+    const units = [
+      {
+        id: "U1",
+        title: "Publish event",
+        type: "backend",
+        files: ["order-domain/src/main/java/com/example/order/OrderEventPublisher.java"],
+        depends_on: [],
+        repo_id: "R1",
+        source_task_id: "R1-T1",
+        source_step_ids: ["S1"],
+        symbols: ["OrderEventPublisher#publish"],
+        test_commands: ["mvn -Dtest=OrderEventPublisherTest test"],
+      },
+      {
+        id: "U2",
+        title: "Consume event",
+        type: "backend",
+        files: [
+          "notification-app/src/main/java/com/example/notification/OrderEventConsumer.java",
+        ],
+        depends_on: [],
+        repo_id: "R2",
+        source_task_id: "R2-T1",
+        source_step_ids: ["S2"],
+        symbols: ["OrderEventConsumer#onMessage"],
+        test_commands: ["mvn -Dtest=OrderEventConsumerTest test"],
+      },
+    ];
+    await writeFile(
+      path.join(taskDir, "execution.jsonl"),
+      `${JSON.stringify({ type: "plan", strategy: "sequential", units })}\n`,
+      "utf8",
+    );
+    const taskPath = path.join(taskDir, "task.json");
+    const task = JSON.parse(await readFile(taskPath, "utf8"));
+    task.status = "QUALITY";
+    task.workflow_mode = "strict";
+    task.tdd_enabled = false;
+    await writeFile(taskPath, JSON.stringify(task, null, 2), "utf8");
+    const fingerprints = JSON.parse(
+      runState([
+        "evidence-fingerprints",
+        "--task-id",
+        "quality-repair-projection",
+        "--agent",
+        "codex",
+      ]),
+    );
+    await appendFile(
+      path.join(taskDir, "execution.jsonl"),
+      `${JSON.stringify({
+        type: "review",
+        dimension: "correctness",
+        passed: false,
+        implementation_fingerprint: fingerprints.implementation_fingerprint,
+        quality_attempt: fingerprints.quality_attempt.attempt,
+        failure_classes: ["code-defect"],
+        reviewer: "codex-reviewer",
+        timestamp: "2026-08-19T00:00:00Z",
+        findings: [
+          {
+            severity: "error",
+            file: "order-domain/src/main/java/com/example/order/OrderEventPublisher.java",
+            line: 1,
+            issue: "Repair the publisher contract",
+          },
+        ],
+        source_task_id: "R1-T1",
+        repo_id: "R1",
+      })}\n`,
+      "utf8",
+    );
+    await appendFile(
+      path.join(taskDir, "execution.jsonl"),
+      `${[
+        ...units.flatMap((unit) => [
+          {
+            type: "dispatch",
+            unit_id: unit.id,
+            timestamp: "2026-08-19T00:01:00Z",
+            repo_id: unit.repo_id,
+            source_task_id: unit.source_task_id,
+          },
+          {
+            type: "result",
+            unit_id: unit.id,
+            status: "completed",
+            changed_files: unit.files,
+            summary: `${unit.id} repair completed`,
+            issues: [],
+            needs_attention: [],
+            repo_id: unit.repo_id,
+            source_task_id: unit.source_task_id,
+          },
+        ]),
+        ...["correctness", "compliance"].map((dimension) => ({
+          type: "review",
+          dimension,
+          passed: true,
+          implementation_fingerprint: fingerprints.implementation_fingerprint,
+          quality_attempt: fingerprints.quality_attempt.attempt,
+          reviewer: `${dimension}-reviewer`,
+          timestamp: "2026-08-19T00:00:10Z",
+          findings: [],
+          source_task_id: "R2-T1",
+          repo_id: "R2",
+        })),
+        ...["lint", "typecheck", "test", "build"].map((checkType) => ({
+          type: "verify",
+          check: `r2-${checkType}`,
+          check_type: checkType,
+          command:
+            checkType === "test"
+              ? "mvn -Dtest=OrderEventConsumerTest test"
+              : `npm run ${checkType}`,
+          passed: true,
+          implementation_fingerprint: fingerprints.implementation_fingerprint,
+          config_fingerprint: fingerprints.config_fingerprint,
+          quality_attempt: fingerprints.quality_attempt.attempt,
+          timestamp: "2026-08-19T00:00:20Z",
+          source_task_id: "R2-T1",
+          repo_id: "R2",
+        })),
+      ]
+        .map((record) => JSON.stringify(record))
+        .join("\n")}\n`,
+      "utf8",
+    );
+
+    runState([
+      "finalize-quality",
+      "--task-id",
+      "quality-repair-projection",
+      "--outcome",
+      "repair",
+      "--review-gate",
+      "failed",
+      "--verification-gate",
+      "cancelled",
+      "--failure-class",
+      "code-defect",
+      "--summary",
+      "Correctness review requires a localized repair",
+      "--agent",
+      "codex",
+    ]);
+
+    const unprojected = spawnSync(
+      pythonCmd,
+      [
+        stateApiPath(),
+        "auto-transition",
+        "--stage",
+        "IMPLEMENT",
+        "--task-id",
+        "quality-repair-projection",
+        "--agent",
+        "codex",
+        "--cwd",
+        tempDir,
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    expect(unprojected.status).toBe(1);
+    expect(unprojected.stderr).toContain(
+      "must write affected source tasks blocked before returning to IMPLEMENT",
+    );
+
+    runState([
+      "writeback-spec-task",
+      "--task-id",
+      "quality-repair-projection",
+      "--spec-task",
+      "R1-T1",
+      "--status",
+      "blocked",
+      "--summary",
+      "Unrelated external block",
+      "--idempotency-key",
+      "external-run:R1-T1:blocked",
+      "--agent",
+      "codex",
+    ]);
+    const unrelatedBlock = spawnSync(
+      pythonCmd,
+      [
+        stateApiPath(),
+        "auto-transition",
+        "--stage",
+        "IMPLEMENT",
+        "--task-id",
+        "quality-repair-projection",
+        "--agent",
+        "codex",
+        "--cwd",
+        tempDir,
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    expect(unrelatedBlock.status).toBe(1);
+    expect(unrelatedBlock.stderr).toContain(
+      "must belong to the current Harness task and QUALITY attempt",
+    );
+    runState([
+      "writeback-spec-task",
+      "--task-id",
+      "quality-repair-projection",
+      "--spec-task",
+      "R1-T1",
+      "--status",
+      "in_progress",
+      "--summary",
+      "Resume after unrelated block",
+      "--idempotency-key",
+      "external-run:R1-T1:resume",
+      "--agent",
+      "codex",
+    ]);
+    runState([
+      "writeback-spec-task",
+      "--task-id",
+      "quality-repair-projection",
+      "--spec-task",
+      "R1-T1",
+      "--status",
+      "implemented",
+      "--summary",
+      "Restore implemented projection",
+      "--idempotency-key",
+      "external-run:R1-T1:implemented",
+      "--agent",
+      "codex",
+    ]);
+
+    runState([
+      "writeback-spec-task",
+      "--task-id",
+      "quality-repair-projection",
+      "--spec-task",
+      "R1-T1",
+      "--status",
+      "blocked",
+      "--summary",
+      "Current correctness review failed",
+      "--evidence",
+      JSON.stringify({
+        kind: "review",
+        status: "failed",
+        ref: `execution.jsonl#quality-attempt=${fingerprints.quality_attempt.attempt};implementation=${fingerprints.implementation_fingerprint};source-task=R1-T1;kind=review`,
+      }),
+      "--idempotency-key",
+      `quality-repair-projection:R1-T1:${fingerprints.implementation_fingerprint}:quality-${fingerprints.quality_attempt.attempt}:blocked`,
+      "--agent",
+      "codex",
+    ]);
+    runState([
+      "set-approval-mode",
+      "--mode",
+      "approve",
+      "--agent",
+      "codex",
+    ]);
+    expect(
+      JSON.parse(
+        runState([
+          "request-transition",
+          "--stage",
+          "IMPLEMENT",
+          "--task-id",
+          "quality-repair-projection",
+          "--agent",
+          "codex",
+        ]),
+      ).pending_transition,
+    ).toMatchObject({
+      quality_attempt: fingerprints.quality_attempt.attempt,
+      implementation_fingerprint: fingerprints.implementation_fingerprint,
+      source_task_ids: ["R1-T1"],
+    });
+    await writeFile(
+      path.join(
+        fixture.repoA,
+        "order-domain/src/main/java/com/example/order/OrderEventPublisher.java",
+      ),
+      "package com.example.order;\npublic interface OrderEventPublisher { void changed(); }\n",
+      "utf8",
+    );
+    expect(
+      JSON.parse(
+        runState([
+          "confirm-transition",
+          "--stage",
+          "IMPLEMENT",
+          "--task-id",
+          "quality-repair-projection",
+          "--agent",
+          "codex",
+        ]),
+      ),
+    ).toMatchObject({ status: "IMPLEMENT" });
+    runState([
+      "set-approval-mode",
+      "--mode",
+      "auto",
+      "--agent",
+      "codex",
+    ]);
+
+    const inspection = JSON.parse(runState(["inspect-dev-spec", "--spec", fixture.specPath]));
+    expect(
+      inspection.execution.tasks.find(
+        (sourceTask: { task_id: string }) => sourceTask.task_id === "R1-T1",
+      ),
+    ).toMatchObject({ status: "in_progress" });
+    expect(
+      inspection.execution.tasks.find(
+        (sourceTask: { task_id: string }) => sourceTask.task_id === "R2-T1",
+      ),
+    ).toMatchObject({ status: "blocked" });
+    const executionEvents = JSON.parse(
+      execFileSync(
+        pythonCmd,
+        [
+          "-c",
+          [
+            "import json, sys",
+            "sys.path.insert(0, sys.argv[1])",
+            "from easy_dev_spec_execution import show_execution",
+            "print(json.dumps(show_execution(sys.argv[2])['execution']['events']))",
+          ].join("\n"),
+          path.dirname(stateApiPath()),
+          fixture.specPath,
+        ],
+        { cwd: tempDir, encoding: "utf8" },
+      ),
+    ) as Array<{ task_id?: string; type?: string; to_status?: string }>;
+    expect(
+      executionEvents
+        .filter(
+          (event) => event.type === "task_status_changed" && event.task_id === "R1-T1",
+        )
+        .map((event) => event.to_status),
+    ).toEqual([
+      "in_progress",
+      "implemented",
+      "blocked",
+      "in_progress",
+      "implemented",
+      "blocked",
+      "in_progress",
+    ]);
+
+    runState([
+      "auto-transition",
+      "--stage",
+      "QUALITY",
+      "--task-id",
+      "quality-repair-projection",
+      "--agent",
+      "codex",
+    ]);
+    const repairedFingerprints = JSON.parse(
+      runState([
+        "evidence-fingerprints",
+        "--task-id",
+        "quality-repair-projection",
+        "--agent",
+        "codex",
+      ]),
+    );
+    const carryRecords = (await readFile(path.join(taskDir, "execution.jsonl"), "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line))
+      .filter((record) => record.type === "quality-carry-forward");
+    expect(carryRecords).toEqual([]);
+    await appendFile(
+      path.join(taskDir, "execution.jsonl"),
+      `${[
+        ...["correctness", "compliance"].map((dimension) => ({
+          type: "review",
+          dimension,
+          passed: true,
+          implementation_fingerprint: repairedFingerprints.implementation_fingerprint,
+          quality_attempt: repairedFingerprints.quality_attempt.attempt,
+          reviewer: `${dimension}-reviewer`,
+          timestamp: "2026-08-19T00:01:10Z",
+          findings: [],
+          source_task_id: "R1-T1",
+          repo_id: "R1",
+        })),
+        ...["correctness", "compliance"].map((dimension) => ({
+          type: "review",
+          dimension,
+          passed: true,
+          implementation_fingerprint: repairedFingerprints.implementation_fingerprint,
+          quality_attempt: repairedFingerprints.quality_attempt.attempt,
+          reviewer: `${dimension}-reviewer`,
+          timestamp: "2026-08-19T00:01:10Z",
+          findings: [],
+          source_task_id: "R2-T1",
+          repo_id: "R2",
+        })),
+        ...["lint", "typecheck", "test", "build"].map((checkType) => ({
+          type: "verify",
+          check: `r1-${checkType}`,
+          check_type: checkType,
+          command:
+            checkType === "test"
+              ? "mvn -Dtest=OrderEventPublisherTest test"
+              : `npm run ${checkType}`,
+          passed: true,
+          implementation_fingerprint: repairedFingerprints.implementation_fingerprint,
+          config_fingerprint: repairedFingerprints.config_fingerprint,
+          quality_attempt: repairedFingerprints.quality_attempt.attempt,
+          timestamp: "2026-08-19T00:01:20Z",
+          source_task_id: "R1-T1",
+          repo_id: "R1",
+        })),
+        ...["lint", "typecheck", "test", "build"].map((checkType) => ({
+          type: "verify",
+          check: `r2-${checkType}`,
+          check_type: checkType,
+          command:
+            checkType === "test"
+              ? "mvn -Dtest=OrderEventConsumerTest test"
+              : `npm run ${checkType}`,
+          passed: true,
+          implementation_fingerprint: repairedFingerprints.implementation_fingerprint,
+          config_fingerprint: repairedFingerprints.config_fingerprint,
+          quality_attempt: repairedFingerprints.quality_attempt.attempt,
+          timestamp: "2026-08-19T00:01:20Z",
+          source_task_id: "R2-T1",
+          repo_id: "R2",
+        })),
+      ]
+        .map((record) => JSON.stringify(record))
+        .join("\n")}\n`,
+      "utf8",
+    );
+    expect(
+      JSON.parse(
+        runState([
+          "quality-checkpoint",
+          "--task-id",
+          "quality-repair-projection",
+          "--agent",
+          "codex",
+        ]),
+      ),
+    ).toHaveProperty("quality_checkpoint");
+  }, 30_000);
+
+  it("rejects Canonical QUALITY failure evidence with invalid source ownership", async () => {
+    const fixture = await writeCanonicalFixture();
+    initializeSpecExecution(fixture.specPath);
+    runState([
+      "create-task-from-spec",
+      "--spec",
+      fixture.specPath,
+      "--spec-task",
+      "R1-T1",
+      "--task-id",
+      "quality-invalid-ownership",
+      "--type",
+      "bugfix",
+      "--title",
+      "Invalid quality ownership",
+      "--repo-path",
+      `R1=${fixture.repoA}`,
+      "--agent",
+      "codex",
+    ]);
+
+    const taskDir = path.join(
+      tempDir,
+      ".easy-coding",
+      "tasks",
+      "quality-invalid-ownership",
+    );
+    await writeFile(
+      path.join(taskDir, "execution.jsonl"),
+      `${JSON.stringify({
+        type: "plan",
+        strategy: "single",
+        units: [
+          {
+            id: "U1",
+            title: "Publish event",
+            type: "backend",
+            files: ["order-domain/src/main/java/com/example/order/OrderEventPublisher.java"],
+            depends_on: [],
+            repo_id: "R1",
+            source_task_id: "R1-T1",
+            source_step_ids: ["S1"],
+            symbols: ["OrderEventPublisher#publish"],
+            test_commands: ["mvn -Dtest=OrderEventPublisherTest test"],
+          },
+        ],
+      })}\n`,
+      "utf8",
+    );
+    const taskPath = path.join(taskDir, "task.json");
+    const task = JSON.parse(await readFile(taskPath, "utf8"));
+    task.status = "QUALITY";
+    task.workflow_mode = "fast";
+    task.tdd_enabled = false;
+    await writeFile(taskPath, JSON.stringify(task, null, 2), "utf8");
+
+    const fingerprints = JSON.parse(
+      runState([
+        "evidence-fingerprints",
+        "--task-id",
+        "quality-invalid-ownership",
+        "--agent",
+        "codex",
+      ]),
+    );
+    await appendFile(
+      path.join(taskDir, "execution.jsonl"),
+      `${JSON.stringify({
+        type: "review",
+        dimension: "correctness",
+        passed: false,
+        implementation_fingerprint: fingerprints.implementation_fingerprint,
+        quality_attempt: fingerprints.quality_attempt.attempt,
+        reviewer: "codex-reviewer",
+        timestamp: "2026-08-19T00:00:00Z",
+        findings: [
+          {
+            severity: "error",
+            file: "order-domain/src/main/java/com/example/order/OrderEventPublisher.java",
+            line: 1,
+            issue: "Missing Canonical ownership",
+          },
+        ],
+      })}\n`,
+      "utf8",
+    );
+
+    const result = spawnSync(
+      pythonCmd,
+      [
+        stateApiPath(),
+        "auto-transition",
+        "--stage",
+        "IMPLEMENT",
+        "--task-id",
+        "quality-invalid-ownership",
+        "--agent",
+        "codex",
+        "--cwd",
+        tempDir,
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(
+      "must preserve a valid repository/source-task/dimension ownership",
+    );
+  }, 20_000);
+
+  it("resumes a partially applied multi-source Canonical repair transition", async () => {
+    const fixture = await writeCanonicalFixture();
+    initializeSpecExecution(fixture.specPath);
+    const taskId = "quality-repair-resume";
+    runState([
+      "create-task-from-spec",
+      "--spec",
+      fixture.specPath,
+      "--spec-task",
+      "R1-T1",
+      "--spec-task",
+      "R2-T1",
+      "--task-id",
+      taskId,
+      "--type",
+      "bugfix",
+      "--title",
+      "Resume quality repair",
+      "--repo-path",
+      `R1=${fixture.repoA}`,
+      "--repo-path",
+      `R2=${fixture.repoB}`,
+      "--agent",
+      "codex",
+    ]);
+
+    for (const [sourceTask, step, testId] of [
+      ["R1-T1", "S1", "T1"],
+      ["R2-T1", "S2", "T2"],
+    ]) {
+      runState([
+        "writeback-spec-task",
+        "--spec-task",
+        sourceTask,
+        "--status",
+        "in_progress",
+        "--summary",
+        `Started ${sourceTask}`,
+        "--idempotency-key",
+        `${taskId}:${sourceTask}:start`,
+        "--agent",
+        "codex",
+      ]);
+      runState([
+        "writeback-spec-step",
+        "--spec-task",
+        sourceTask,
+        "--step",
+        step,
+        "--status",
+        "completed",
+        "--summary",
+        `Completed ${sourceTask}`,
+        "--evidence",
+        JSON.stringify({ kind: "test", status: "passed", ref: "local", test_id: testId }),
+        "--idempotency-key",
+        `${taskId}:${sourceTask}:${step}`,
+        "--agent",
+        "codex",
+      ]);
+      runState([
+        "writeback-spec-task",
+        "--spec-task",
+        sourceTask,
+        "--status",
+        "implemented",
+        "--summary",
+        `Implemented ${sourceTask}`,
+        "--idempotency-key",
+        `${taskId}:${sourceTask}:implemented`,
+        "--agent",
+        "codex",
+      ]);
+    }
+
+    const taskDir = path.join(tempDir, ".easy-coding", "tasks", taskId);
+    const executionPath = path.join(taskDir, "execution.jsonl");
+    await writeFile(
+      executionPath,
+      `${JSON.stringify({
+        type: "plan",
+        strategy: "sequential",
+        units: [
+          {
+            id: "U1",
+            title: "Publish event",
+            type: "backend",
+            files: ["order-domain/src/main/java/com/example/order/OrderEventPublisher.java"],
+            depends_on: [],
+            repo_id: "R1",
+            source_task_id: "R1-T1",
+            source_step_ids: ["S1"],
+            symbols: ["OrderEventPublisher#publish"],
+            test_commands: ["mvn -Dtest=OrderEventPublisherTest test"],
+          },
+          {
+            id: "U2",
+            title: "Consume event",
+            type: "backend",
+            files: [
+              "notification-app/src/main/java/com/example/notification/OrderEventConsumer.java",
+            ],
+            depends_on: [],
+            repo_id: "R2",
+            source_task_id: "R2-T1",
+            source_step_ids: ["S2"],
+            symbols: ["OrderEventConsumer#onMessage"],
+            test_commands: ["mvn -Dtest=OrderEventConsumerTest test"],
+          },
+        ],
+      })}\n`,
+      "utf8",
+    );
+    const taskPath = path.join(taskDir, "task.json");
+    const task = JSON.parse(await readFile(taskPath, "utf8"));
+    task.status = "QUALITY";
+    task.workflow_mode = "standard";
+    task.tdd_enabled = false;
+    await writeFile(taskPath, JSON.stringify(task, null, 2), "utf8");
+    const fingerprints = JSON.parse(
+      runState(["evidence-fingerprints", "--task-id", taskId, "--agent", "codex"]),
+    );
+    for (const [sourceTask, repoId, file] of [
+      [
+        "R1-T1",
+        "R1",
+        "order-domain/src/main/java/com/example/order/OrderEventPublisher.java",
+      ],
+      [
+        "R2-T1",
+        "R2",
+        "notification-app/src/main/java/com/example/notification/OrderEventConsumer.java",
+      ],
+    ]) {
+      await appendFile(
+        executionPath,
+        `${JSON.stringify({
+          type: "review",
+          dimension: "correctness",
+          passed: false,
+          implementation_fingerprint: fingerprints.implementation_fingerprint,
+          quality_attempt: fingerprints.quality_attempt.attempt,
+          failure_classes: ["code-defect"],
+          reviewer: "codex-reviewer",
+          timestamp: "2026-08-19T00:00:00Z",
+          findings: [
+            {
+              severity: "error",
+              file,
+              line: 1,
+              issue: `Repair ${sourceTask}`,
+            },
+          ],
+          source_task_id: sourceTask,
+          repo_id: repoId,
+        })}\n`,
+        "utf8",
+      );
+    }
+
+    runState([
+      "finalize-quality",
+      "--task-id",
+      taskId,
+      "--outcome",
+      "repair",
+      "--review-gate",
+      "failed",
+      "--verification-gate",
+      "cancelled",
+      "--failure-class",
+      "code-defect",
+      "--summary",
+      "Both source tasks require correctness repairs",
+      "--agent",
+      "codex",
+    ]);
+
+    const unprojected = spawnSync(
+      pythonCmd,
+      [
+        stateApiPath(),
+        "auto-transition",
+        "--stage",
+        "IMPLEMENT",
+        "--task-id",
+        taskId,
+        "--agent",
+        "codex",
+        "--cwd",
+        tempDir,
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    expect(unprojected.status).toBe(1);
+    for (const sourceTask of ["R1-T1", "R2-T1"]) {
+      runState([
+        "writeback-spec-task",
+        "--task-id",
+        taskId,
+        "--spec-task",
+        sourceTask,
+        "--status",
+        "blocked",
+        "--summary",
+        `Quality failed for ${sourceTask}`,
+        "--evidence",
+        JSON.stringify({
+          kind: "review",
+          status: "failed",
+          ref: `execution.jsonl#quality-attempt=${fingerprints.quality_attempt.attempt};implementation=${fingerprints.implementation_fingerprint};source-task=${sourceTask};kind=review`,
+        }),
+        "--idempotency-key",
+        `${taskId}:${sourceTask}:${fingerprints.implementation_fingerprint}:quality-${fingerprints.quality_attempt.attempt}:blocked`,
+        "--agent",
+        "codex",
+      ]);
+    }
+
+    const moduleRoot = path.dirname(stateApiPath());
+    const failedApply = execFileSync(
+      pythonCmd,
+      [
+        "-c",
+        [
+          "import pathlib, sys",
+          "sys.path.insert(0, sys.argv[1])",
+          "import easy_coding_state as state",
+          "root = pathlib.Path(sys.argv[2])",
+          "original = state._execute_spec_writeback",
+          "def flaky(root, harness_task_id, task, action, key, invoke):",
+          "    if action.get('source_task_id') == 'R2-T1' and action.get('status') == 'in_progress':",
+          "        raise state.StateError('injected second source failure')",
+          "    return original(root, harness_task_id, task, action, key, invoke)",
+          "state._execute_spec_writeback = flaky",
+          "try:",
+          `    state.apply_transition(root, 'IMPLEMENT', 'codex', ${JSON.stringify(taskId)})`,
+          "except state.StateError as error:",
+          "    print(str(error))",
+          "else:",
+          "    raise RuntimeError('expected injected failure')",
+        ].join("\n"),
+        moduleRoot,
+        tempDir,
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    expect(failedApply).toContain("injected second source failure");
+    expect(JSON.parse(await readFile(taskPath, "utf8"))).toMatchObject({
+      status: "QUALITY",
+      canonical_repair_transition: {
+        source_task_ids: ["R1-T1", "R2-T1"],
+      },
+    });
+    let inspection = JSON.parse(runState(["inspect-dev-spec", "--spec", fixture.specPath]));
+    expect(
+      inspection.execution.tasks.find(
+        (sourceTask: { task_id: string }) => sourceTask.task_id === "R1-T1",
+      ),
+    ).toMatchObject({ status: "in_progress" });
+    expect(
+      inspection.execution.tasks.find(
+        (sourceTask: { task_id: string }) => sourceTask.task_id === "R2-T1",
+      ),
+    ).toMatchObject({ status: "blocked" });
+
+    const driftPath = path.join(
+      fixture.repoA,
+      "order-domain/src/main/java/com/example/order/OrderEventPublisher.java",
+    );
+    const originalCandidate = await readFile(driftPath, "utf8");
+    await writeFile(driftPath, `${originalCandidate}// concurrent drift\n`, "utf8");
+    expect(
+      JSON.parse(
+        runState([
+          "auto-transition",
+          "--stage",
+          "IMPLEMENT",
+          "--task-id",
+          taskId,
+          "--agent",
+          "codex",
+        ]),
+      ),
+    ).toMatchObject({ status: "IMPLEMENT" });
+    expect(JSON.parse(await readFile(taskPath, "utf8"))).not.toHaveProperty(
+      "canonical_repair_transition",
+    );
+    inspection = JSON.parse(runState(["inspect-dev-spec", "--spec", fixture.specPath]));
+    for (const sourceTask of ["R1-T1", "R2-T1"]) {
+      expect(
+        inspection.execution.tasks.find(
+          (candidate: { task_id: string }) => candidate.task_id === sourceTask,
+        ),
+      ).toMatchObject({ status: "in_progress" });
+    }
+  }, 40_000);
 
   it("reconciles a local completed result even when no pending writer action was recorded", async () => {
     const fixture = await writeCanonicalFixture();

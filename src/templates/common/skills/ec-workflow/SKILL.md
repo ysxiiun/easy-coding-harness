@@ -1,6 +1,6 @@
 ---
 name: ec-workflow
-description: Main Easy Coding entrypoint. Creates or resumes a task, orchestrates the unchanged state machine, separates approval from execution depth, and dispatches the stage skill for the current state.
+description: Main Easy Coding entrypoint. Creates or resumes a task, orchestrates the unified state machine, separates approval from execution depth, and dispatches the stage skill for the current state.
 ---
 
 # ec-workflow — state orchestration
@@ -11,26 +11,24 @@ user's language.
 ## State machine
 
 ```text
-INIT --auto--> ANALYSIS -> IMPLEMENT -> REVIEW -> VERIFICATION -> MEMORY --auto--> COMPLETE
-                    ^           ^          |              |
+INIT --auto--> ANALYSIS -> IMPLEMENT -> QUALITY -> MEMORY --auto--> COMPLETE
+                    ^           ^          |
                     +--replan---+          +---repair-----+
 
-read-only doc/analysis/report: IMPLEMENT -> COMPLETE
 any active stage --explicit user abort--> CLOSED
 ```
 
-New code tasks never skip REVIEW. `workflow_mode` changes execution depth inside stages, not
-the stage graph. Pre-0.9 in-flight tasks may carry `workflow_mode_legacy:true` for proposal or
-review-evidence compatibility. Only `workflow_mode_legacy_direct_edge:true`, created from old
-lite semantics or an already-persisted edge, permits one IMPLEMENT -> VERIFICATION transition.
+Every repository-mutation task uses this graph. QUALITY owns two independent read-only gates:
+Review Gate and Verification Gate. `workflow_mode` changes their evidence depth, not the graph.
+Pure conversation, explanation, analysis, and read-only review stay Ready and create no task.
 
 ## Independent controls
 
 - `approval_mode = approve|guard|confirm|auto` controls whether a legal transition waits for a
-  user. `confirm` waits only at ANALYSIS -> IMPLEMENT; after that, green REVIEW, VERIFICATION,
-  MEMORY, and COMPLETE transitions advance automatically. `auto` advances every legal green
+  user. `confirm` waits only at ANALYSIS -> IMPLEMENT; after that, green QUALITY, MEMORY, and
+  COMPLETE transitions advance automatically. `auto` advances every legal green
   edge. The only additional pause is an exceptional code diff detected after the frozen
-  VERIFICATION acceptance checkpoint; accepting that exact diff does not change the mode.
+  QUALITY acceptance checkpoint; accepting that exact diff does not change the mode.
 - `workflow_mode = adaptive|fast|standard|strict` controls execution cost and assurance depth.
 - `tdd_enabled` independently activates Java TDD and changed-line coverage. It defaults off;
   `tdd_coverage_threshold` defaults to 90 and accepts integers from 1 to 100.
@@ -60,6 +58,9 @@ or `qoder`. Never use a display or source-author attribution such as `Codex with
    ```bash
    {{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py snapshot --agent <agent-id> --session-file <P>
    ```
+
+   When `[easy-coding:lite-direct]` is present, route only to `ec-lite`. Do not create, resume,
+   inspect, or transition a normal Harness task until Lite is explicitly exited.
 
 2. Check `.easy-coding/tasks/project-init/task.json` before routing work.
    - Missing: tell the user to run `easy-coding init` to install or repair the harness, then stop.
@@ -126,14 +127,13 @@ or `qoder`. Never use a display or source-author attribution such as `Codex with
    If the user names or clearly matches another task, confirm the switch and call
    `claim-task --task-id <id> --agent <agent-id> --session-file <P>`. Do not execute task A
    under task B's request.
-   - With no concrete task request, show resumable tasks or report readiness; never create an
-     empty task from a bare workflow invocation.
+   - With no explicit repository-mutation request, stay Ready and answer normally. Ambiguous
+     intent remains Ready until conversation establishes a concrete mutation.
    - For concrete unrelated work while another task is current, confirm creating the new task
      and suspending the current pointer before changing ownership.
    - Create a new task only after routing is settled, using a safe unique ID and a type faithful
-     to the requested deliverable. Feature, bugfix, refactor, performance, and workflow changes
-     are code tasks. Use `doc`, `analysis`, or `report` only when the user explicitly requested
-     a no-code deliverable; never downgrade a code request to the read-only completion path.
+     to the requested repository mutation. A document, config, or report file write is still a
+     mutation task. Never create `doc`, `analysis`, or `report` tasks for a chat-only result.
 6. Resume the matched/current task, then load only state-relevant assets. Do not read five full
    memories at every startup; ANALYSIS searches memory metadata and opens relevant entries on
    demand.
@@ -144,9 +144,8 @@ or `qoder`. Never use a display or source-author attribution such as `Codex with
 - `INIT`: call `auto-transition --stage ANALYSIS`.
 - `ANALYSIS`: dispatch `ec-analysis`; it produces artifacts and a workflow proposal.
 - `IMPLEMENT`: dispatch `ec-implementing` using the frozen concrete mode.
-- `REVIEW`: dispatch `ec-reviewing`; the transition requires current fingerprint evidence.
-- `VERIFICATION`: dispatch `ec-verification`; the MEMORY boundary requires green evidence and an
-  unchanged or explicitly accepted verification checkpoint.
+- `QUALITY`: dispatch `ec-quality`; it freezes one candidate, runs Review and Verification Gates,
+  aggregates one repair bundle, and requires an unchanged or explicitly accepted checkpoint.
 - `MEMORY`: dispatch `ec-memory`.
 - `COMPLETE` / `CLOSED`: report terminal status and clear stale session ownership.
 
@@ -178,22 +177,16 @@ current `diff_sha256`, then use the platform's native choice UI for these branch
 
 1. Accept this exact diff and continue to MEMORY (recommended only with the stated verification
    policy).
-2. Return to IMPLEMENT because the change needs normal repair/review.
+2. Return to IMPLEMENT because the change needs normal repair/quality checks.
 3. Hand off to another Agent.
 4. Other / revise.
 
 Never call `auto-transition` repeatedly to hide this pause. If the user accepts, preserve the
-existing REVIEW conclusion and call `confirm-transition` with the exact digest,
+existing Review Gate conclusion and call `confirm-transition` with the exact digest,
 `--verification-policy carry-forward|targeted|waived`, and a decision summary. `targeted` needs a
 passed current-fingerprint targeted check first. If the digest changes, inspect and present the
 new diff. Config, plan, workflow, Canonical-design, or nested-repository drift is not an
 acceptance-diff choice and returns to the stage required by the state API.
-
-For a migrated pre-0.9 Lite task, the breadcrumb
-`[easy-coding:lite-review-bypass-required:IMPLEMENT->REVIEW]` means the stored REVIEW edge is
-stale. Call `cancel-transition`, then immediately call `auto-transition --stage VERIFICATION`.
-Do not consume, confirm, or recreate the REVIEW edge; the state API will consume the task's
-one-time `workflow_mode_legacy_direct_edge` compatibility marker on the direct transition.
 
 ## Mode escalation
 
@@ -205,8 +198,8 @@ When implementation reveals a higher risk, call:
   --agent <agent-id> --session-file <P>
 ```
 
-Only upward changes are legal after ANALYSIS. During VERIFICATION, return to IMPLEMENT before
-raising the mode so the task re-enters REVIEW with fresh evidence. Scope or design changes return
+Only upward changes are legal after ANALYSIS. During QUALITY, return to IMPLEMENT before
+raising the mode so the task re-enters QUALITY with fresh evidence. Scope or design changes return
 to ANALYSIS.
 
 ## Handoff and closure

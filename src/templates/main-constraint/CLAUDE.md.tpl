@@ -20,6 +20,7 @@ disabled, omit the TDD segment entirely and preserve the existing status-line fo
 - Waiting init: > **Easy Coding** · **Approval: {approval-mode}** · **Workflow: {workflow-mode}** · Waiting init · Use `ec-init` to initialize
 - Active task: > **Easy Coding** · **Approval: {approval-mode}** · **Workflow: {workflow-mode}** · `{current-task}` · `{workflow-state}`
 - Handoff: > **Easy Coding** · **Approval: {approval-mode}** · **Workflow: {workflow-mode}** · `{current-task}` · `{workflow-state}` · Handoff -> `{source-agent}`
+- Lite: > **Easy Coding** · **Lite Direct** · `{Ready|Awaiting Confirmation}` · No Task / Quality / Memory · Use `ec-lite` to exit
 
 Skill names in the status line are bare names (`ec-init`, `ec-workflow`) and never include
 platform prefixes such as `/` or `$`. If no status line is injected, do not invent one.
@@ -29,10 +30,11 @@ platform prefixes such as `/` or `$`. If no status line is injected, do not inve
 - `/ec-init` — one-time project knowledge init (run once after install)
 - `/ec-workflow` — daily entrypoint: the workflow state machine and task resume
 - `/ec-brainstorming` — design exploration before building (hard design gate)
-- `/ec-analysis` `/ec-implementing` `/ec-reviewing` `/ec-verification` — workflow stages
+- `/ec-analysis` `/ec-implementing` `/ec-quality` — workflow stages
 - `/ec-memory` — short/long memory archive
 - `/ec-task-management` — task lifecycle panel · `/ec-config` — Approval/Workflow/TDD settings · `/ec-tdd-init` — Java changed-line gate initialization · `/ec-task-close` — interrupt a task
 - `/ec-no-harness` — bypass only Easy Coding for the current session
+- `/ec-lite` — user-controlled direct mode with one proposal confirmation and no task/QUALITY/MEMORY
 - `/ec-git` — git discipline · `/ec-meta` — understand/customize the harness
 
 First run `/ec-init`; daily work goes through `/ec-workflow`.
@@ -43,10 +45,10 @@ First run `/ec-init`; daily work goes through `/ec-workflow`.
   is session override > project `behavior.workflow_mode` > `adaptive`. Approval controls waiting;
   workflow controls execution depth. ANALYSIS shows and freezes adaptive to fast/standard/strict.
   Confirm approval waits only at ANALYSIS -> IMPLEMENT, then advances green later stages
-  automatically; Auto advances all legal green edges. A new code diff after the VERIFICATION
+  automatically; Auto advances all legal green edges. A new code diff after the QUALITY
   checkpoint is the only exceptional pause across all modes: show the exact diff, bind acceptance
   to its digest, and continue without rereview when the user accepts.
-  Every new code task runs REVIEW; no mode changes scope, delivery form, or evidence gates.
+  Every mutation task runs QUALITY; no mode changes scope, delivery form, or evidence gates.
 - TDD is session override > project `behavior.tdd_enabled` > `false`; its changed-line threshold
   is session override > project `behavior.tdd_coverage_threshold` > `90`. ANALYSIS -> IMPLEMENT
   freezes both. TDD may be enabled only after `ec-tdd-init` records valid infrastructure readiness;
@@ -57,13 +59,13 @@ First run `/ec-init`; daily work goes through `/ec-workflow`.
   local coverage for production lines changed since the task baseline. `ec-tdd-init` still
   generates GitLab TEST-stage automation, but remote CI status is not Harness acceptance evidence.
 - Confirmation-required edges use `pending_transition`; automatic edges use the restricted
-  `auto-transition` API. A read-only task creates no test-strategy.md, never enters REVIEW,
-  VERIFICATION, or MEMORY, and writes no task memory.
+  `auto-transition` API. Pure read-only conversation stays Ready and creates no task. Any
+  repository write, including documentation or configuration, uses the full state machine.
 - A confirmation-required boundary is not fully presented until the user can choose its complete
   business branches. When a native user-choice tool is available, invoke it in the same turn with
   the complete gate. An ordinary gate offers "confirm entering/returning to the target stage"
   (recommended) and "hand off to another agent", with free-form Other for revisions. The special
-  code IMPLEMENT gate must preserve enter REVIEW and handoff, with free-form Other. Use a native
+  IMPLEMENT gate must preserve enter QUALITY and handoff, with free-form Other. Use a native
   choice without a text pre-fallback only when the tool
   explicitly guarantees an indefinite wait; disable or omit automatic timeout/resolution in that
   case. Otherwise pre-render the matching numbered fallback before invoking native choice once,
@@ -75,6 +77,10 @@ First run `/ec-init`; daily work goes through `/ec-workflow`.
 - When `[easy-coding:no-harness]` is injected, do not emit an Easy Coding status line and ignore
   only Easy Coding workflow/stage orchestration for this session. Continue honoring every
   non-Easy-Coding skill, hook, and instruction. Do not clear or mutate the suspended task.
+- When `[easy-coding:lite-direct]` is injected, use only `ec-lite`. Lite is enabled or disabled
+  solely by explicit user invocation, creates no task or evidence artifacts, and requires one
+  confirmed compact proposal before each mutation. With an active task, present cancel startup,
+  close-and-start, and clear-pointer-and-start; never choose for the user.
 - ANALYSIS must follow template-first: read `.easy-coding/templates/dev-spec-skeleton.md` then
   write its exact content to the task's dev-spec.md as the FIRST tool calls. Next inspect evidence,
   set `decision_status: open`, ask every unresolved material decision, and progressively record
@@ -84,26 +90,26 @@ First run `/ec-init`; daily work goes through `/ec-workflow`.
   and risk summary with an absolute local link/path to the full dev-spec.md; never paste the full
   artifact by default. The final artifact contains neither `[阶段：ANALYSIS]` nor a
   `待用户决策` section.
-- REVIEW and VERIFICATION are fingerprinted hard gates. Review evidence must match the final
+- QUALITY contains fingerprinted Review and Verification Gates. Review evidence must match the final
   implementation; verification evidence must match final implementation and config. The frozen
   workflow mode selects targeted, impacted, or full commands without weakening the green gate.
-  Freeze a verification checkpoint after green checks. Unchanged checkpoints follow approval
+  Freeze a quality checkpoint after green checks. Unchanged checkpoints follow approval
   mode normally; post-checkpoint code drift requires exact digest acceptance and
-  carry-forward/targeted/waived verification policy, but never an automatic second REVIEW.
+  carry-forward/targeted/waived verification policy, but never an automatic second Review Gate.
 - Canonical-backed tasks bind static validity to design revision + `design_sha256`, while
   `document_sha256` and `execution_revision` may advance through shared writer commands. Project-
   external explicit Spec paths are allowed and may be repaired only with identity-checked rebind.
   Runtime progress must use the shared writer with CAS/idempotency and reconciliation; static
   design changes require revision + READY + `sync-spec-design`. Never hand-edit `EDS:EXECUTION`.
-  Selected source tasks remain `implemented` through local VERIFICATION and become `verified`
-  only when the accepted VERIFICATION -> MEMORY boundary is actually applied.
+  Selected source tasks remain `implemented` through local QUALITY and become `verified`
+  only when the accepted QUALITY -> MEMORY boundary is actually applied.
 - Canonical routing is two-pass: first use manifest-only discovery for the current worktree, then
   inspect only the explicitly selected task IDs and repositories. A remote-confirmed worktree
   overrides a stale `path_hint`; never mirror the source Spec or re-check unselected repositories.
   ANALYSIS reads the selected consumption closure once and treats exact/scope-unchanged as a fast
   projection, while shared execution is the dependency fact source.
 - MEMORY combines short-memory creation and the conditional long-memory gate. Entry follows the
-  effective confirmation mode; its checkpoint records any accepted post-verification diff digest
+  effective confirmation mode; its checkpoint records any accepted post-quality diff digest
   and decision. Once memory processing completes, COMPLETE is automatic.
 - NO CODE-TASK COMPLETION CLAIMS WITHOUT FRESH VERIFICATION EVIDENCE.
 - All cross-platform modules (skills, hooks, references) must use universal agent protocols.
@@ -118,7 +124,7 @@ First run `/ec-init`; daily work goes through `/ec-workflow`.
   `Claude with Easy Coding` is not a workflow identity. The installed script's embedded platform
   identity, canonical owner, and injected session namespace must agree. Do not hand-edit session
   files, `current_task`, task `status`, `stage_history`,
-  `pending_transition`, `verification_checkpoint`, workflow/TDD proposal or freeze fields,
+  `pending_transition`, `quality_checkpoint`, `lite_mode`, `lite_proposal`, workflow/TDD proposal or freeze fields,
   `memory_progress`, or `last_agent`.
 - The hook injects `[easy-coding:session-file:P]`; pass that path to the state script with
   `--session-file <P>` when changing the current task or stage.

@@ -17,6 +17,7 @@ import { ensureEasyCodingSessionsIgnored, ensureHookBytecodeIgnored } from "../u
 import {
   type InstallArtifact,
   extractHookPathFromCommand,
+  pruneRetiredManagedFiles,
   readInstallManifest,
   writeInstallManifest,
 } from "../utils/install-manifest.js";
@@ -135,9 +136,11 @@ export async function upgrade(opts: UpgradeOptions): Promise<void> {
         ].filter(Boolean)
       : []),
     "Will overwrite managed skills, hooks, agents, templates, and generated main-constraint regions.",
+    "Will remove retired files that still match the previous install manifest and preserve locally modified copies.",
     "Will update project-init task to recommend ec-init re-run for version adaptation.",
     "Will migrate behavior config to schema 5 and disable unready project/session TDD settings.",
     "Will prune expired session bindings and orphan acceptance snapshots in each upgraded target while preserving tasks, memory, spec, and project knowledge.",
+    "Will migrate active REVIEW/VERIFICATION tasks to QUALITY, retire active read-only task types as CLOSED, and preserve their artifacts and history.",
     "Will migrate legacy workflow/TDD task metadata; memory content, spec, and project knowledge files remain untouched.",
   ].join("\n");
 
@@ -158,6 +161,7 @@ export async function upgrade(opts: UpgradeOptions): Promise<void> {
   }
 
   for (const { target, config } of pending) {
+    const previousManifest = await readInstallManifest(target.dir);
     const sessionCleanup = await cleanSessionRuntime(target.dir);
     if (sessionCleanup.sessionsRemoved > 0 || sessionCleanup.acceptanceSnapshotsRemoved > 0) {
       console.log(
@@ -176,6 +180,15 @@ export async function upgrade(opts: UpgradeOptions): Promise<void> {
       supermodule: target.boundary,
       projectId,
     });
+    const retiredFiles = await pruneRetiredManagedFiles(target.dir, previousManifest, artifacts);
+    if (retiredFiles.removed.length > 0 || retiredFiles.preserved.length > 0) {
+      console.log(
+        chalk.yellow(
+          `${target.label}: removed ${retiredFiles.removed.length} retired managed file(s)` +
+            ` and preserved ${retiredFiles.preserved.length} locally modified file(s).`,
+        ),
+      );
+    }
     await writeInstallManifest(target.dir, {
       harnessVersion: VERSION,
       agents: config.agents,

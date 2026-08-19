@@ -79,7 +79,7 @@ async function writeTaskFixture(
             proposed_by: lastAgent,
           },
         }
-      : ["IMPLEMENT", "REVIEW", "VERIFICATION", "MEMORY"].includes(status)
+      : ["IMPLEMENT", "QUALITY", "MEMORY"].includes(status)
         ? { workflow_mode: "standard" }
         : {};
   await mkdir(path.join(tempDir, ".easy-coding", "tasks", taskId), { recursive: true });
@@ -242,10 +242,11 @@ async function writeVerificationAcceptanceFixture(
   sourcePath: string;
   implementationFingerprint: string;
   configFingerprint: string;
+  qualityAttempt: number;
 }> {
   await writeConfirmModeConfig(mode);
   await writeSessionFixture(taskId);
-  await writeTaskFixture(taskId, "VERIFICATION", "codex", {
+  await writeTaskFixture(taskId, "QUALITY", "codex", {
     workflow_mode: "fast",
     tdd_enabled: false,
     tdd_coverage_threshold: 90,
@@ -293,7 +294,11 @@ async function writeVerificationAcceptanceFixture(
       ],
       { cwd: tempDir, encoding: "utf8" },
     ),
-  ) as { implementation_fingerprint: string; config_fingerprint: string };
+  ) as {
+    implementation_fingerprint: string;
+    config_fingerprint: string;
+    quality_attempt: { attempt: number };
+  };
   await appendFile(
     executionPath,
     `${[
@@ -302,6 +307,7 @@ async function writeVerificationAcceptanceFixture(
         dimension: "combined",
         passed: true,
         implementation_fingerprint: fingerprints.implementation_fingerprint,
+        quality_attempt: fingerprints.quality_attempt.attempt,
         reviewer: "codex-reviewer",
         timestamp: "2026-08-13T00:00:00Z",
         findings: [],
@@ -314,6 +320,7 @@ async function writeVerificationAcceptanceFixture(
         passed: true,
         implementation_fingerprint: fingerprints.implementation_fingerprint,
         config_fingerprint: fingerprints.config_fingerprint,
+        quality_attempt: fingerprints.quality_attempt.attempt,
         timestamp: "2026-08-13T00:01:00Z",
       },
     ]
@@ -326,6 +333,76 @@ async function writeVerificationAcceptanceFixture(
     sourcePath,
     implementationFingerprint: fingerprints.implementation_fingerprint,
     configFingerprint: fingerprints.config_fingerprint,
+    qualityAttempt: fingerprints.quality_attempt.attempt,
+  };
+}
+
+async function writeQualityDecisionFixture(taskId: string): Promise<{
+  executionPath: string;
+  sourcePath: string;
+  implementationFingerprint: string;
+  configFingerprint: string;
+  qualityAttempt: number;
+}> {
+  await writeConfirmModeConfig("guard");
+  await writeSessionFixture(taskId);
+  await writeTaskFixture(taskId, "QUALITY", "codex", {
+    workflow_mode: "fast",
+    tdd_enabled: false,
+    tdd_coverage_threshold: 90,
+  });
+  const sourcePath = path.join(tempDir, "src", "quality.ts");
+  await mkdir(path.dirname(sourcePath), { recursive: true });
+  await writeFile(sourcePath, "export const quality = true;\n", "utf8");
+  execFileSync("git", ["init", "-q"], { cwd: tempDir });
+  const executionPath = path.join(
+    tempDir,
+    ".easy-coding",
+    "tasks",
+    taskId,
+    "execution.jsonl",
+  );
+  await writeFile(
+    executionPath,
+    `${JSON.stringify({
+      type: "plan",
+      strategy: "single",
+      units: [
+        {
+          id: "U1",
+          title: "quality decision",
+          type: "backend",
+          files: ["src/quality.ts"],
+          depends_on: [],
+        },
+      ],
+    })}\n`,
+    "utf8",
+  );
+  const fingerprints = JSON.parse(
+    execFileSync(
+      "python3",
+      [
+        stateApiPath(),
+        "evidence-fingerprints",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    ),
+  ) as {
+    implementation_fingerprint: string;
+    config_fingerprint: string;
+    quality_attempt: { attempt: number };
+  };
+  return {
+    executionPath,
+    sourcePath,
+    implementationFingerprint: fingerprints.implementation_fingerprint,
+    configFingerprint: fingerprints.config_fingerprint,
+    qualityAttempt: fingerprints.quality_attempt.attempt,
   };
 }
 
@@ -962,7 +1039,7 @@ describe("easy_coding_state.py hook session identity", () => {
     await writeFile(path.join(acceptanceDir, "invalid-task.json"), "{}\n", "utf8");
     await writeFile(path.join(acceptanceDir, "terminal.json"), "{}\n", "utf8");
     await writeFile(path.join(acceptanceDir, "unreferenced.json"), "{}\n", "utf8");
-    await writeTaskFixture("active", "VERIFICATION", "codex", {
+    await writeTaskFixture("active", "QUALITY", "codex", {
       verification_checkpoint: {
         snapshot_file: ".easy-coding/sessions/acceptance/active.json",
       },
@@ -986,7 +1063,7 @@ describe("easy_coding_state.py hook session identity", () => {
         snapshot_file: ".easy-coding/sessions/acceptance/terminal.json",
       },
     });
-    await writeTaskFixture("unreferenced", "VERIFICATION", "codex");
+    await writeTaskFixture("unreferenced", "QUALITY", "codex");
 
     ensureHookSession({ session_id: "new" }, "codex");
 
@@ -1251,7 +1328,7 @@ describe("easy_coding_state.py MEMORY instruction", () => {
     );
     expect(missingDigest.status).toBe(1);
     expect(missingDigest.stderr).toContain(
-      "must record the complete accepted post-verification decision",
+      "must record the complete accepted post-quality decision",
     );
 
     await writeFile(memoryPath, `${memoryText}diff_sha256: ${acceptanceDigest}\n`, "utf8");
@@ -2815,7 +2892,7 @@ describe("easy_coding_state.py ANALYSIS template gate", () => {
     expect(result.stderr).toContain("execution.jsonl has no valid plan record");
   });
 
-  it("allows empty file scope only for explicit no-code task types", async () => {
+  it("rejects empty file scope even when a legacy no-code type is persisted", async () => {
     const noCodePlan = {
       type: "plan",
       strategy: "single",
@@ -2870,7 +2947,8 @@ describe("easy_coding_state.py ANALYSIS template gate", () => {
       ],
       { cwd: tempDir, encoding: "utf8" },
     );
-    expect(accepted.status).toBe(0);
+    expect(accepted.status).toBe(1);
+    expect(accepted.stderr).toContain("execution.jsonl has no valid plan record");
 
     await writeSessionFixture("07-11-analysis-code-empty-scope");
     await writeTaskFixture("07-11-analysis-code-empty-scope", "ANALYSIS", "codex", {
@@ -2957,7 +3035,7 @@ describe("easy_coding_state.py ANALYSIS template gate", () => {
     expect(parallelNoCode.stderr).toContain("execution.jsonl has no valid plan record");
   });
 
-  it("freezes Java-only TDD off for a read-only task even when the session enables it", async () => {
+  it("does not grant a legacy read-only task a TDD or execution-plan exemption", async () => {
     const taskId = "08-07-read-only-tdd-off";
     await writeSessionFixture(taskId, { tdd_enabled: true, tdd_coverage_threshold: 95 });
     await writeTaskFixture(taskId, "ANALYSIS", "codex", { type: "report" });
@@ -2984,7 +3062,7 @@ describe("easy_coding_state.py ANALYSIS template gate", () => {
       "utf8",
     );
 
-    execFileSync(
+    const rejected = spawnSync(
       "python3",
       [
         stateApiPath(),
@@ -2998,27 +3076,12 @@ describe("easy_coding_state.py ANALYSIS template gate", () => {
       ],
       { cwd: tempDir, encoding: "utf8" },
     );
-    execFileSync(
-      "python3",
-      [
-        stateApiPath(),
-        "confirm-transition",
-        "--session-file",
-        ".easy-coding/sessions/test.json",
-        "--stage",
-        "IMPLEMENT",
-        "--agent",
-        "codex",
-      ],
-      { cwd: tempDir, encoding: "utf8" },
-    );
 
-    const task = JSON.parse(await readFile(path.join(taskDir, "task.json"), "utf8"));
-    expect(task).toMatchObject({ status: "IMPLEMENT", tdd_enabled: false });
-    expect(task).not.toHaveProperty("tdd_baselines");
+    expect(rejected.status).toBe(1);
+    expect(rejected.stderr).toContain("execution.jsonl has no valid plan record");
   });
 
-  it("allows a read-only task to leave the change-scope table empty", async () => {
+  it("rejects an empty change scope on a persisted legacy read-only task", async () => {
     const taskId = "07-11-read-only-empty-change-scope";
     await writeSessionFixture(taskId);
     await writeTaskFixture(taskId, "ANALYSIS", "codex", { type: "report" });
@@ -3075,10 +3138,11 @@ describe("easy_coding_state.py ANALYSIS template gate", () => {
       { cwd: tempDir, encoding: "utf8" },
     );
 
-    expect(accepted.status).toBe(0);
+    expect(accepted.status).toBe(1);
+    expect(accepted.stderr).toContain("execution.jsonl has no valid plan record");
   });
 
-  it("requires explicit no-code task types to use a read-only empty-scope plan", async () => {
+  it("does not exempt a persisted legacy report task from test strategy", async () => {
     const taskId = "07-11-report-must-be-read-only";
     await writeSessionFixture(taskId);
     await writeTaskFixture(taskId, "ANALYSIS", "codex", { type: "report" });
@@ -3120,10 +3184,10 @@ describe("easy_coding_state.py ANALYSIS template gate", () => {
     );
 
     expect(rejected.status).toBe(1);
-    expect(rejected.stderr).toContain("execution.jsonl has no valid plan record");
+    expect(rejected.stderr).toContain("test-strategy.md is missing or empty");
   });
 
-  it("rejects test-strategy.md for read-only tasks", async () => {
+  it("rejects an empty plan on a persisted legacy analysis task", async () => {
     const taskId = "07-11-read-only-no-test-strategy";
     await writeSessionFixture(taskId);
     await writeTaskFixture(taskId, "ANALYSIS", "codex", { type: "analysis" });
@@ -3162,7 +3226,7 @@ describe("easy_coding_state.py ANALYSIS template gate", () => {
     );
 
     expect(rejected.status).toBe(1);
-    expect(rejected.stderr).toContain("read-only task must not create test-strategy.md");
+    expect(rejected.stderr).toContain("execution.jsonl has no valid plan record");
   });
 
   it.each([
@@ -3523,10 +3587,28 @@ describe("easy_coding_state.py automatic and optional transitions", () => {
     );
   });
 
-  it("automatically follows IMPLEMENT to REVIEW in guard mode", async () => {
+  it("automatically follows IMPLEMENT to QUALITY in guard mode", async () => {
+    const taskId = "07-11-guard-review";
     await writeConfirmModeConfig("guard");
-    await writeSessionFixture("07-11-guard-review");
-    await writeTaskFixture("07-11-guard-review", "IMPLEMENT", "codex");
+    await writeSessionFixture(taskId);
+    await writeTaskFixture(taskId, "IMPLEMENT", "codex");
+    await writeFile(
+      path.join(tempDir, ".easy-coding", "tasks", taskId, "execution.jsonl"),
+      `${JSON.stringify({
+        type: "plan",
+        strategy: "single",
+        units: [
+          {
+            id: "U1",
+            title: "Guard quality transition",
+            type: "backend",
+            files: ["src/guard.ts"],
+            depends_on: [],
+          },
+        ],
+      })}\n`,
+      "utf8",
+    );
 
     const output = JSON.parse(
       execFileSync(
@@ -3537,7 +3619,7 @@ describe("easy_coding_state.py automatic and optional transitions", () => {
           "--session-file",
           ".easy-coding/sessions/test.json",
           "--stage",
-          "REVIEW",
+          "QUALITY",
           "--agent",
           "codex",
         ],
@@ -3545,14 +3627,14 @@ describe("easy_coding_state.py automatic and optional transitions", () => {
       ),
     ) as { status: string; effective_confirm_mode: string; status_line: string };
 
-    expect(output.status).toBe("REVIEW");
+    expect(output.status).toBe("QUALITY");
     expect(output.effective_confirm_mode).toBe("guard");
     expect(output.status_line).toContain(
-      "> **Easy Coding** · **Approval: Guard** · **Workflow: Standard** · `07-11-guard-review` · `REVIEW`",
+      "> **Easy Coding** · **Approval: Guard** · **Workflow: Standard** · `07-11-guard-review` · `QUALITY`",
     );
   });
 
-  it("automatically advances REVIEW, VERIFICATION, and MEMORY after confirm approval", async () => {
+  it("automatically advances QUALITY and MEMORY after confirm approval", async () => {
     const taskId = "07-27-confirm-after-analysis";
     await writeConfirmModeConfig("confirm");
     await writeSessionFixture(taskId);
@@ -3593,14 +3675,14 @@ describe("easy_coding_state.py automatic and optional transitions", () => {
           "--session-file",
           ".easy-coding/sessions/test.json",
           "--stage",
-          "REVIEW",
+          "QUALITY",
           "--agent",
           "codex",
         ],
         { cwd: tempDir, encoding: "utf8" },
       ),
     ) as { status: string; effective_approval_mode: string };
-    expect(reviewStage.status).toBe("REVIEW");
+    expect(reviewStage.status).toBe("QUALITY");
     expect(reviewStage.effective_approval_mode).toBe("confirm");
 
     const fingerprints = JSON.parse(
@@ -3616,7 +3698,11 @@ describe("easy_coding_state.py automatic and optional transitions", () => {
         ],
         { cwd: tempDir, encoding: "utf8" },
       ),
-    ) as { implementation_fingerprint: string; config_fingerprint: string };
+    ) as {
+      implementation_fingerprint: string;
+      config_fingerprint: string;
+      quality_attempt: { attempt: number };
+    };
     await appendFile(
       executionPath,
       `${JSON.stringify({
@@ -3625,29 +3711,12 @@ describe("easy_coding_state.py automatic and optional transitions", () => {
         passed: true,
         reviewer: "codex",
         implementation_fingerprint: fingerprints.implementation_fingerprint,
+        quality_attempt: fingerprints.quality_attempt.attempt,
         timestamp: "2026-07-27T00:00:00Z",
         findings: [],
       })}\n`,
       "utf8",
     );
-    const verificationStage = JSON.parse(
-      execFileSync(
-        "python3",
-        [
-          stateApiPath(),
-          "auto-transition",
-          "--session-file",
-          ".easy-coding/sessions/test.json",
-          "--stage",
-          "VERIFICATION",
-          "--agent",
-          "codex",
-        ],
-        { cwd: tempDir, encoding: "utf8" },
-      ),
-    ) as { status: string };
-    expect(verificationStage.status).toBe("VERIFICATION");
-
     await appendFile(
       executionPath,
       `${JSON.stringify({
@@ -3658,6 +3727,7 @@ describe("easy_coding_state.py automatic and optional transitions", () => {
         passed: true,
         implementation_fingerprint: fingerprints.implementation_fingerprint,
         config_fingerprint: fingerprints.config_fingerprint,
+        quality_attempt: fingerprints.quality_attempt.attempt,
         timestamp: "2026-07-27T00:00:00Z",
       })}\n`,
       "utf8",
@@ -3681,12 +3751,30 @@ describe("easy_coding_state.py automatic and optional transitions", () => {
     expect(memoryStage.status).toBe("MEMORY");
   });
 
-  it("maps a legacy lite project config to guard plus fast without skipping REVIEW", async () => {
+  it("maps a legacy lite project config to guard plus fast without skipping QUALITY", async () => {
+    const taskId = "07-13-lite-verification";
     await writeConfirmModeConfig("lite");
-    await writeSessionFixture("07-13-lite-verification");
-    await writeTaskFixture("07-13-lite-verification", "IMPLEMENT", "codex", {
+    await writeSessionFixture(taskId);
+    await writeTaskFixture(taskId, "IMPLEMENT", "codex", {
       workflow_mode: "fast",
     });
+    await writeFile(
+      path.join(tempDir, ".easy-coding", "tasks", taskId, "execution.jsonl"),
+      `${JSON.stringify({
+        type: "plan",
+        strategy: "single",
+        units: [
+          {
+            id: "U1",
+            title: "Legacy Lite migration",
+            type: "backend",
+            files: ["src/legacy-lite.ts"],
+            depends_on: [],
+          },
+        ],
+      })}\n`,
+      "utf8",
+    );
 
     const output = JSON.parse(
       execFileSync(
@@ -3697,7 +3785,7 @@ describe("easy_coding_state.py automatic and optional transitions", () => {
           "--session-file",
           ".easy-coding/sessions/test.json",
           "--stage",
-          "REVIEW",
+          "QUALITY",
           "--agent",
           "codex",
         ],
@@ -3710,11 +3798,11 @@ describe("easy_coding_state.py automatic and optional transitions", () => {
       status_line: string;
     };
 
-    expect(output.status).toBe("REVIEW");
+    expect(output.status).toBe("QUALITY");
     expect(output.effective_approval_mode).toBe("guard");
     expect(output.configured_workflow_mode).toBe("fast");
     expect(output.status_line).toContain(
-      "> **Easy Coding** · **Approval: Guard** · **Workflow: Fast** · `07-13-lite-verification` · `REVIEW`",
+      "> **Easy Coding** · **Approval: Guard** · **Workflow: Fast** · `07-13-lite-verification` · `QUALITY`",
     );
   });
 
@@ -3938,7 +4026,7 @@ describe("easy_coding_state.py automatic and optional transitions", () => {
     const taskId = "08-07-tdd-init-readiness-gate";
     await writeConfirmModeConfig("auto");
     await writeSessionFixture(taskId);
-    await writeTaskFixture(taskId, "VERIFICATION", "codex", {
+    await writeTaskFixture(taskId, "QUALITY", "codex", {
       type: "tdd-init",
       workflow_mode: "fast",
       workflow_mode_legacy: true,
@@ -3959,19 +4047,35 @@ describe("easy_coding_state.py automatic and optional transitions", () => {
         ],
         { cwd: tempDir, encoding: "utf8" },
       ),
-    ) as { implementation_fingerprint: string; config_fingerprint: string };
+    ) as {
+      implementation_fingerprint: string;
+      config_fingerprint: string;
+      quality_attempt: { attempt: number };
+    };
     await appendFile(
       path.join(tempDir, ".easy-coding", "tasks", taskId, "execution.jsonl"),
-      `${JSON.stringify({
-        type: "verify",
-        check: "infrastructure-test",
-        check_type: "test",
-        command: "mvn test",
-        passed: true,
-        timestamp: "2026-08-07T00:00:00Z",
-        implementation_fingerprint: fingerprints.implementation_fingerprint,
-        config_fingerprint: fingerprints.config_fingerprint,
-      })}\n`,
+      [
+        JSON.stringify({
+          type: "review",
+          dimension: "combined",
+          passed: true,
+          reviewer: "codex",
+          implementation_fingerprint: fingerprints.implementation_fingerprint,
+          timestamp: "2026-08-07T00:00:00Z",
+          findings: [],
+        }),
+        JSON.stringify({
+          type: "verify",
+          check: "infrastructure-test",
+          check_type: "test",
+          command: "mvn test",
+          passed: true,
+          timestamp: "2026-08-07T00:00:00Z",
+          implementation_fingerprint: fingerprints.implementation_fingerprint,
+          config_fingerprint: fingerprints.config_fingerprint,
+        }),
+        "",
+      ].join("\n"),
       "utf8",
     );
 
@@ -4354,7 +4458,7 @@ describe("easy_coding_state.py automatic and optional transitions", () => {
     await writeTaskFixture("07-11-mode-change", "IMPLEMENT", "codex", {
       pending_transition: {
         from: "IMPLEMENT",
-        to: "REVIEW",
+        to: "QUALITY",
         requested_at: "2026-07-11T00:00:00Z",
         requested_by: "codex",
       },
@@ -4380,9 +4484,9 @@ describe("easy_coding_state.py automatic and optional transitions", () => {
       status_context: string;
     };
 
-    expect(output.pending_transition).toMatchObject({ from: "IMPLEMENT", to: "REVIEW" });
+    expect(output.pending_transition).toMatchObject({ from: "IMPLEMENT", to: "QUALITY" });
     expect(output.status_context).toContain(
-      "[easy-coding:auto-transition-ready:IMPLEMENT->REVIEW]",
+      "[easy-coding:auto-transition-ready:IMPLEMENT->QUALITY]",
     );
 
     const transitioned = JSON.parse(
@@ -4394,7 +4498,7 @@ describe("easy_coding_state.py automatic and optional transitions", () => {
           "--session-file",
           ".easy-coding/sessions/test.json",
           "--stage",
-          "REVIEW",
+          "QUALITY",
           "--agent",
           "codex",
         ],
@@ -4402,17 +4506,17 @@ describe("easy_coding_state.py automatic and optional transitions", () => {
       ),
     ) as { status: string; pending_transition: null };
 
-    expect(transitioned.status).toBe("REVIEW");
+    expect(transitioned.status).toBe("QUALITY");
     expect(transitioned.pending_transition).toBeNull();
   });
 
-  it("preserves a pending REVIEW edge when the session workflow mode changes", async () => {
+  it("preserves a pending QUALITY edge when the session workflow mode changes", async () => {
     await writeConfirmModeConfig("approve");
     await writeSessionFixture("07-13-lite-mode-change");
     await writeTaskFixture("07-13-lite-mode-change", "IMPLEMENT", "codex", {
       pending_transition: {
         from: "IMPLEMENT",
-        to: "REVIEW",
+        to: "QUALITY",
         requested_at: "2026-07-13T00:00:00Z",
         requested_by: "codex",
       },
@@ -4601,6 +4705,60 @@ describe("easy_coding_state.py automatic and optional transitions", () => {
     expect(enabled.harness_disabled).toBe(false);
   });
 
+  it("preserves Lite state while no-harness temporarily owns routing", async () => {
+    await writeSessionFixture(null, {
+      lite_mode: true,
+      lite_proposal: {
+        summary: "Change one target",
+        target_files: ["src/example.ts"],
+        digest: "a".repeat(64),
+        created_at: "2026-08-19T00:00:00Z",
+        confirmed_at: "2026-08-19T00:01:00Z",
+      },
+    });
+
+    const disabled = JSON.parse(
+      execFileSync(
+        "python3",
+        [
+          stateApiPath(),
+          "disable-harness",
+          "--session-file",
+          ".easy-coding/sessions/test.json",
+          "--agent",
+          "codex",
+        ],
+        { cwd: tempDir, encoding: "utf8" },
+      ),
+    ) as { harness_disabled: boolean; lite_mode: boolean; status_context: string };
+    expect(disabled).toMatchObject({ harness_disabled: true, lite_mode: true });
+    expect(disabled.status_context).toContain("[easy-coding:no-harness]");
+    expect(disabled.status_context).not.toContain("[easy-coding:lite-direct]");
+
+    const restored = JSON.parse(
+      execFileSync(
+        "python3",
+        [
+          stateApiPath(),
+          "enable-harness",
+          "--session-file",
+          ".easy-coding/sessions/test.json",
+          "--agent",
+          "codex",
+        ],
+        { cwd: tempDir, encoding: "utf8" },
+      ),
+    ) as {
+      harness_disabled: boolean;
+      lite_mode: boolean;
+      lite_proposal: { digest: string };
+      status_context: string;
+    };
+    expect(restored).toMatchObject({ harness_disabled: false, lite_mode: true });
+    expect(restored.lite_proposal.digest).toBe("a".repeat(64));
+    expect(restored.status_context).toContain("[easy-coding:lite-direct]");
+  });
+
   it.each(["approve", "guard", "confirm"] as const)(
     "keeps the %s analysis gate confirmation-required",
     async (confirmMode) => {
@@ -4748,7 +4906,7 @@ describe("easy_coding_state.py automatic and optional transitions", () => {
     },
   );
 
-  it("rejects IMPLEMENT to VERIFICATION for new code tasks even in approve mode", async () => {
+  it("allows approve mode to request the IMPLEMENT to QUALITY edge", async () => {
     await writeConfirmModeConfig("approve");
     await writeSessionFixture("07-11-skip-review");
     await writeTaskFixture("07-11-skip-review", "IMPLEMENT", "codex");
@@ -4761,18 +4919,21 @@ describe("easy_coding_state.py automatic and optional transitions", () => {
         "--session-file",
         ".easy-coding/sessions/test.json",
         "--stage",
-        "VERIFICATION",
+        "QUALITY",
         "--agent",
         "codex",
       ],
       { cwd: tempDir, encoding: "utf8" },
     );
 
-    expect(result.status).toBe(1);
-    expect(result.stderr).toContain("ILLEGAL TRANSITION: IMPLEMENT -> VERIFICATION");
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout).pending_transition).toMatchObject({
+      from: "IMPLEMENT",
+      to: "QUALITY",
+    });
   });
 
-  it("automatically completes a read-only task after a valid deliverable result", async () => {
+  it("rejects direct completion for a persisted legacy read-only task", async () => {
     const taskId = "07-11-read-only-complete";
     await writeSessionFixture(taskId);
     await writeTaskFixture(taskId, "IMPLEMENT", "codex", { type: "report" });
@@ -4813,32 +4974,23 @@ describe("easy_coding_state.py automatic and optional transitions", () => {
       "utf8",
     );
 
-    const output = JSON.parse(
-      execFileSync(
-        "python3",
-        [
-          stateApiPath(),
-          "auto-transition",
-          "--session-file",
-          ".easy-coding/sessions/test.json",
-          "--stage",
-          "COMPLETE",
-          "--agent",
-          "codex",
-        ],
-        { cwd: tempDir, encoding: "utf8" },
-      ),
-    ) as { status: string; status_context: string; automatic_transition: Record<string, string> };
+    const rejected = spawnSync(
+      "python3",
+      [
+        stateApiPath(),
+        "auto-transition",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--stage",
+        "COMPLETE",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
 
-    expect(output.status).toBe("idle");
-    expect(output.status_context).toContain("[workflow-state:idle]");
-    expect(output.automatic_transition).toEqual({ from: "IMPLEMENT", to: "COMPLETE" });
-
-    const task = JSON.parse(
-      await readFile(path.join(tempDir, ".easy-coding", "tasks", taskId, "task.json"), "utf8"),
-    ) as { status: string; memory_progress?: unknown };
-    expect(task.status).toBe("COMPLETE");
-    expect(task.memory_progress).toBeUndefined();
+    expect(rejected.status).toBe(1);
+    expect(rejected.stderr).toContain("ILLEGAL TRANSITION: IMPLEMENT -> COMPLETE");
   });
 
   it.each([
@@ -4868,7 +5020,7 @@ describe("easy_coding_state.py automatic and optional transitions", () => {
       },
       error: "changed_files:[]",
     },
-  ])("rejects read-only completion with $name", async ({ result, error }) => {
+  ])("rejects retired read-only completion before inspecting $name", async ({ result, error }) => {
     const taskId = `07-11-read-only-invalid-${error.includes("deliverable") ? "empty" : "files"}`;
     await writeSessionFixture(taskId);
     await writeTaskFixture(taskId, "IMPLEMENT", "codex", { type: "analysis" });
@@ -4915,7 +5067,7 @@ describe("easy_coding_state.py automatic and optional transitions", () => {
     );
 
     expect(rejected.status).toBe(1);
-    expect(rejected.stderr).toContain(error);
+    expect(rejected.stderr).toContain("ILLEGAL TRANSITION: IMPLEMENT -> COMPLETE");
   });
 
   it("rejects read-only completion without a matching dispatch record", async () => {
@@ -4968,7 +5120,7 @@ describe("easy_coding_state.py automatic and optional transitions", () => {
     );
 
     expect(rejected.status).toBe(1);
-    expect(rejected.stderr).toContain("no matching dispatch record");
+    expect(rejected.stderr).toContain("ILLEGAL TRANSITION: IMPLEMENT -> COMPLETE");
   });
 
   it("rejects IMPLEMENT to COMPLETE for code tasks", async () => {
@@ -4994,8 +5146,8 @@ describe("easy_coding_state.py automatic and optional transitions", () => {
     expect(rejected.stderr).toContain("ILLEGAL TRANSITION: IMPLEMENT -> COMPLETE");
   });
 
-  it.each(["REVIEW", "VERIFICATION", "MEMORY"])(
-    "prevents read-only IMPLEMENT from entering %s",
+  it.each(["REVIEW", "VERIFICATION"])(
+    "rejects retired %s stages even when a legacy read-only task is persisted",
     async (target) => {
       const taskId = `07-11-read-only-no-${target.toLowerCase()}`;
       await writeSessionFixture(taskId);
@@ -5017,7 +5169,7 @@ describe("easy_coding_state.py automatic and optional transitions", () => {
       );
 
       expect(rejected.status).toBe(1);
-      expect(rejected.stderr).toContain(`ILLEGAL TRANSITION: IMPLEMENT -> ${target}`);
+      expect(rejected.stderr).toContain(`Unknown stage: ${target}`);
     },
   );
 
@@ -5088,7 +5240,7 @@ describe("easy_coding_state.py automatic and optional transitions", () => {
 describe("easy_coding_state.py handoff and claim", () => {
   it("treats stored Codex root ownership as the current codex agent", async () => {
     await writeSessionFixture("06-26-root-owner");
-    await writeTaskFixture("06-26-root-owner", "VERIFICATION", "root");
+    await writeTaskFixture("06-26-root-owner", "QUALITY", "root");
 
     const statusContext = execFileSync(
       "python3",
@@ -5259,7 +5411,7 @@ describe("easy_coding_state.py handoff and claim", () => {
   it("marks task list entries as continue or takeover for the current agent", async () => {
     await writeSessionFixture(null);
     await writeTaskFixture("06-26-continue", "ANALYSIS", "codex");
-    await writeTaskFixture("06-26-root-continue", "VERIFICATION", "/root/reviewer");
+    await writeTaskFixture("06-26-root-continue", "QUALITY", "/root/reviewer");
     await writeTaskFixture("06-26-takeover", "IMPLEMENT", "claude-code");
     await writeFile(
       path.join(tempDir, ".easy-coding", "tasks", "06-26-takeover", "execution.jsonl"),
@@ -5478,7 +5630,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
         "--session-file",
         ".easy-coding/sessions/test.json",
         "--stage",
-        "REVIEW",
+        "QUALITY",
         "--agent",
         "codex",
       ],
@@ -5488,11 +5640,11 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
       "python3",
       [
         stateApiPath(),
-        "auto-transition",
+        "request-transition",
         "--session-file",
         ".easy-coding/sessions/test.json",
         "--stage",
-        "VERIFICATION",
+        "MEMORY",
         "--agent",
         "codex",
       ],
@@ -5500,11 +5652,11 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
     );
     expect(bypassAttempt.status).toBe(1);
     expect(bypassAttempt.stderr).toContain(
-      "without a review record for the current implementation fingerprint",
+      "without review evidence for the current implementation fingerprint",
     );
   });
 
-  it("limits a legacy review skip to one edge and still requires fresh verification", async () => {
+  it("does not let legacy direct-edge flags bypass QUALITY evidence", async () => {
     const taskId = "07-27-legacy-review-edge";
     await writeConfirmModeConfig("guard");
     await writeSessionFixture(taskId);
@@ -5514,7 +5666,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
       workflow_mode_legacy_direct_edge: true,
       pending_transition: {
         from: "IMPLEMENT",
-        to: "REVIEW",
+        to: "QUALITY",
         requested_at: "2026-07-27T00:00:00Z",
         requested_by: "upgrade-migration",
       },
@@ -5555,11 +5707,11 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
         { cwd: tempDir, encoding: "utf8" },
       ),
     ) as { status_context: string };
-    expect(migratedSnapshot.status_context).toContain(
-      "[easy-coding:lite-review-bypass-required:IMPLEMENT->REVIEW]",
-    );
     expect(migratedSnapshot.status_context).not.toContain(
-      "[easy-coding:auto-transition-ready:IMPLEMENT->REVIEW]",
+      "[easy-coding:lite-review-bypass-required:IMPLEMENT->QUALITY]",
+    );
+    expect(migratedSnapshot.status_context).toContain(
+      "[easy-coding:auto-transition-ready:IMPLEMENT->QUALITY]",
     );
 
     execFileSync(
@@ -5584,14 +5736,14 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
           "--session-file",
           ".easy-coding/sessions/test.json",
           "--stage",
-          "VERIFICATION",
+          "QUALITY",
           "--agent",
           "codex",
         ],
         { cwd: tempDir, encoding: "utf8" },
       ),
     ) as { status: string };
-    expect(transitioned.status).toBe("VERIFICATION");
+    expect(transitioned.status).toBe("QUALITY");
 
     const task = JSON.parse(
       await readFile(
@@ -5601,23 +5753,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
     ) as Record<string, unknown>;
     expect(task).not.toHaveProperty("workflow_mode_legacy");
     expect(task).not.toHaveProperty("workflow_mode_legacy_direct_edge");
-    const originalFingerprints = JSON.parse(
-      execFileSync(
-        "python3",
-        [
-          stateApiPath(),
-          "evidence-fingerprints",
-          "--session-file",
-          ".easy-coding/sessions/test.json",
-          "--agent",
-          "codex",
-        ],
-        { cwd: tempDir, encoding: "utf8" },
-      ),
-    ) as { implementation_fingerprint: string; config_fingerprint: string };
-    expect(task.workflow_mode_legacy_review_bypass_fingerprint).toBe(
-      originalFingerprints.implementation_fingerprint,
-    );
+    expect(task).not.toHaveProperty("workflow_mode_legacy_review_bypass_fingerprint");
 
     const memoryAttempt = spawnSync(
       "python3",
@@ -5635,10 +5771,9 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
     );
     expect(memoryAttempt.status).toBe(1);
     expect(memoryAttempt.stderr).toContain(
-      "without verification evidence for the current implementation and config fingerprints",
+      "without review evidence for the current implementation fingerprint",
     );
 
-    await writeFile(path.join(tempDir, "src", "example.ts"), "export const value = 2;\n", "utf8");
     const changedFingerprints = JSON.parse(
       execFileSync(
         "python3",
@@ -5652,15 +5787,23 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
         ],
         { cwd: tempDir, encoding: "utf8" },
       ),
-    ) as { implementation_fingerprint: string; config_fingerprint: string };
+    ) as {
+      implementation_fingerprint: string;
+      config_fingerprint: string;
+      quality_attempt: { attempt: number };
+    };
     await appendFile(
       path.join(tempDir, ".easy-coding", "tasks", taskId, "execution.jsonl"),
       `${JSON.stringify({
         type: "verify",
         check: "legacy-targeted-test",
+        check_type: "test",
+        command: "npm test -- legacy-targeted",
         passed: true,
         implementation_fingerprint: changedFingerprints.implementation_fingerprint,
         config_fingerprint: changedFingerprints.config_fingerprint,
+        quality_attempt: changedFingerprints.quality_attempt.attempt,
+        timestamp: "2026-07-27T00:00:00Z",
       })}\n`,
       "utf8",
     );
@@ -5680,11 +5823,11 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
     );
     expect(changedImplementationAttempt.status).toBe(1);
     expect(changedImplementationAttempt.stderr).toContain(
-      "without a review record for the current implementation fingerprint",
+      "without review evidence for the current implementation fingerprint",
     );
   });
 
-  it("does not grant the direct verification edge to a generic migrated task", async () => {
+  it("routes a generic migrated task through the normal QUALITY edge", async () => {
     const taskId = "07-27-legacy-without-direct-edge";
     await writeConfirmModeConfig("guard");
     await writeSessionFixture(taskId);
@@ -5692,6 +5835,23 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
       workflow_mode: "strict",
       workflow_mode_legacy: true,
     });
+    await writeFile(
+      path.join(tempDir, ".easy-coding", "tasks", taskId, "execution.jsonl"),
+      `${JSON.stringify({
+        type: "plan",
+        strategy: "single",
+        units: [
+          {
+            id: "U1",
+            title: "Migrate through quality",
+            type: "backend",
+            files: ["src/legacy.ts"],
+            depends_on: [],
+          },
+        ],
+      })}\n`,
+      "utf8",
+    );
 
     const result = spawnSync(
       "python3",
@@ -5701,22 +5861,22 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
         "--session-file",
         ".easy-coding/sessions/test.json",
         "--stage",
-        "VERIFICATION",
+        "QUALITY",
         "--agent",
         "codex",
       ],
       { cwd: tempDir, encoding: "utf8" },
     );
 
-    expect(result.status).toBe(1);
-    expect(result.stderr).toContain("ILLEGAL TRANSITION: IMPLEMENT -> VERIFICATION");
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout).status).toBe("QUALITY");
   });
 
-  it("requires fresh verification evidence for a migrated task already in VERIFICATION", async () => {
+  it("requires fresh verification evidence for a migrated task already in QUALITY", async () => {
     const taskId = "07-27-legacy-verification";
     await writeConfirmModeConfig("guard");
     await writeSessionFixture(taskId);
-    await writeTaskFixture(taskId, "VERIFICATION", "codex", {
+    await writeTaskFixture(taskId, "QUALITY", "codex", {
       workflow_mode: "fast",
       workflow_mode_legacy: true,
     });
@@ -5779,7 +5939,24 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
         ],
         { cwd: tempDir, encoding: "utf8" },
       ),
-    ) as { implementation_fingerprint: string; config_fingerprint: string };
+    ) as {
+      implementation_fingerprint: string;
+      config_fingerprint: string;
+      quality_attempt: { attempt: number };
+    };
+    await appendFile(
+      executionPath,
+      `${JSON.stringify({
+        type: "review",
+        dimension: "combined",
+        passed: true,
+        reviewer: "codex",
+        implementation_fingerprint: fingerprints.implementation_fingerprint,
+        timestamp: "2026-07-27T00:00:00Z",
+        findings: [],
+      })}\n`,
+      "utf8",
+    );
     await appendFile(
       executionPath,
       `${JSON.stringify({
@@ -5788,6 +5965,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
         check_type: "test",
         passed: true,
         implementation_fingerprint: fingerprints.implementation_fingerprint,
+        quality_attempt: fingerprints.quality_attempt.attempt,
         config_fingerprint: fingerprints.config_fingerprint,
       })}\n`,
       "utf8",
@@ -5810,7 +5988,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
       ),
     ) as { pending_transition: { from: string; to: string } };
     expect(requested.pending_transition).toMatchObject({
-      from: "VERIFICATION",
+      from: "QUALITY",
       to: "MEMORY",
     });
   });
@@ -6053,7 +6231,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
     expect(floor.reasons).toContain("cross-repository-change");
   });
 
-  it("keeps bounded changes at fast through five files and defaults broader work to standard", async () => {
+  it("keeps bounded changes at fast through eight files and defaults broader work to standard", async () => {
     await writeConfirmModeConfig("guard");
     execFileSync("git", ["init", "-q"], { cwd: tempDir });
     await mkdir(path.join(tempDir, "src"), { recursive: true });
@@ -6077,8 +6255,8 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
         risks: ["none"],
         contracts: ["none"],
         localBaseline: ["src/Model1.ts:1 is the nearest comparable model"],
-        expected: "standard",
-        reason: "multi-file-impact",
+        expected: "fast",
+        reason: "single-bounded-unit",
       },
       {
         taskId: "07-27-broad-low-risk",
@@ -6087,7 +6265,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
         contracts: ["none"],
         localBaseline: ["src/Model1.ts:1 is the nearest comparable model"],
         expected: "standard",
-        reason: "broad-change-scope",
+        reason: "multi-file-impact",
       },
       {
         taskId: "07-27-domain-keywords-only",
@@ -6198,7 +6376,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
     }
   });
 
-  it("requires a local baseline and keeps small parallel work at standard", async () => {
+  it("requires a local baseline and keeps two-unit parallel work at fast", async () => {
     const taskId = "07-27-parallel-local-baseline";
     await writeConfirmModeConfig("guard");
     await writeSessionFixture(taskId);
@@ -6282,8 +6460,8 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
         { cwd: tempDir, encoding: "utf8" },
       ),
     ) as { minimum_mode: string; reasons: string[] };
-    expect(floor.minimum_mode).toBe("standard");
-    expect(floor.reasons).toContain("parallel-execution");
+    expect(floor.minimum_mode).toBe("fast");
+    expect(floor.reasons).toContain("single-bounded-unit");
   });
 
   it("ignores unmodified Canonical and supermodule repositories when calculating the floor", async () => {
@@ -6360,7 +6538,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
     const taskId = "07-27-unplanned-worktree-change";
     await writeConfirmModeConfig("guard");
     await writeSessionFixture(taskId);
-    await writeTaskFixture(taskId, "REVIEW", "codex", { workflow_mode: "fast" });
+    await writeTaskFixture(taskId, "IMPLEMENT", "codex", { workflow_mode: "fast" });
     await mkdir(path.join(tempDir, "src"), { recursive: true });
     await writeFile(
       path.join(tempDir, "src", "planned.ts"),
@@ -6488,11 +6666,11 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
       JSON.stringify({
         type: "feature",
         title: "nested project fingerprint",
-        status: "REVIEW",
+        status: "IMPLEMENT",
         created_at: "2026-07-27T00:00:00Z",
         created_by: "codex",
         last_agent: "codex",
-        stage_history: [{ stage: "REVIEW", agent: "codex" }],
+        stage_history: [{ stage: "IMPLEMENT", agent: "codex" }],
         workflow_mode: "fast",
       }),
       "utf8",
@@ -6668,7 +6846,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
 
     await writeConfirmModeConfig("guard");
     await writeSessionFixture(taskId);
-    await writeTaskFixture(taskId, "REVIEW", "codex", { workflow_mode: "fast" });
+    await writeTaskFixture(taskId, "IMPLEMENT", "codex", { workflow_mode: "fast" });
     await writeFile(
       path.join(tempDir, ".easy-coding", "tasks", taskId, "execution.jsonl"),
       `${JSON.stringify({
@@ -6717,7 +6895,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
     const taskId = "07-27-fingerprint-gates";
     await writeConfirmModeConfig("guard");
     await writeSessionFixture(taskId);
-    await writeTaskFixture(taskId, "REVIEW", "codex", {
+    await writeTaskFixture(taskId, "QUALITY", "codex", {
       workflow_mode: "fast",
       tdd_enabled: false,
       tdd_coverage_threshold: 90,
@@ -6753,18 +6931,18 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
       "python3",
       [
         stateApiPath(),
-        "auto-transition",
+        "request-transition",
         "--session-file",
         ".easy-coding/sessions/test.json",
         "--stage",
-        "VERIFICATION",
+        "MEMORY",
         "--agent",
         "codex",
       ],
       { cwd: tempDir, encoding: "utf8" },
     );
     expect(missingReview.status).toBe(1);
-    expect(missingReview.stderr).toContain("without a review record");
+    expect(missingReview.stderr).toContain("without review evidence");
 
     const fingerprints = JSON.parse(
       execFileSync(
@@ -6779,7 +6957,11 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
         ],
         { cwd: tempDir, encoding: "utf8" },
       ),
-    ) as { implementation_fingerprint: string; config_fingerprint: string };
+    ) as {
+      implementation_fingerprint: string;
+      config_fingerprint: string;
+      quality_attempt: { attempt: number };
+    };
     await appendFile(
       path.join(tempDir, ".easy-coding", "config.yaml"),
       "  tdd_enabled: true\n  tdd_coverage_threshold: 99\n",
@@ -6798,7 +6980,11 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
         ],
         { cwd: tempDir, encoding: "utf8" },
       ),
-    ) as { implementation_fingerprint: string; config_fingerprint: string };
+    ) as {
+      implementation_fingerprint: string;
+      config_fingerprint: string;
+      quality_attempt: { attempt: number };
+    };
     expect(afterProjectTddChange).toEqual(fingerprints);
     await appendFile(
       executionPath,
@@ -6807,6 +6993,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
         dimension: "combined",
         passed: true,
         implementation_fingerprint: fingerprints.implementation_fingerprint,
+        quality_attempt: fingerprints.quality_attempt.attempt,
       })}\n`,
       "utf8",
     );
@@ -6814,11 +7001,11 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
       "python3",
       [
         stateApiPath(),
-        "auto-transition",
+        "request-transition",
         "--session-file",
         ".easy-coding/sessions/test.json",
         "--stage",
-        "VERIFICATION",
+        "MEMORY",
         "--agent",
         "codex",
       ],
@@ -6826,7 +7013,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
     );
     expect(malformedReview.status).toBe(1);
     expect(malformedReview.stderr).toContain(
-      "must include reviewer, timestamp, and a findings array",
+      "must include dimension, boolean passed, reviewer",
     );
 
     for (const findings of [
@@ -6848,6 +7035,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
           passed: true,
           reviewer: "codex",
           implementation_fingerprint: fingerprints.implementation_fingerprint,
+          quality_attempt: fingerprints.quality_attempt.attempt,
           timestamp: "2026-07-27T00:00:00Z",
           findings,
         })}\n`,
@@ -6857,11 +7045,11 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
         "python3",
         [
           stateApiPath(),
-          "auto-transition",
+          "request-transition",
           "--session-file",
           ".easy-coding/sessions/test.json",
           "--stage",
-          "VERIFICATION",
+          "MEMORY",
           "--agent",
           "codex",
         ],
@@ -6869,7 +7057,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
       );
       expect(malformedFinding.status).toBe(1);
       expect(malformedFinding.stderr).toContain(
-        "Each review finding must include a non-empty file and issue",
+        "timestamp, and valid structured findings",
       );
     }
 
@@ -6881,26 +7069,12 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
         passed: true,
         reviewer: "codex",
         implementation_fingerprint: fingerprints.implementation_fingerprint,
+        quality_attempt: fingerprints.quality_attempt.attempt,
         timestamp: "2026-07-27T00:00:00Z",
         findings: [],
       })}\n`,
       "utf8",
     );
-    execFileSync(
-      "python3",
-      [
-        stateApiPath(),
-        "auto-transition",
-        "--session-file",
-        ".easy-coding/sessions/test.json",
-        "--stage",
-        "VERIFICATION",
-        "--agent",
-        "codex",
-      ],
-      { cwd: tempDir, encoding: "utf8" },
-    );
-
     await appendFile(
       executionPath,
       `${JSON.stringify({
@@ -6911,6 +7085,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
         passed: true,
         implementation_fingerprint: fingerprints.implementation_fingerprint,
         config_fingerprint: fingerprints.config_fingerprint,
+        quality_attempt: fingerprints.quality_attempt.attempt,
         timestamp: "2026-07-27T00:00:00Z",
       })}\n`,
       "utf8",
@@ -6926,6 +7101,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
         passed: true,
         implementation_fingerprint: fingerprints.implementation_fingerprint,
         config_fingerprint: fingerprints.config_fingerprint,
+        quality_attempt: fingerprints.quality_attempt.attempt,
         timestamp: "2026-07-27T00:00:30Z",
       })}\n`,
       "utf8",
@@ -6956,6 +7132,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
         passed: true,
         implementation_fingerprint: fingerprints.implementation_fingerprint,
         config_fingerprint: fingerprints.config_fingerprint,
+        quality_attempt: fingerprints.quality_attempt.attempt,
         timestamp: "2026-07-27T00:00:45Z",
       })}\n`,
       "utf8",
@@ -6981,7 +7158,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
       { cwd: tempDir, encoding: "utf8" },
     );
     expect(staleVerify.status).toBe(1);
-    expect(staleVerify.stderr).toContain("without verification evidence");
+    expect(staleVerify.stderr).toContain("no longer matches the current config");
 
     const refreshed = JSON.parse(
       execFileSync(
@@ -6996,7 +7173,25 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
         ],
         { cwd: tempDir, encoding: "utf8" },
       ),
-    ) as { implementation_fingerprint: string; config_fingerprint: string };
+    ) as {
+      implementation_fingerprint: string;
+      config_fingerprint: string;
+      quality_attempt: { attempt: number };
+    };
+    await appendFile(
+      executionPath,
+      `${JSON.stringify({
+        type: "review",
+        dimension: "combined",
+        passed: true,
+        reviewer: "codex",
+        implementation_fingerprint: refreshed.implementation_fingerprint,
+        quality_attempt: refreshed.quality_attempt.attempt,
+        timestamp: "2026-07-27T00:01:00Z",
+        findings: [],
+      })}\n`,
+      "utf8",
+    );
     await appendFile(
       executionPath,
       `${JSON.stringify({
@@ -7007,6 +7202,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
         passed: true,
         implementation_fingerprint: refreshed.implementation_fingerprint,
         config_fingerprint: refreshed.config_fingerprint,
+        quality_attempt: refreshed.quality_attempt.attempt,
         timestamp: "2026-07-27T00:01:00Z",
       })}\n`,
       "utf8",
@@ -7028,7 +7224,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
       ),
     ) as { pending_transition: { from: string; to: string } };
     expect(requested.pending_transition).toMatchObject({
-      from: "VERIFICATION",
+      from: "QUALITY",
       to: "MEMORY",
     });
   });
@@ -7074,6 +7270,966 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
         review_policy: "current",
         verification_policy: "current",
       }),
+    ]);
+  }, 15_000);
+
+  it("finalizes exactly one state-owned QUALITY record and rejects malformed records", async () => {
+    const taskId = "08-19-quality-record";
+    const fixture = await writeVerificationAcceptanceFixture(taskId, "guard");
+    const checkpointArgs = [
+      stateApiPath(),
+      "quality-checkpoint",
+      "--session-file",
+      ".easy-coding/sessions/test.json",
+      "--agent",
+      "codex",
+    ];
+
+    execFileSync("python3", checkpointArgs, { cwd: tempDir, encoding: "utf8" });
+    execFileSync("python3", checkpointArgs, { cwd: tempDir, encoding: "utf8" });
+    const records = (await readFile(fixture.executionPath, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(records.filter((record) => record.type === "quality")).toEqual([
+      expect.objectContaining({
+        type: "quality",
+        attempt: 1,
+        implementation_fingerprint: fixture.implementationFingerprint,
+        config_fingerprint: fixture.configFingerprint,
+        repair_count: 0,
+        outcome: "passed",
+        review_gate: "passed",
+        verification_gate: "passed",
+        summary: "QUALITY gates passed for the current candidate.",
+        evidence_start_index: 1,
+        evidence_end_index: 3,
+        failure_classes: [],
+      }),
+    ]);
+
+    const malformedTaskId = "08-19-malformed-quality-record";
+    const malformed = await writeVerificationAcceptanceFixture(malformedTaskId, "guard");
+    await appendFile(
+      malformed.executionPath,
+      `${JSON.stringify({ type: "quality", attempt: 1 })}\n`,
+      "utf8",
+    );
+    const rejected = spawnSync("python3", checkpointArgs, {
+      cwd: tempDir,
+      encoding: "utf8",
+    });
+    expect(rejected.status).toBe(1);
+    expect(rejected.stderr).toContain(
+      "QUALITY record outcome must be passed, repair, replan, or cancelled",
+    );
+  }, 20_000);
+
+  it("requires both QUALITY gates to reach a terminal state before repair", async () => {
+    const taskId = "08-19-quality-terminal-gates";
+    const fixture = await writeQualityDecisionFixture(taskId);
+    await appendFile(
+      fixture.executionPath,
+      `${JSON.stringify({
+        type: "review",
+        dimension: "correctness",
+        passed: false,
+        reviewer: "codex-reviewer",
+        implementation_fingerprint: fixture.implementationFingerprint,
+        quality_attempt: fixture.qualityAttempt,
+        failure_classes: ["code-defect"],
+        timestamp: "2026-08-19T00:00:00Z",
+        findings: [
+          {
+            file: "src/quality.ts",
+            line: 1,
+            issue: "repair required",
+            severity: "error",
+          },
+        ],
+      })}\n`,
+      "utf8",
+    );
+    const decisionArgs = [
+      stateApiPath(),
+      "finalize-quality",
+      "--session-file",
+      ".easy-coding/sessions/test.json",
+      "--outcome",
+      "repair",
+      "--review-gate",
+      "failed",
+      "--verification-gate",
+      "passed",
+      "--failure-class",
+      "code-defect",
+      "--summary",
+      "Review found a code defect",
+      "--agent",
+      "codex",
+    ];
+    const incomplete = spawnSync("python3", decisionArgs, {
+      cwd: tempDir,
+      encoding: "utf8",
+    });
+    expect(incomplete.status).toBe(1);
+    expect(incomplete.stderr).toContain(
+      "The Verification Gate has no evidence for this QUALITY attempt",
+    );
+
+    decisionArgs[decisionArgs.indexOf("passed")] = "cancelled";
+    const finalized = JSON.parse(
+      execFileSync("python3", decisionArgs, { cwd: tempDir, encoding: "utf8" }),
+    );
+    expect(finalized.quality).toMatchObject({
+      outcome: "repair",
+      review_gate: "failed",
+      verification_gate: "cancelled",
+      failure_classes: ["code-defect"],
+    });
+    execFileSync("python3", decisionArgs, { cwd: tempDir, encoding: "utf8" });
+    const records = (await readFile(fixture.executionPath, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(records.filter((record) => record.type === "quality")).toHaveLength(1);
+  });
+
+  it("keeps environmental verification failures in QUALITY", async () => {
+    const taskId = "08-19-quality-environment";
+    const fixture = await writeQualityDecisionFixture(taskId);
+    await appendFile(
+      fixture.executionPath,
+      `${[
+        {
+          type: "review",
+          dimension: "combined",
+          passed: true,
+          reviewer: "codex-reviewer",
+          implementation_fingerprint: fixture.implementationFingerprint,
+          quality_attempt: fixture.qualityAttempt,
+          timestamp: "2026-08-19T00:00:00Z",
+          findings: [],
+        },
+        {
+          type: "verify",
+          check: "targeted-test",
+          check_type: "test",
+          command: "mvn test",
+          passed: false,
+          failures: ["mvn: command not found"],
+          implementation_fingerprint: fixture.implementationFingerprint,
+          config_fingerprint: fixture.configFingerprint,
+          quality_attempt: fixture.qualityAttempt,
+          failure_classes: ["environment"],
+          timestamp: "2026-08-19T00:01:00Z",
+        },
+      ]
+        .map((record) => JSON.stringify(record))
+        .join("\n")}\n`,
+      "utf8",
+    );
+    const rejected = spawnSync(
+      "python3",
+      [
+        stateApiPath(),
+        "finalize-quality",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--outcome",
+        "repair",
+        "--review-gate",
+        "passed",
+        "--verification-gate",
+        "failed",
+        "--failure-class",
+        "environment",
+        "--summary",
+        "Build tool unavailable",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    expect(rejected.status).toBe(1);
+    expect(rejected.stderr).toContain(
+      "QUALITY repair requires a code-defect or test-defect classification only",
+    );
+    const misclassified = spawnSync(
+      "python3",
+      [
+        stateApiPath(),
+        "finalize-quality",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--outcome",
+        "repair",
+        "--review-gate",
+        "passed",
+        "--verification-gate",
+        "failed",
+        "--failure-class",
+        "code-defect",
+        "--summary",
+        "Misclassify the environment as code",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    expect(misclassified.status).toBe(1);
+    expect(misclassified.stderr).toContain(
+      "failure classes must exactly match the blocking gate evidence",
+    );
+    const task = JSON.parse(
+      await readFile(
+        path.join(tempDir, ".easy-coding", "tasks", taskId, "task.json"),
+        "utf8",
+      ),
+    );
+    expect(task).toMatchObject({ status: "QUALITY", quality_attempt: { attempt: 1 } });
+  });
+
+  it("prioritizes contract ambiguity in a mixed replan and starts a fresh QUALITY attempt later", async () => {
+    const taskId = "08-19-quality-replan";
+    const fixture = await writeQualityDecisionFixture(taskId);
+    await appendFile(
+      fixture.executionPath,
+      `${JSON.stringify({
+        type: "review",
+        dimension: "contract",
+        passed: false,
+        reviewer: "codex-reviewer",
+        implementation_fingerprint: fixture.implementationFingerprint,
+        quality_attempt: fixture.qualityAttempt,
+        failure_classes: ["contract-ambiguity", "code-defect"],
+        timestamp: "2026-08-19T00:00:00Z",
+        findings: [
+          {
+            file: "src/quality.ts",
+            line: 1,
+            issue: "contract is ambiguous",
+            severity: "error",
+          },
+        ],
+      })}\n`,
+      "utf8",
+    );
+    execFileSync(
+      "python3",
+      [
+        stateApiPath(),
+        "finalize-quality",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--outcome",
+        "replan",
+        "--review-gate",
+        "failed",
+        "--verification-gate",
+        "cancelled",
+        "--failure-class",
+        "contract-ambiguity",
+        "--failure-class",
+        "code-defect",
+        "--summary",
+        "Clarify the contract before implementation",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    const analysis = JSON.parse(
+      execFileSync(
+        "python3",
+        [
+          stateApiPath(),
+          "auto-transition",
+          "--session-file",
+          ".easy-coding/sessions/test.json",
+          "--stage",
+          "ANALYSIS",
+          "--agent",
+          "codex",
+        ],
+        { cwd: tempDir, encoding: "utf8" },
+      ),
+    );
+    expect(analysis.status).toBe("ANALYSIS");
+
+    const taskPath = path.join(tempDir, ".easy-coding", "tasks", taskId, "task.json");
+    const task = JSON.parse(await readFile(taskPath, "utf8"));
+    task.status = "IMPLEMENT";
+    await writeFile(taskPath, JSON.stringify(task, null, 2), "utf8");
+    await writeFile(fixture.sourcePath, "export const quality = 'replanned';\n", "utf8");
+    execFileSync(
+      "python3",
+      [
+        stateApiPath(),
+        "auto-transition",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--stage",
+        "QUALITY",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    const next = JSON.parse(
+      execFileSync(
+        "python3",
+        [
+          stateApiPath(),
+          "evidence-fingerprints",
+          "--session-file",
+          ".easy-coding/sessions/test.json",
+          "--agent",
+          "codex",
+        ],
+        { cwd: tempDir, encoding: "utf8" },
+      ),
+    );
+    expect(next.quality_attempt.attempt).toBe(2);
+  });
+
+  it("cancels an active QUALITY attempt when the implementation returns to IMPLEMENT", async () => {
+    const taskId = "08-19-quality-candidate-drift";
+    const fixture = await writeQualityDecisionFixture(taskId);
+    await writeFile(fixture.sourcePath, "export const quality = false;\n", "utf8");
+    const fingerprintArgs = [
+      stateApiPath(),
+      "evidence-fingerprints",
+      "--session-file",
+      ".easy-coding/sessions/test.json",
+      "--agent",
+      "codex",
+    ];
+    const detected = spawnSync("python3", fingerprintArgs, {
+      cwd: tempDir,
+      encoding: "utf8",
+    });
+    expect(detected.status).toBe(1);
+    expect(detected.stderr).toContain("return to IMPLEMENT before collecting new evidence");
+
+    const repeated = spawnSync("python3", fingerprintArgs, {
+      cwd: tempDir,
+      encoding: "utf8",
+    });
+    expect(repeated.status).toBe(1);
+    expect(repeated.stderr).toContain("requires a return to IMPLEMENT");
+
+    const blockedTask = JSON.parse(
+      await readFile(
+        path.join(tempDir, ".easy-coding", "tasks", taskId, "task.json"),
+        "utf8",
+      ),
+    );
+    expect(blockedTask).toMatchObject({
+      status: "QUALITY",
+      quality_return_required: { reason: "implementation-drift" },
+    });
+    const transitioned = JSON.parse(
+      execFileSync(
+        "python3",
+        [
+          stateApiPath(),
+          "auto-transition",
+          "--session-file",
+          ".easy-coding/sessions/test.json",
+          "--stage",
+          "IMPLEMENT",
+          "--agent",
+          "codex",
+        ],
+        { cwd: tempDir, encoding: "utf8" },
+      ),
+    );
+    expect(transitioned.status).toBe("IMPLEMENT");
+    expect(
+      JSON.parse(
+        await readFile(
+          path.join(tempDir, ".easy-coding", "tasks", taskId, "task.json"),
+          "utf8",
+        ),
+      ),
+    ).not.toHaveProperty("quality_return_required");
+    const records = (await readFile(fixture.executionPath, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(records.filter((record) => record.type === "quality")).toEqual([
+      expect.objectContaining({ attempt: 1, outcome: "cancelled" }),
+    ]);
+  });
+
+  it("finalizes a new QUALITY attempt after an unchanged candidate was cancelled", async () => {
+    const taskId = "08-19-quality-cancelled-retry";
+    const fixture = await writeQualityDecisionFixture(taskId);
+    execFileSync(
+      "python3",
+      [
+        stateApiPath(),
+        "auto-transition",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--stage",
+        "IMPLEMENT",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    await appendFile(
+      fixture.executionPath,
+      `${[
+        {
+          type: "dispatch",
+          unit_id: "U1",
+          timestamp: "2026-08-19T00:01:00Z",
+        },
+        {
+          type: "result",
+          unit_id: "U1",
+          status: "completed",
+          changed_files: ["src/quality.ts"],
+          summary: "No implementation change was needed",
+          issues: [],
+          needs_attention: [],
+        },
+      ]
+        .map((record) => JSON.stringify(record))
+        .join("\n")}\n`,
+      "utf8",
+    );
+    execFileSync(
+      "python3",
+      [
+        stateApiPath(),
+        "auto-transition",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--stage",
+        "QUALITY",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    const fingerprints = JSON.parse(
+      execFileSync(
+        "python3",
+        [
+          stateApiPath(),
+          "evidence-fingerprints",
+          "--session-file",
+          ".easy-coding/sessions/test.json",
+          "--agent",
+          "codex",
+        ],
+        { cwd: tempDir, encoding: "utf8" },
+      ),
+    );
+    expect(fingerprints.quality_attempt.attempt).toBe(2);
+    await appendFile(
+      fixture.executionPath,
+      `${[
+        {
+          type: "review",
+          dimension: "combined",
+          passed: true,
+          reviewer: "codex-reviewer",
+          implementation_fingerprint: fingerprints.implementation_fingerprint,
+          quality_attempt: fingerprints.quality_attempt.attempt,
+          timestamp: "2026-08-19T00:02:00Z",
+          findings: [],
+        },
+        {
+          type: "verify",
+          check: "targeted-test",
+          check_type: "test",
+          command: "npm test -- targeted",
+          passed: true,
+          implementation_fingerprint: fingerprints.implementation_fingerprint,
+          config_fingerprint: fingerprints.config_fingerprint,
+          quality_attempt: fingerprints.quality_attempt.attempt,
+          timestamp: "2026-08-19T00:03:00Z",
+        },
+      ]
+        .map((record) => JSON.stringify(record))
+        .join("\n")}\n`,
+      "utf8",
+    );
+    const checkpoint = JSON.parse(
+      execFileSync(
+        "python3",
+        [
+          stateApiPath(),
+          "quality-checkpoint",
+          "--session-file",
+          ".easy-coding/sessions/test.json",
+          "--agent",
+          "codex",
+        ],
+        { cwd: tempDir, encoding: "utf8" },
+      ),
+    );
+    expect(checkpoint).toHaveProperty("quality_checkpoint");
+  });
+
+  it("reconciles task state when a finalized QUALITY record survived an interrupted write", async () => {
+    const taskId = "08-19-quality-finalize-reconcile";
+    const fixture = await writeQualityDecisionFixture(taskId);
+    await appendFile(
+      fixture.executionPath,
+      `${[
+        {
+          type: "review",
+          dimension: "combined",
+          passed: true,
+          reviewer: "codex-reviewer",
+          implementation_fingerprint: fixture.implementationFingerprint,
+          quality_attempt: fixture.qualityAttempt,
+          timestamp: "2026-08-19T00:02:00Z",
+          findings: [],
+        },
+        {
+          type: "verify",
+          check: "targeted-test",
+          check_type: "test",
+          command: "npm test -- targeted",
+          passed: true,
+          implementation_fingerprint: fixture.implementationFingerprint,
+          config_fingerprint: fixture.configFingerprint,
+          quality_attempt: fixture.qualityAttempt,
+          timestamp: "2026-08-19T00:03:00Z",
+        },
+      ]
+        .map((record) => JSON.stringify(record))
+        .join("\n")}\n`,
+      "utf8",
+    );
+    const script = [
+      "import sys",
+      "from pathlib import Path",
+      "sys.path.insert(0, sys.argv[1])",
+      "import easy_coding_state as state",
+      "root = Path(sys.argv[2])",
+      `task_id = ${JSON.stringify(taskId)}`,
+      "task = state.load_task(root, task_id)",
+      "state.write_task = lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError('interrupted'))",
+      "try:",
+      "    state.finalize_quality_attempt(root, task_id, task, 'passed', 'codex')",
+      "except RuntimeError:",
+      "    pass",
+    ].join("\n");
+    execFileSync("python3", ["-c", script, path.dirname(stateApiPath()), tempDir], {
+      cwd: tempDir,
+    });
+
+    const taskPath = path.join(tempDir, ".easy-coding", "tasks", taskId, "task.json");
+    expect(JSON.parse(await readFile(taskPath, "utf8"))).toHaveProperty(
+      "quality_attempt.attempt",
+      1,
+    );
+    const checkpoint = JSON.parse(
+      execFileSync(
+        "python3",
+        [
+          stateApiPath(),
+          "quality-checkpoint",
+          "--session-file",
+          ".easy-coding/sessions/test.json",
+          "--agent",
+          "codex",
+        ],
+        { cwd: tempDir, encoding: "utf8" },
+      ),
+    );
+    expect(checkpoint).toHaveProperty("quality_checkpoint");
+    expect(JSON.parse(await readFile(taskPath, "utf8"))).not.toHaveProperty(
+      "quality_attempt",
+    );
+  });
+
+  it("reconciles an interrupted cancelled QUALITY record before starting the next attempt", async () => {
+    const taskId = "08-19-quality-cancel-reconcile";
+    await writeQualityDecisionFixture(taskId);
+    const script = [
+      "import sys",
+      "from pathlib import Path",
+      "sys.path.insert(0, sys.argv[1])",
+      "import easy_coding_state as state",
+      "root = Path(sys.argv[2])",
+      `task_id = ${JSON.stringify(taskId)}`,
+      "task = state.load_task(root, task_id)",
+      "state.write_task = lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError('interrupted'))",
+      "try:",
+      "    state.cancel_active_quality_attempt(root, task_id, task, 'codex', 'Interrupted cancellation', 'manual-return')",
+      "except RuntimeError:",
+      "    pass",
+    ].join("\n");
+    execFileSync("python3", ["-c", script, path.dirname(stateApiPath()), tempDir], {
+      cwd: tempDir,
+    });
+
+    const fingerprints = JSON.parse(
+      execFileSync(
+        "python3",
+        [
+          stateApiPath(),
+          "evidence-fingerprints",
+          "--session-file",
+          ".easy-coding/sessions/test.json",
+          "--agent",
+          "codex",
+        ],
+        { cwd: tempDir, encoding: "utf8" },
+      ),
+    );
+    expect(fingerprints.quality_attempt.attempt).toBe(2);
+  });
+
+  it("restores the IMPLEMENT return gate after an interrupted drift cancellation", async () => {
+    const taskId = "08-19-quality-drift-cancel-reconcile";
+    const fixture = await writeQualityDecisionFixture(taskId);
+    await writeFile(fixture.sourcePath, "export const quality = false;\n", "utf8");
+    const script = [
+      "import sys",
+      "from pathlib import Path",
+      "sys.path.insert(0, sys.argv[1])",
+      "import easy_coding_state as state",
+      "root = Path(sys.argv[2])",
+      `task_id = ${JSON.stringify(taskId)}`,
+      "task = state.load_task(root, task_id)",
+      "state.write_task = lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError('interrupted'))",
+      "try:",
+      "    state.ensure_quality_attempt_context(root, task_id, task, 'codex', persist=True)",
+      "except (RuntimeError, state.StateError):",
+      "    pass",
+    ].join("\n");
+    execFileSync("python3", ["-c", script, path.dirname(stateApiPath()), tempDir], {
+      cwd: tempDir,
+    });
+
+    const fingerprints = spawnSync(
+      "python3",
+      [
+        stateApiPath(),
+        "evidence-fingerprints",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    expect(fingerprints.status).toBe(1);
+    expect(fingerprints.stderr).toContain("requires a return to IMPLEMENT");
+
+    const task = JSON.parse(
+      await readFile(
+        path.join(tempDir, ".easy-coding", "tasks", taskId, "task.json"),
+        "utf8",
+      ),
+    );
+    expect(task).not.toHaveProperty("quality_attempt");
+    expect(task).toMatchObject({
+      quality_return_required: { reason: "implementation-drift" },
+    });
+    const records = (await readFile(fixture.executionPath, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(records.at(-1)).toMatchObject({
+      type: "quality",
+      outcome: "cancelled",
+      cancellation_reason: "implementation-drift",
+    });
+  });
+
+  it("rejects malformed failed Gate evidence before finalizing repair", async () => {
+    const taskId = "08-19-quality-failed-schema";
+    const fixture = await writeQualityDecisionFixture(taskId);
+    await appendFile(
+      fixture.executionPath,
+      `${JSON.stringify({
+        type: "review",
+        dimension: "correctness",
+        passed: false,
+        implementation_fingerprint: fixture.implementationFingerprint,
+        quality_attempt: fixture.qualityAttempt,
+        failure_classes: ["code-defect"],
+      })}\n`,
+      "utf8",
+    );
+    const rejected = spawnSync(
+      "python3",
+      [
+        stateApiPath(),
+        "finalize-quality",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--outcome",
+        "repair",
+        "--review-gate",
+        "failed",
+        "--verification-gate",
+        "cancelled",
+        "--failure-class",
+        "code-defect",
+        "--summary",
+        "Malformed review must not become a repair decision",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    expect(rejected.status).toBe(1);
+    expect(rejected.stderr).toContain("Review Gate evidence must include");
+  });
+
+  it("does not combine Strict Gate coverage across QUALITY attempts", async () => {
+    const taskId = "08-19-quality-attempt-isolation";
+    const fixture = await writeVerificationAcceptanceFixture(taskId, "guard");
+    const taskPath = path.join(tempDir, ".easy-coding", "tasks", taskId, "task.json");
+    const task = JSON.parse(await readFile(taskPath, "utf8"));
+    task.workflow_mode = "strict";
+    await writeFile(taskPath, JSON.stringify(task, null, 2), "utf8");
+
+    execFileSync(
+      "python3",
+      [
+        stateApiPath(),
+        "auto-transition",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--stage",
+        "IMPLEMENT",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    execFileSync(
+      "python3",
+      [
+        stateApiPath(),
+        "auto-transition",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--stage",
+        "QUALITY",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    const fingerprints = JSON.parse(
+      execFileSync(
+        "python3",
+        [
+          stateApiPath(),
+          "evidence-fingerprints",
+          "--session-file",
+          ".easy-coding/sessions/test.json",
+          "--agent",
+          "codex",
+        ],
+        { cwd: tempDir, encoding: "utf8" },
+      ),
+    );
+    await appendFile(
+      fixture.executionPath,
+      `${[
+        {
+          type: "review",
+          dimension: "correctness",
+          passed: true,
+          reviewer: "codex-reviewer",
+          implementation_fingerprint: fingerprints.implementation_fingerprint,
+          quality_attempt: fingerprints.quality_attempt.attempt,
+          timestamp: "2026-08-19T00:02:00Z",
+          findings: [],
+        },
+        ...["lint", "typecheck", "test", "build"].map((checkType) => ({
+          type: "verify",
+          check: `strict-${checkType}`,
+          check_type: checkType,
+          command: `npm run ${checkType}`,
+          passed: true,
+          implementation_fingerprint: fingerprints.implementation_fingerprint,
+          config_fingerprint: fingerprints.config_fingerprint,
+          quality_attempt: fingerprints.quality_attempt.attempt,
+          timestamp: "2026-08-19T00:03:00Z",
+        })),
+      ]
+        .map((record) => JSON.stringify(record))
+        .join("\n")}\n`,
+      "utf8",
+    );
+    const rejected = spawnSync(
+      "python3",
+      [
+        stateApiPath(),
+        "quality-checkpoint",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    expect(rejected.status, rejected.stderr).toBe(1);
+    expect(rejected.stderr).toContain(
+      "Strict workflow requires at least two passed review dimensions",
+    );
+  });
+
+  it("audits a post-checkpoint return to IMPLEMENT as a cancelled QUALITY attempt", async () => {
+    const taskId = "08-19-quality-checkpoint-return";
+    const fixture = await writeVerificationAcceptanceFixture(taskId, "guard");
+    execFileSync(
+      "python3",
+      [
+        stateApiPath(),
+        "quality-checkpoint",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    await writeFile(fixture.sourcePath, "export const value = 2;\n", "utf8");
+    const transitioned = JSON.parse(
+      execFileSync(
+        "python3",
+        [
+          stateApiPath(),
+          "auto-transition",
+          "--session-file",
+          ".easy-coding/sessions/test.json",
+          "--stage",
+          "IMPLEMENT",
+          "--agent",
+          "codex",
+        ],
+        { cwd: tempDir, encoding: "utf8" },
+      ),
+    );
+    expect(transitioned.status).toBe("IMPLEMENT");
+    const records = (await readFile(fixture.executionPath, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(records.filter((record) => record.type === "quality").map((record) => record.outcome)).toEqual([
+      "passed",
+      "cancelled",
+    ]);
+  });
+
+  it("restarts QUALITY in place after checkpoint config drift", async () => {
+    const taskId = "08-19-quality-checkpoint-config-drift";
+    const fixture = await writeVerificationAcceptanceFixture(taskId, "guard");
+    const checkpointArgs = [
+      stateApiPath(),
+      "quality-checkpoint",
+      "--session-file",
+      ".easy-coding/sessions/test.json",
+      "--agent",
+      "codex",
+    ];
+    execFileSync("python3", checkpointArgs, { cwd: tempDir, encoding: "utf8" });
+    await writeConfirmModeConfig("auto");
+
+    const fingerprints = JSON.parse(
+      execFileSync(
+        "python3",
+        [
+          stateApiPath(),
+          "evidence-fingerprints",
+          "--session-file",
+          ".easy-coding/sessions/test.json",
+          "--agent",
+          "codex",
+        ],
+        { cwd: tempDir, encoding: "utf8" },
+      ),
+    );
+    expect(fingerprints.quality_attempt.attempt).toBe(2);
+    const taskPath = path.join(tempDir, ".easy-coding", "tasks", taskId, "task.json");
+    expect(JSON.parse(await readFile(taskPath, "utf8"))).not.toHaveProperty(
+      "quality_checkpoint",
+    );
+    await appendFile(
+      fixture.executionPath,
+      `${[
+        {
+          type: "review",
+          dimension: "combined",
+          passed: true,
+          reviewer: "codex-reviewer",
+          implementation_fingerprint: fingerprints.implementation_fingerprint,
+          quality_attempt: fingerprints.quality_attempt.attempt,
+          timestamp: "2026-08-19T00:04:00Z",
+          findings: [],
+        },
+        {
+          type: "verify",
+          check: "targeted-test",
+          check_type: "test",
+          command: "npm test -- targeted",
+          passed: true,
+          implementation_fingerprint: fingerprints.implementation_fingerprint,
+          config_fingerprint: fingerprints.config_fingerprint,
+          quality_attempt: fingerprints.quality_attempt.attempt,
+          timestamp: "2026-08-19T00:05:00Z",
+        },
+      ]
+        .map((record) => JSON.stringify(record))
+        .join("\n")}\n`,
+      "utf8",
+    );
+    const checkpoint = JSON.parse(
+      execFileSync("python3", checkpointArgs, { cwd: tempDir, encoding: "utf8" }),
+    );
+    expect(checkpoint.quality_checkpoint.config_fingerprint).toBe(
+      fingerprints.config_fingerprint,
+    );
+  });
+
+  it("cancels an active QUALITY attempt when the task closes", async () => {
+    const taskId = "08-19-quality-close";
+    const fixture = await writeQualityDecisionFixture(taskId);
+    execFileSync(
+      "python3",
+      [
+        stateApiPath(),
+        "close-current",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--reason",
+        "user cancelled the task",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    const task = JSON.parse(
+      await readFile(
+        path.join(tempDir, ".easy-coding", "tasks", taskId, "task.json"),
+        "utf8",
+      ),
+    );
+    expect(task.status).toBe("CLOSED");
+    expect(task.quality_attempt).toBeUndefined();
+    const records = (await readFile(fixture.executionPath, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(records.filter((record) => record.type === "quality")).toEqual([
+      expect.objectContaining({ attempt: 1, outcome: "cancelled" }),
     ]);
   });
 
@@ -7140,7 +8296,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
       };
     };
     expect(paused).toMatchObject({
-      status: "VERIFICATION",
+      status: "QUALITY",
       action: "acceptance-drift",
       pending_transition: { confirmation_override: "evidence-drift" },
     });
@@ -7152,7 +8308,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
       "[easy-coding:acceptance-drift-confirmation-required]",
     );
     expect(paused.status_context).not.toContain(
-      "[easy-coding:auto-transition-ready:VERIFICATION->MEMORY]",
+      "[easy-coding:auto-transition-ready:QUALITY->MEMORY]",
     );
 
     const accepted = JSON.parse(
@@ -7194,7 +8350,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
         summary: "User accepted the documentation-only edit",
       }),
     ]);
-  });
+  }, 15_000);
 
   it("returns per-file hashes for an exact binary acceptance diff", async () => {
     const taskId = "08-13-binary-acceptance";
@@ -7252,7 +8408,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
         path: "src/example.ts",
       }),
     ]);
-  });
+  }, 15_000);
 
   it("shows and accepts exact post-verification drift outside a Git repository", async () => {
     const taskId = "08-13-non-git-acceptance";
@@ -7295,7 +8451,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
       };
     };
 
-    expect(paused.status).toBe("VERIFICATION");
+    expect(paused.status).toBe("QUALITY");
     expect(paused.acceptance_drift.metadata_changed).toBe(false);
     expect(paused.acceptance_drift.changes).toEqual([
       expect.objectContaining({
@@ -7445,7 +8601,11 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
         ],
         { cwd: tempDir, encoding: "utf8" },
       ),
-    ) as { implementation_fingerprint: string; config_fingerprint: string };
+    ) as {
+      implementation_fingerprint: string;
+      config_fingerprint: string;
+      quality_attempt: { attempt: number };
+    };
     await appendFile(
       fixture.executionPath,
       `${JSON.stringify({
@@ -7464,7 +8624,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
       execFileSync("python3", confirmationArgs, { cwd: tempDir, encoding: "utf8" }),
     ) as { status: string };
     expect(accepted.status).toBe("MEMORY");
-  });
+  }, 20_000);
 
   it("rejects verification-contract drift instead of offering code-diff acceptance", async () => {
     const taskId = "08-13-contract-drift";
@@ -7514,14 +8674,14 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
       { cwd: tempDir, encoding: "utf8" },
     );
     expect(rejected.status).toBe(1);
-    expect(rejected.stderr).toContain("Non-code verification metadata changed");
+    expect(rejected.stderr).toContain("Quality metadata changed");
   });
 
   it("requires auditable verification fields for new tasks and accepts a corrected latest record", async () => {
     const taskId = "07-27-verification-evidence-schema";
     await writeConfirmModeConfig("guard");
     await writeSessionFixture(taskId);
-    await writeTaskFixture(taskId, "VERIFICATION", "codex", {
+    await writeTaskFixture(taskId, "QUALITY", "codex", {
       workflow_mode: "fast",
     });
     await mkdir(path.join(tempDir, "src"), { recursive: true });
@@ -7563,7 +8723,11 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
         ],
         { cwd: tempDir, encoding: "utf8" },
       ),
-    ) as { implementation_fingerprint: string; config_fingerprint: string };
+    ) as {
+      implementation_fingerprint: string;
+      config_fingerprint: string;
+      quality_attempt: { attempt: number };
+    };
     await appendFile(
       executionPath,
       `${JSON.stringify({
@@ -7572,6 +8736,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
         passed: true,
         reviewer: "codex",
         implementation_fingerprint: fingerprints.implementation_fingerprint,
+        quality_attempt: fingerprints.quality_attempt.attempt,
         timestamp: "2026-07-27T00:00:00Z",
         findings: [],
       })}\n${JSON.stringify({
@@ -7581,6 +8746,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
         passed: true,
         implementation_fingerprint: fingerprints.implementation_fingerprint,
         config_fingerprint: fingerprints.config_fingerprint,
+        quality_attempt: fingerprints.quality_attempt.attempt,
       })}\n`,
       "utf8",
     );
@@ -7601,7 +8767,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
     );
     expect(malformed.status).toBe(1);
     expect(malformed.stderr).toContain(
-      "must include check_type, timestamp, and command for applicable checks",
+      "Verification Gate evidence must include check, check_type, boolean passed",
     );
 
     await appendFile(
@@ -7614,6 +8780,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
         passed: true,
         implementation_fingerprint: fingerprints.implementation_fingerprint,
         config_fingerprint: fingerprints.config_fingerprint,
+        quality_attempt: fingerprints.quality_attempt.attempt,
         timestamp: "2026-07-27T00:00:00Z",
       })}\n`,
       "utf8",
@@ -7635,7 +8802,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
       ),
     ) as { pending_transition: { from: string; to: string } };
     expect(requested.pending_transition).toMatchObject({
-      from: "VERIFICATION",
+      from: "QUALITY",
       to: "MEMORY",
     });
   });
@@ -7644,7 +8811,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
     const taskId = "07-27-workflow-mode-fingerprint";
     await writeConfirmModeConfig("guard");
     await writeSessionFixture(taskId);
-    await writeTaskFixture(taskId, "REVIEW", "codex", { workflow_mode: "fast" });
+    await writeTaskFixture(taskId, "IMPLEMENT", "codex", { workflow_mode: "fast" });
     await mkdir(path.join(tempDir, "src"), { recursive: true });
     await writeFile(path.join(tempDir, "src", "mode.ts"), "export const mode = true;\n");
     const executionPath = path.join(
@@ -7733,7 +8900,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
       beforeRaise.implementation_fingerprint,
     );
 
-    const staleReview = spawnSync(
+    execFileSync(
       "python3",
       [
         stateApiPath(),
@@ -7741,21 +8908,35 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
         "--session-file",
         ".easy-coding/sessions/test.json",
         "--stage",
-        "VERIFICATION",
+        "QUALITY",
+        "--agent",
+        "codex",
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    const staleReview = spawnSync(
+      "python3",
+      [
+        stateApiPath(),
+        "request-transition",
+        "--session-file",
+        ".easy-coding/sessions/test.json",
+        "--stage",
+        "MEMORY",
         "--agent",
         "codex",
       ],
       { cwd: tempDir, encoding: "utf8" },
     );
     expect(staleReview.status).toBe(1);
-    expect(staleReview.stderr).toContain("without a review record");
+    expect(staleReview.stderr).toContain("without review evidence");
   });
 
-  it("rejects a workflow mode raise in VERIFICATION before mutating the frozen mode", async () => {
+  it("rejects a workflow mode raise in QUALITY before mutating the frozen mode", async () => {
     const taskId = "07-27-verification-mode-raise";
     await writeConfirmModeConfig("guard");
     await writeSessionFixture(taskId);
-    await writeTaskFixture(taskId, "VERIFICATION", "codex", { workflow_mode: "fast" });
+    await writeTaskFixture(taskId, "QUALITY", "codex", { workflow_mode: "fast" });
 
     const rejected = spawnSync(
       "python3",
@@ -7776,7 +8957,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
 
     expect(rejected.status).toBe(1);
     expect(rejected.stderr).toContain(
-      "Return to IMPLEMENT before raising workflow mode from VERIFICATION",
+      "Return to IMPLEMENT before raising workflow mode from QUALITY",
     );
     const task = JSON.parse(
       await readFile(
@@ -7784,7 +8965,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
         "utf8",
       ),
     ) as Record<string, unknown>;
-    expect(task.status).toBe("VERIFICATION");
+    expect(task.status).toBe("QUALITY");
     expect(task.workflow_mode).toBe("fast");
     expect(task).not.toHaveProperty("workflow_mode_escalations");
   });
@@ -7793,7 +8974,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
     const taskId = "07-27-plan-fingerprint";
     await writeConfirmModeConfig("guard");
     await writeSessionFixture(taskId);
-    await writeTaskFixture(taskId, "REVIEW", "codex", { workflow_mode: "standard" });
+    await writeTaskFixture(taskId, "IMPLEMENT", "codex", { workflow_mode: "standard" });
     await mkdir(path.join(tempDir, "src"), { recursive: true });
     await writeFile(path.join(tempDir, "src", "plan.ts"), "export const plan = true;\n");
     const executionPath = path.join(
@@ -7866,7 +9047,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
     await writeConfirmModeConfig("guard");
     await writeSessionFixture(taskId);
     await writeTddReadinessFixture();
-    await writeTaskFixture(taskId, "VERIFICATION", "codex", {
+    await writeTaskFixture(taskId, "QUALITY", "codex", {
       workflow_mode: "fast",
       tdd_enabled: true,
       tdd_coverage_threshold: 95,
@@ -7911,7 +9092,11 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
         ],
         { cwd: tempDir, encoding: "utf8" },
       ),
-    ) as { implementation_fingerprint: string; config_fingerprint: string };
+    ) as {
+      implementation_fingerprint: string;
+      config_fingerprint: string;
+      quality_attempt: { attempt: number };
+    };
     for (const dimension of ["combined", "tdd"]) {
       await appendFile(
         executionPath,
@@ -7921,6 +9106,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
           passed: true,
           reviewer: "codex",
           implementation_fingerprint: fingerprints.implementation_fingerprint,
+          quality_attempt: fingerprints.quality_attempt.attempt,
           timestamp: "2026-08-07T00:00:00Z",
           findings: [],
         })}\n`,
@@ -7939,6 +9125,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
         passed: true,
         implementation_fingerprint: fingerprints.implementation_fingerprint,
         config_fingerprint: fingerprints.config_fingerprint,
+        quality_attempt: fingerprints.quality_attempt.attempt,
         timestamp: "2026-08-07T00:01:00Z",
         coverage: {
           baseline_sha: "0".repeat(40),
@@ -7976,7 +9163,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
     await writeConfirmModeConfig("guard");
     await writeSessionFixture(taskId);
     await writeTddReadinessFixture();
-    await writeTaskFixture(taskId, "VERIFICATION", "codex", {
+    await writeTaskFixture(taskId, "QUALITY", "codex", {
       workflow_mode: "fast",
       tdd_enabled: true,
       tdd_coverage_threshold: 95,
@@ -8021,7 +9208,11 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
         ],
         { cwd: tempDir, encoding: "utf8" },
       ),
-    ) as { implementation_fingerprint: string; config_fingerprint: string };
+    ) as {
+      implementation_fingerprint: string;
+      config_fingerprint: string;
+      quality_attempt: { attempt: number };
+    };
     for (const dimension of ["combined", "tdd"]) {
       await appendFile(
         executionPath,
@@ -8031,6 +9222,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
           passed: true,
           reviewer: "codex",
           implementation_fingerprint: fingerprints.implementation_fingerprint,
+          quality_attempt: fingerprints.quality_attempt.attempt,
           timestamp: "2026-08-06T00:00:00Z",
           findings: [],
         })}\n`,
@@ -8047,6 +9239,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
         passed: true,
         implementation_fingerprint: fingerprints.implementation_fingerprint,
         config_fingerprint: fingerprints.config_fingerprint,
+        quality_attempt: fingerprints.quality_attempt.attempt,
         timestamp: "2026-08-06T00:01:00Z",
       })}\n`,
       "utf8",
@@ -8081,6 +9274,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
         passed: true,
         implementation_fingerprint: fingerprints.implementation_fingerprint,
         config_fingerprint: fingerprints.config_fingerprint,
+        quality_attempt: fingerprints.quality_attempt.attempt,
         timestamp: "2026-08-06T00:01:30Z",
         coverage: {
           baseline_sha: "1".repeat(40),
@@ -8123,6 +9317,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
         passed: true,
         implementation_fingerprint: fingerprints.implementation_fingerprint,
         config_fingerprint: fingerprints.config_fingerprint,
+        quality_attempt: fingerprints.quality_attempt.attempt,
         timestamp: "2026-08-06T00:01:45Z",
         coverage: {
           baseline_sha: "0".repeat(40),
@@ -8165,6 +9360,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
         passed: true,
         implementation_fingerprint: fingerprints.implementation_fingerprint,
         config_fingerprint: fingerprints.config_fingerprint,
+        quality_attempt: fingerprints.quality_attempt.attempt,
         timestamp: "2026-08-06T00:02:00Z",
         coverage: {
           baseline_sha: "0".repeat(40),
@@ -8199,6 +9395,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
         passed: false,
         implementation_fingerprint: fingerprints.implementation_fingerprint,
         config_fingerprint: fingerprints.config_fingerprint,
+        quality_attempt: fingerprints.quality_attempt.attempt,
         timestamp: "2026-08-06T00:03:00Z",
         coverage: gitlabCoverage,
       })}\n`,
@@ -8238,14 +9435,14 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
         { cwd: tempDir, encoding: "utf8" },
       ),
     ) as { pending_transition: { from: string; to: string } };
-    expect(requested.pending_transition).toMatchObject({ from: "VERIFICATION", to: "MEMORY" });
+    expect(requested.pending_transition).toMatchObject({ from: "QUALITY", to: "MEMORY" });
   });
 
   it("requires every latest review dimension to pass and preserves two-dimensional strict review", async () => {
     const taskId = "07-27-strict-review";
     await writeConfirmModeConfig("guard");
     await writeSessionFixture(taskId);
-    await writeTaskFixture(taskId, "REVIEW", "codex", { workflow_mode: "strict" });
+    await writeTaskFixture(taskId, "QUALITY", "codex", { workflow_mode: "strict" });
     await mkdir(path.join(tempDir, "src"), { recursive: true });
     await writeFile(path.join(tempDir, "src", "strict.ts"), "export const strict = true;\n", "utf8");
     const executionPath = path.join(
@@ -8285,7 +9482,11 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
         ],
         { cwd: tempDir, encoding: "utf8" },
       ),
-    ) as { implementation_fingerprint: string; config_fingerprint: string };
+    ) as {
+      implementation_fingerprint: string;
+      config_fingerprint: string;
+      quality_attempt: { attempt: number };
+    };
     await appendFile(
       executionPath,
       `${JSON.stringify({
@@ -8294,6 +9495,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
         passed: true,
         reviewer: "correctness-reviewer",
         implementation_fingerprint: fingerprints.implementation_fingerprint,
+        quality_attempt: fingerprints.quality_attempt.attempt,
         timestamp: "2026-07-27T00:00:00Z",
         findings: [],
       })}\n`,
@@ -8304,11 +9506,11 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
       "python3",
       [
         stateApiPath(),
-        "auto-transition",
+        "request-transition",
         "--session-file",
         ".easy-coding/sessions/test.json",
         "--stage",
-        "VERIFICATION",
+        "MEMORY",
         "--agent",
         "codex",
       ],
@@ -8325,6 +9527,8 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
         passed: false,
         reviewer: "compliance-reviewer",
         implementation_fingerprint: fingerprints.implementation_fingerprint,
+        quality_attempt: fingerprints.quality_attempt.attempt,
+        failure_classes: ["test-defect"],
         timestamp: "2026-07-27T00:01:00Z",
         findings: [
           {
@@ -8341,18 +9545,18 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
       "python3",
       [
         stateApiPath(),
-        "auto-transition",
+        "request-transition",
         "--session-file",
         ".easy-coding/sessions/test.json",
         "--stage",
-        "VERIFICATION",
+        "MEMORY",
         "--agent",
         "codex",
       ],
       { cwd: tempDir, encoding: "utf8" },
     );
     expect(failedDimension.status).toBe(1);
-    expect(failedDimension.stderr).toContain("a current review dimension is not passed");
+    expect(failedDimension.stderr).toContain("a review dimension is not passed");
 
     await appendFile(
       executionPath,
@@ -8362,29 +9566,12 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
         passed: true,
         reviewer: "compliance-reviewer",
         implementation_fingerprint: fingerprints.implementation_fingerprint,
+        quality_attempt: fingerprints.quality_attempt.attempt,
         timestamp: "2026-07-27T00:02:00Z",
         findings: [],
       })}\n`,
       "utf8",
     );
-    const passed = JSON.parse(
-      execFileSync(
-        "python3",
-        [
-          stateApiPath(),
-          "auto-transition",
-          "--session-file",
-          ".easy-coding/sessions/test.json",
-          "--stage",
-          "VERIFICATION",
-          "--agent",
-          "codex",
-        ],
-        { cwd: tempDir, encoding: "utf8" },
-      ),
-    ) as { status: string };
-    expect(passed.status).toBe("VERIFICATION");
-
     await appendFile(
       executionPath,
       `${JSON.stringify({
@@ -8395,6 +9582,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
         passed: true,
         implementation_fingerprint: fingerprints.implementation_fingerprint,
         config_fingerprint: fingerprints.config_fingerprint,
+        quality_attempt: fingerprints.quality_attempt.attempt,
         timestamp: "2026-07-27T00:00:00Z",
       })}\n`,
       "utf8",
@@ -8439,6 +9627,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
             : { command: `npm run ${record.check_type}` }),
           implementation_fingerprint: fingerprints.implementation_fingerprint,
           config_fingerprint: fingerprints.config_fingerprint,
+          quality_attempt: fingerprints.quality_attempt.attempt,
           timestamp: "2026-07-27T00:01:00Z",
         })}\n`,
         "utf8",
@@ -8459,7 +9648,9 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
       { cwd: tempDir, encoding: "utf8" },
     );
     expect(unexplainedNotApplicable.status).toBe(1);
-    expect(unexplainedNotApplicable.stderr).toContain("non-empty not_applicable_reason");
+    expect(unexplainedNotApplicable.stderr).toContain(
+      "command or an explicit not-applicable reason",
+    );
 
     await appendFile(
       executionPath,
@@ -8472,6 +9663,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
         not_applicable_reason: "project has no build command",
         implementation_fingerprint: fingerprints.implementation_fingerprint,
         config_fingerprint: fingerprints.config_fingerprint,
+        quality_attempt: fingerprints.quality_attempt.attempt,
         timestamp: "2026-07-27T00:02:00Z",
       })}\n`,
       "utf8",
@@ -8486,6 +9678,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
         passed: false,
         implementation_fingerprint: fingerprints.implementation_fingerprint,
         config_fingerprint: fingerprints.config_fingerprint,
+        quality_attempt: fingerprints.quality_attempt.attempt,
         timestamp: "2026-07-27T00:03:00Z",
       })}\n`,
       "utf8",
@@ -8501,6 +9694,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
         not_applicable_reason: "attempted reclassification after execution",
         implementation_fingerprint: fingerprints.implementation_fingerprint,
         config_fingerprint: fingerprints.config_fingerprint,
+        quality_attempt: fingerprints.quality_attempt.attempt,
         timestamp: "2026-07-27T00:04:00Z",
       })}\n`,
       "utf8",
@@ -8532,6 +9726,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
         passed: true,
         implementation_fingerprint: fingerprints.implementation_fingerprint,
         config_fingerprint: fingerprints.config_fingerprint,
+        quality_attempt: fingerprints.quality_attempt.attempt,
         timestamp: "2026-07-27T00:05:00Z",
       })}\n`,
       "utf8",
@@ -8553,7 +9748,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
       ),
     ) as { pending_transition: { from: string; to: string } };
     expect(completeStrictGate.pending_transition).toMatchObject({
-      from: "VERIFICATION",
+      from: "QUALITY",
       to: "MEMORY",
     });
   });

@@ -15,7 +15,7 @@ src/
 ├── configurators/          # Per-platform installers (claude, codex, qoder, shared)
 ├── constants/              # Paths, version (read from package.json)
 ├── templates/              # Source templates — built to templates/ by copy-templates.mjs
-│   ├── common/skills/      # 11 stage skills + 1 bundled skill (ec-meta)
+│   ├── common/skills/      # Workflow-stage and utility skills
 │   ├── main-constraint/    # CLAUDE.md.tpl / AGENTS.md.tpl
 │   ├── claude/             # settings.json, agents/
 │   ├── codex/              # hooks.json, config.toml, agents/
@@ -36,14 +36,14 @@ src/
 ### Runtime State Machine (agent-side, not CLI)
 
 ```
-INIT ─auto→ ANALYSIS → IMPLEMENT → REVIEW → VERIFICATION → MEMORY ─auto→ COMPLETE
-                            └─read-only auto──────────────────────────→ COMPLETE
+INIT ─auto→ ANALYSIS → IMPLEMENT → QUALITY → MEMORY ─auto→ COMPLETE
           ↑            ↑          │
           └── replan ───┘          └── repair
-user-decision edges require explicit confirmation; every new code task enters REVIEW, while
-validated read-only tasks auto-complete after IMPLEMENT without REVIEW, VERIFICATION, or MEMORY.
-Only migrated pre-0.9 tasks marked `workflow_mode_legacy_direct_edge: true` from old lite
-semantics or a persisted pending edge may retain one direct IMPLEMENT → VERIFICATION edge.
+
+Every repository-mutation task uses this graph. QUALITY owns independent read-only Review and
+Verification gates; Fast, Standard, and Strict change their depth, not the graph. Pure read-only
+conversation stays Ready and creates no task. `ec-lite` is a separate explicit persistent mode
+that uses proposal confirmation and minimum implementation without Harness task artifacts.
 ```
 
 ## Development Conventions

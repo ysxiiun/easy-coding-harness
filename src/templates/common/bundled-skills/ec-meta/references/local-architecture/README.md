@@ -42,22 +42,26 @@ analysis, workflow operation). The CLI never analyzes the project.
 
 ## Workflow state machine
 
-6 work stages + 2 terminals, owned by ec-workflow:
-`INIT → ANALYSIS → IMPLEMENT → REVIEW → VERIFICATION → MEMORY → COMPLETE`, plus `CLOSED`
+5 work stages + 2 terminals, owned by ec-workflow:
+`INIT → ANALYSIS → IMPLEMENT → QUALITY → MEMORY → COMPLETE`, plus `CLOSED`
 (user abort, no memory flow). INIT → ANALYSIS and completed MEMORY → COMPLETE are restricted
-automatic edges. A validated read-only `doc` / `analysis` / `report` task also auto-completes
-from IMPLEMENT after its full deliverable is shown, without REVIEW, VERIFICATION, MEMORY, or
-task memory. Approval mode controls non-mechanical edge waiting: approve confirms each edge,
+automatic edges. Pure read-only conversation stays Ready and creates no task; repository writes,
+including documentation and configuration, use the full graph. Approval mode controls edge waiting: approve confirms each edge,
 guard confirms two critical gates, confirm waits only at ANALYSIS -> IMPLEMENT, and auto
-advances every legal edge after mechanical gates. After green VERIFICATION, Harness freezes an
+advances every legal edge after mechanical gates. After green QUALITY, Harness freezes an
 acceptance checkpoint. A later code diff temporarily pauses every mode so the exact digest can be
 accepted; unchanged `confirm`/`auto` tasks remain automatic.
 Workflow mode is independently configured as adaptive/fast/standard/strict; ANALYSIS freezes
-adaptive to a concrete mode, and every new code task still enters REVIEW. REVIEW evidence is
-bound to the final implementation fingerprint, VERIFICATION evidence is bound to implementation
+adaptive to a concrete mode, and every mutation task still enters QUALITY. Its Review Gate is
+bound to the final implementation fingerprint; Verification Gate evidence is bound to implementation
 and config fingerprints, and an accepted post-checkpoint diff records its authorization plus
-carry-forward/targeted/waived policy without forcing a second REVIEW. MEMORY keeps the conditional
+carry-forward/targeted/waived policy without forcing a second review. MEMORY keeps the conditional
 long-memory threshold gate.
+
+`ec-lite` is an explicit session mode outside this graph. It offers one compact proposal and user
+confirmation before a minimal mutation, creates no task/QUALITY/MEMORY artifacts, and remains on
+until the user invokes it again. If a task is active, the user chooses whether to cancel startup,
+close the task, or clear only the session task pointer before Lite starts.
 
 Java TDD is a third independent, default-off control managed by `ec-config`. Session overrides
 project configuration; ANALYSIS freezes enabled state and the 1..100 changed-line threshold
@@ -82,7 +86,7 @@ stage in `task.json`; no data is lost. Each task folder is self-contained.
 Each task is a folder. `task.json` is metadata, including the current stage, workflow proposal,
 frozen concrete mode, and any `pending_transition`; `dev-spec.md` is the human-readable plan;
 `execution.jsonl` is an append-only plan-and-log (one `plan` record, then `dispatch`/`result`
-/`review`/`verify`/`acceptance`/`handoff` records). Because plan and log live on disk, not in an agent's
+/`quality`/`review`/`verify`/`acceptance`/`handoff` records). Because plan and log live on disk, not in an agent's
 context window, a task survives session end and agent switches with zero information loss.
 
 ## Canonical Spec integration
@@ -103,7 +107,7 @@ keeps detailed evidence locally and projects cross-application Task/Step/depende
 `EDS:EXECUTION` through one CAS/idempotent writer. Static changes use revision + READY +
 `sync-spec-design`; agents never hand-edit the machine ledger. Explicit external locators are
 allowed and rebind only by exact Canonical identity. Source tasks stay `implemented` after local
-checks and become `verified` only when VERIFICATION -> MEMORY is applied under explicit or
+checks and become `verified` only when QUALITY -> MEMORY is applied under explicit or
 standing approval-mode authorization; the shared event includes the acceptance digest.
 
 ## Memory system

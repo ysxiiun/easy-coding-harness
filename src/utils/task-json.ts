@@ -19,12 +19,14 @@ import { pathExists, readTextFile, writeTextFile } from "./file-writer.js";
 
 export type ProjectInitSource = "fresh" | "legacy-easy-coding";
 
-type LegacyStage = "WAITING_CONFIRM" | "MEMORY_SHORT" | "MEMORY_LONG";
+type LegacyStage = "WAITING_CONFIRM" | "MEMORY_SHORT" | "MEMORY_LONG" | "REVIEW" | "VERIFICATION";
 
 const LEGACY_STAGE_MAP: Record<LegacyStage, Stage> = {
   WAITING_CONFIRM: "ANALYSIS",
   MEMORY_SHORT: "MEMORY",
   MEMORY_LONG: "MEMORY",
+  REVIEW: "QUALITY",
+  VERIFICATION: "QUALITY",
 };
 
 export interface WorkflowStateMigrationResult {
@@ -172,7 +174,12 @@ function taskAgentFieldGroups(task: Record<string, unknown>): AgentFieldGroup[] 
       fields: ["created_by", "last_agent", "workflow_mode_confirmed_by", "tdd_confirmed_by"],
     },
   ];
-  for (const field of ["pending_transition", "workflow_mode_proposal", "verification_checkpoint"]) {
+  for (const field of [
+    "pending_transition",
+    "workflow_mode_proposal",
+    "quality_checkpoint",
+    "verification_checkpoint",
+  ]) {
     const value = task[field];
     if (!value || typeof value !== "object" || Array.isArray(value)) continue;
     const identityField =
@@ -281,6 +288,33 @@ function migrateTaskWorkflowState(task: Record<string, unknown>): boolean {
     changed = true;
   }
 
+  const pending = task.pending_transition;
+  if (pending && typeof pending === "object" && !Array.isArray(pending)) {
+    const record = pending as Record<string, unknown>;
+    const from = migrateStage(record.from);
+    const to = migrateStage(record.to);
+    if (from === to) {
+      task.pending_transition = undefined;
+      changed = true;
+    } else if (from !== record.from || to !== record.to) {
+      task.pending_transition = { ...record, from, to };
+      changed = true;
+    }
+  }
+
+  if (
+    !task.quality_checkpoint &&
+    task.verification_checkpoint &&
+    typeof task.verification_checkpoint === "object" &&
+    !Array.isArray(task.verification_checkpoint)
+  ) {
+    task.quality_checkpoint = task.verification_checkpoint;
+  }
+  if ("verification_checkpoint" in task) {
+    task.verification_checkpoint = undefined;
+    changed = true;
+  }
+
   if (legacyStatus === "WAITING_CONFIRM" && !task.pending_transition) {
     const requestedAt =
       legacyRequestedAt &&
@@ -294,7 +328,7 @@ function migrateTaskWorkflowState(task: Record<string, unknown>): boolean {
       from: "ANALYSIS",
       to: "IMPLEMENT",
       requested_at: requestedAt,
-      requested_by: String(task.last_agent ?? "upgrade-migration"),
+      requested_by: migratedAgentIdentity(task.last_agent) ?? "upgrade-migration",
       reason: "migrated-from-WAITING_CONFIRM",
     };
     changed = true;
@@ -316,13 +350,29 @@ function migrateTaskWorkflowState(task: Record<string, unknown>): boolean {
 
   const status = String(task.status ?? "");
   const taskType = String(task.type ?? "").toLowerCase();
-  const isActive = !["", "PENDING", "COMPLETE", "CLOSED"].includes(status);
+  let isActive = !["", "PENDING", "COMPLETE", "CLOSED"].includes(status);
+  if (isActive && ["analysis", "doc", "report"].includes(taskType)) {
+    task.status = "CLOSED";
+    task.closed_reason = "legacy-read-only-task-retired";
+    task.pending_transition = undefined;
+    task.stage_history = [
+      ...(Array.isArray(task.stage_history) ? task.stage_history : []),
+      {
+        stage: "CLOSED",
+        agent: "upgrade-migration",
+        entered_at: new Date().toISOString(),
+      },
+    ];
+    task.last_agent = "upgrade-migration";
+    isActive = false;
+    changed = true;
+  }
   if (
     isActive &&
     taskType !== "project-init" &&
     !["fast", "standard", "strict"].includes(String(task.workflow_mode ?? ""))
   ) {
-    task.workflow_mode = ["analysis", "doc", "report"].includes(taskType) ? "fast" : "strict";
+    task.workflow_mode = "standard";
     task.workflow_mode_confirmed_at = new Date().toISOString();
     task.workflow_mode_confirmed_by = "upgrade-migration";
     task.workflow_mode_legacy = true;
@@ -391,7 +441,6 @@ interface SessionMigrationCandidate {
   agent?: string;
   lastAgent?: string;
   workflowMode?: ConfiguredWorkflowMode;
-  legacyLite: boolean;
 }
 
 const WORKFLOW_MODE_RANK: Record<Exclude<ConfiguredWorkflowMode, "adaptive">, number> = {
@@ -414,7 +463,6 @@ function sessionMigrationCandidate(
     agent: typeof session.agent === "string" ? session.agent : undefined,
     lastAgent: typeof session.last_agent === "string" ? session.last_agent : undefined,
     workflowMode,
-    legacyLite: session.workflow_mode_legacy_confirm_override === true,
   };
 }
 
@@ -438,35 +486,14 @@ function migrationWorkflowMode(
   if (["analysis", "doc", "report"].includes(taskType)) return "fast";
 
   const relevantCandidates = relevantSessionMigrationCandidates(task, candidates);
-  const fallbackMode = projectWorkflowMode === "adaptive" ? "strict" : projectWorkflowMode;
+  const fallbackMode = projectWorkflowMode === "adaptive" ? "standard" : projectWorkflowMode;
   const concreteModes = relevantCandidates.map((candidate) =>
-    candidate.workflowMode === "adaptive" ? "strict" : (candidate.workflowMode ?? fallbackMode),
+    candidate.workflowMode === "adaptive" ? "standard" : (candidate.workflowMode ?? fallbackMode),
   );
   if (concreteModes.length === 0) return fallbackMode;
   return concreteModes.reduce((highest, mode) =>
     WORKFLOW_MODE_RANK[mode] > WORKFLOW_MODE_RANK[highest] ? mode : highest,
   );
-}
-
-function preserveLegacyDirectEdge(
-  task: Record<string, unknown>,
-  candidates: SessionMigrationCandidate[],
-  projectLegacyLite: boolean,
-): boolean {
-  if (task.status !== "IMPLEMENT") return false;
-  const pending =
-    task.pending_transition &&
-    typeof task.pending_transition === "object" &&
-    !Array.isArray(task.pending_transition)
-      ? (task.pending_transition as Record<string, unknown>)
-      : null;
-  if (pending?.from === "IMPLEMENT" && pending.to === "VERIFICATION") return true;
-
-  const relevantCandidates = relevantSessionMigrationCandidates(task, candidates);
-  if (relevantCandidates.length > 0) {
-    return relevantCandidates.every((candidate) => candidate.legacyLite);
-  }
-  return projectLegacyLite;
 }
 
 async function taskFiles(cwd: string): Promise<string[]> {
@@ -506,6 +533,9 @@ export async function hasLegacyWorkflowState(cwd: string): Promise<boolean> {
     if (
       hasLegacyTaskAgentIdentities(task) ||
       isLegacyStage(task.status) ||
+      "verification_checkpoint" in task ||
+      (!["PENDING", "COMPLETE", "CLOSED"].includes(String(task.status ?? "")) &&
+        ["analysis", "doc", "report"].includes(String(task.type ?? "").toLowerCase())) ||
       (!["PENDING", "COMPLETE", "CLOSED"].includes(String(task.status ?? "")) &&
         String(task.type ?? "") !== "project-init" &&
         !["fast", "standard", "strict"].includes(String(task.workflow_mode ?? ""))) ||
@@ -546,14 +576,11 @@ export async function migrateLegacyWorkflowState(
   let sessionsUpdated = 0;
   const updatedTaskPaths = new Set<string>();
   let projectWorkflowMode: ConfiguredWorkflowMode = "adaptive";
-  let projectLegacyLite = false;
   const configPath = path.join(cwd, EASY_CODING_DIR, "config.yaml");
   if (await pathExists(configPath)) {
     try {
       const config = await readConfigYaml(configPath);
       projectWorkflowMode = resolveLegacyBehavior(config).workflowMode;
-      const behavior = (config.behavior ?? {}) as unknown as Record<string, unknown>;
-      projectLegacyLite = behavior.confirm_mode === "lite";
     } catch {
       // Keep the conservative adaptive fallback; config migration reports malformed YAML.
     }
@@ -580,6 +607,15 @@ export async function migrateLegacyWorkflowState(
       changed = true;
     }
     changed = migrateSessionBehavior(session) || changed;
+    if (typeof session.current_task === "string") {
+      const task = await readJsonRecord(getTaskJsonPath(cwd, session.current_task));
+      if (task && ["COMPLETE", "CLOSED"].includes(String(task.status ?? ""))) {
+        session.current_task = null;
+        session.last_seen_task = null;
+        session.last_seen_stage = "idle";
+        changed = true;
+      }
+    }
     const candidate = sessionMigrationCandidate(session);
     if (candidate) sessionCandidates.push(candidate);
     if (changed) {
@@ -612,15 +648,7 @@ export async function migrateLegacyWorkflowState(
       task.workflow_mode_confirmed_at = new Date().toISOString();
       changed = true;
     }
-    const keepDirectEdge = preserveLegacyDirectEdge(
-      task,
-      candidatesByTask.get(taskId) ?? [],
-      projectLegacyLite,
-    );
-    if (keepDirectEdge && task.workflow_mode_legacy_direct_edge !== true) {
-      task.workflow_mode_legacy_direct_edge = true;
-      changed = true;
-    } else if (!keepDirectEdge && "workflow_mode_legacy_direct_edge" in task) {
+    if ("workflow_mode_legacy_direct_edge" in task) {
       task.workflow_mode_legacy_direct_edge = undefined;
       changed = true;
     }

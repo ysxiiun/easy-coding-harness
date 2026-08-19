@@ -569,27 +569,20 @@ describe("clear command", () => {
     ).toBe(true);
   });
 
-  it("keeps legacy agents out of add-agent manifests so clear uses fallback cleanup", async () => {
+  it("rejects add-agent on a legacy runtime and keeps fallback cleanup available", async () => {
     await configureClaude(tempDir);
     await writeRuntimeState(
       ["version: 1", "harness_version: 0.2.0", "agents:", "  - claude-code", ""].join("\n"),
     );
 
-    await addAgent({ agent: "codex", yes: true });
-
-    const manifest = JSON.parse(
-      await readFile(path.join(tempDir, ".easy-coding", "install-manifest.json"), "utf8"),
-    );
-    expect(manifest.agents).toEqual(["codex"]);
-    expect(await readFile(path.join(tempDir, ".gitignore"), "utf8")).toContain(
-      ".easy-coding/sessions/",
+    await expect(addAgent({ agent: "codex", yes: true })).rejects.toThrow(
+      "Run easy-coding upgrade before add-agent.",
     );
 
     await clear({ yes: true });
 
     expect(await pathExists(path.join(tempDir, ".claude", "hooks", "session-start.py"))).toBe(false);
     expect(await pathExists(path.join(tempDir, ".claude", "skills", "ec-workflow"))).toBe(false);
-    expect(await pathExists(path.join(tempDir, ".codex", "hooks", "session-start.py"))).toBe(false);
     expect(await pathExists(path.join(tempDir, ".easy-coding", "config.yaml"))).toBe(false);
   });
 });

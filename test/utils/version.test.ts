@@ -22,9 +22,9 @@ describe("version metadata", () => {
     expect(packageLock.version).toBe(packageJson.version);
     expect(packageLock.packages[""].version).toBe(packageJson.version);
     expect(introductionHtml).toContain(`版本：<code>${packageJson.version}</code>`);
-    expect(design).toContain("用户接受后不回退");
-    expect(design).toContain("不重跑 REVIEW");
-    expect(usage).toContain("必须区分“用户提出新修复”和“外部保存已产生差异”");
-    expect(usage).toContain("保留原 REVIEW 结论");
+    expect(design).toContain("用户接受后遵从其 carry-forward、targeted");
+    expect(design).toContain("不重复 Review");
+    expect(usage).toContain("用户在快照后保存的差异会被完整展示");
+    expect(usage).toContain("保留原 Review\n结论");
   });
 });

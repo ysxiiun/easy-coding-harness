@@ -25,6 +25,9 @@ After the command succeeds:
   skills, and every other hook.
 - Do not clear `current_task`, delete a pending transition, or modify task state. The task is
   suspended intact and can resume after restoring Easy Coding or in a new session.
+- Preserve `lite_mode` and any exact Lite proposal while bypassed. No-Harness has display and
+  routing priority; restoring Easy Coding resumes the same Lite state until the user explicitly
+  exits it through `ec-lite`.
 
 If the invocation contains no request beyond enabling the bypass, briefly confirm that native
 mode is active for the current session.

@@ -75,10 +75,10 @@ describe("configureCodex", () => {
     expect(skill).toContain("`$ec-init`");
     expect(skill).toContain("approval_mode = approve|guard|confirm|auto");
     expect(skill).toContain("workflow_mode = adaptive|fast|standard|strict");
-    expect(skill).toContain("New code tasks never skip REVIEW");
+    expect(skill).toContain("Every repository-mutation task uses this graph");
     expect(skill).toContain("raise-workflow-mode");
     expect(skill).toContain("Missing: tell the user to run `easy-coding init`");
-    expect(skill).toContain("During VERIFICATION, return to IMPLEMENT before");
+    expect(skill).toContain("During QUALITY, return to IMPLEMENT before");
     expect(skill).toContain("--manifest-only");
     expect(skill).toContain("never reconstruct completion from another local Harness task");
     expect(skill).not.toContain("{{");
@@ -92,7 +92,7 @@ describe("configureCodex", () => {
     expect(analysisSkill).toContain("No transition without a valid workflow proposal");
     expect(analysisSkill).toContain("--spec-task <selected-task-id>");
     expect(analysisSkill).toContain("`exact` and `scope-unchanged` use the fast projection path");
-    expect(analysisSkill).toContain("at most five");
+    expect(analysisSkill).toContain("at least five units");
     expect(analysisSkill).toContain("unused `repo_paths`");
     const noHarnessSkill = await readFile(
       path.join(tempDir, ".agents", "skills", "ec-no-harness", "SKILL.md"),
@@ -126,6 +126,12 @@ describe("configureCodex", () => {
     );
     expect(tddInitSkill).toContain("historical coverage required: no");
     expect(tddInitSkill).not.toContain("{{");
+    expect(
+      await readFile(path.join(tempDir, ".agents", "skills", "ec-quality", "SKILL.md"), "utf8"),
+    ).toContain("one candidate, two read-only gates");
+    expect(
+      await readFile(path.join(tempDir, ".agents", "skills", "ec-lite", "SKILL.md"), "utf8"),
+    ).toContain("controlled only by the user");
     expect(await pathExists(path.join(tempDir, ".codex", "hooks", "session-start.py"))).toBe(true);
     expect(await pathExists(path.join(tempDir, ".codex", "hooks", "easy_coding_status.py"))).toBe(
       true,
@@ -179,7 +185,7 @@ describe("configureCodex", () => {
       "utf8",
     );
     expect(reviewer).toContain("evidenced Local Baseline");
-    expect(reviewer).toContain("missing Javadoc on any method/field");
+    expect(reviewer).toContain("missing multiline Javadoc");
 
     const main = await readFile(path.join(tempDir, "AGENTS.md"), "utf8");
     expect(main).toContain("Codex: `$ec-*`");
@@ -188,9 +194,9 @@ describe("configureCodex", () => {
     expect(main).toContain(
       "- Ready: > **Easy Coding** · **Approval: {approval-mode}** · **Workflow: {workflow-mode}** · Ready",
     );
-    expect(main).toContain("Every new code task runs REVIEW");
+    expect(main).toContain("Every mutation task runs QUALITY");
     expect(main).toContain("A confirmation-required boundary is not fully presented");
-    expect(main).toContain("code IMPLEMENT gate must preserve enter REVIEW");
+    expect(main).toContain("IMPLEMENT gate must preserve enter QUALITY");
     expect(main).toContain("explicitly guarantees an indefinite wait");
     expect(main).toContain("pre-render the matching numbered fallback");
     expect(main).toContain("consume a matching\n  numbered reply against the stored edge");
@@ -486,7 +492,7 @@ describe("configureQoder", () => {
     expect(skill).toContain("`/ec-init`");
     expect(skill).toContain("approval_mode = approve|guard|confirm|auto");
     expect(skill).toContain("workflow_mode = adaptive|fast|standard|strict");
-    expect(skill).toContain("New code tasks never skip REVIEW");
+    expect(skill).toContain("Every repository-mutation task uses this graph");
     expect(skill).toContain("raise-workflow-mode");
     expect(skill).toContain("--manifest-only");
     expect(skill).toContain("never reconstruct completion from another local Harness task");
@@ -501,7 +507,7 @@ describe("configureQoder", () => {
     expect(analysisSkill).toContain("No transition without a valid workflow proposal");
     expect(analysisSkill).toContain("--spec-task <selected-task-id>");
     expect(analysisSkill).toContain("`exact` and `scope-unchanged` use the fast projection path");
-    expect(analysisSkill).toContain("at most five");
+    expect(analysisSkill).toContain("at least five units");
     expect(analysisSkill).toContain("unused `repo_paths`");
     const taskManagementSkill = await readFile(
       path.join(tempDir, ".qoder", "skills", "ec-task-management", "SKILL.md"),
@@ -521,6 +527,12 @@ describe("configureQoder", () => {
     );
     expect(tddInitSkill).toContain("historical coverage required: no");
     expect(tddInitSkill).not.toContain("{{");
+    expect(
+      await readFile(path.join(tempDir, ".qoder", "skills", "ec-quality", "SKILL.md"), "utf8"),
+    ).toContain("one candidate, two read-only gates");
+    expect(
+      await readFile(path.join(tempDir, ".qoder", "skills", "ec-lite", "SKILL.md"), "utf8"),
+    ).toContain("controlled only by the user");
     const gitSkill = await readFile(
       path.join(tempDir, ".qoder", "skills", "ec-git", "SKILL.md"),
       "utf8",
@@ -532,7 +544,7 @@ describe("configureQoder", () => {
 
     const main = await readFile(path.join(tempDir, "AGENTS.md"), "utf8");
     expect(main).toContain("A confirmation-required boundary is not fully presented");
-    expect(main).toContain("code IMPLEMENT gate must preserve enter REVIEW");
+    expect(main).toContain("IMPLEMENT gate must preserve enter QUALITY");
     expect(main).toContain("explicitly guarantees an indefinite wait");
     expect(main).toContain("pre-render the matching numbered fallback");
     expect(main).toContain("consume a matching\n  numbered reply against the stored edge");
@@ -586,7 +598,7 @@ describe("configureQoder", () => {
       "utf8",
     );
     expect(reviewer).toContain("evidenced Local Baseline");
-    expect(reviewer).toContain("missing Javadoc on any method/field");
+    expect(reviewer).toContain("missing multiline Javadoc");
   });
 
   it("keeps Qoder in its own namespace when Claude compatibility variables are also present", async () => {

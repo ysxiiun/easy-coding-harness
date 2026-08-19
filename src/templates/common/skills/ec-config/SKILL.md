@@ -34,9 +34,9 @@ task freezes its effective TDD values when ANALYSIS advances to IMPLEMENT; later
 changes affect future tasks and ANALYSIS only.
 
 Approval semantics stay independent from verification depth: `approve` waits at each
-non-mechanical edge, `guard` waits at ANALYSIS -> IMPLEMENT and VERIFICATION -> MEMORY, `confirm`
+non-mechanical edge, `guard` waits at ANALYSIS -> IMPLEMENT and QUALITY -> MEMORY, `confirm`
 waits only for the plan, and `auto` advances legal green edges immediately. Every mode temporarily
-pauses only when code changes after the frozen VERIFICATION checkpoint, because the user must see
+pauses only when code changes after the frozen QUALITY checkpoint, because the user must see
 and accept that exact new diff; this exception does not convert `auto` into `guard`.
 
 ## Project configuration

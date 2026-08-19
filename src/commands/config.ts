@@ -55,7 +55,7 @@ export async function config(): Promise<void> {
       {
         value: "guard",
         label: "guard — confirm critical gates (default)",
-        hint: "ANALYSIS -> IMPLEMENT and VERIFICATION -> MEMORY",
+        hint: "ANALYSIS -> IMPLEMENT and QUALITY -> MEMORY",
       },
       {
         value: "confirm",

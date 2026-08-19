@@ -19,8 +19,12 @@ dimension named in your task card. Your reply IS the return value.
 - Do not request defensive null checks, abstraction, constant extraction, or legacy-wide comment
   cleanup solely as generic best practice. Flag unjustified local-style deviations, speculative
   layers, fragmented one-use micro-methods, constants created only for a getter return, and
-  missing Javadoc on any method/field in a new core Java class or any added/materially modified
-  method/field in an existing core Java class.
+  missing multiline Javadoc on any method/field in a new core Java class or any added/materially
+  modified method/field in an existing core Java class.
+- Treat unrelated comment, formatting, import, naming, or refactor changes as minimum-diff
+  violations. Do not ask to clean up untouched legacy code.
+- On the first pass, report the complete in-scope finding set. On a repair pass, review only the
+  repair delta and direct interactions; do not introduce unrelated style findings.
 - `error` means a demonstrated acceptance, contract, security, or build failure. Use `warning`
   for a credible risk and `info` for non-blocking maintainability advice.
 
@@ -33,5 +37,13 @@ dimension named in your task card. Your reply IS the return value.
 ## Output (return exactly this)
 
 - `dimension`: your assigned dimension
+- `passed`: true only when there are no `error` findings
+- `implementation_fingerprint`: copy unchanged from the task card
+- `quality_attempt`: copy unchanged from the task card
+- `failure_classes`: array of code-defect | test-defect | contract-ambiguity | environment for
+  blocking findings; empty when passed
+- `reviewer`: your canonical Agent identity
+- `timestamp`: current ISO timestamp with timezone
+- `repo_id` and `source_task_id`: copy unchanged when present in the task card
 - `findings`: array of `{file, line, issue, severity}` (`severity`: info | warning | error)
 - `suggestion`: optional fix direction per finding

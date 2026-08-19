@@ -166,4 +166,38 @@ describe("status command", () => {
     expect(output()).toContain("effective_approval_mode: confirm");
     expect(output()).toContain("configured_workflow_mode: fast");
   });
+
+  it("reports Lite direct state and its pending proposal", async () => {
+    await writeConfig(VERSION);
+    await writeSessionFile(
+      tempDir,
+      {
+        ...createSessionFile(),
+        agent: "codex",
+        lite_mode: true,
+        lite_proposal: {
+          proposal_id: "proposal-123",
+          summary: "Change one parameter",
+          target_files: ["src/example.ts"],
+          digest: "abc123",
+          created_at: "2026-08-19T00:00:00Z",
+          baseline: {
+            schema: 1,
+            repository_root: tempDir,
+            head: null,
+            dirty_paths: [],
+            states: {},
+          },
+        },
+      },
+      "lite-session",
+    );
+
+    await status();
+
+    expect(output()).toContain("- lite-session");
+    expect(output()).toContain("lite_mode: enabled");
+    expect(output()).toContain("lite_proposal: abc123");
+    expect(output()).toContain("current_task: none");
+  });
 });

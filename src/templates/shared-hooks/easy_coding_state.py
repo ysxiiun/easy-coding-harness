@@ -67,10 +67,8 @@ VALID_TRANSITIONS: dict[str, set[str]] = {
     "idle": {"INIT"},
     "INIT": {"ANALYSIS", "CLOSED"},
     "ANALYSIS": {"IMPLEMENT", "CLOSED"},
-    # IMPLEMENT -> VERIFICATION remains parseable only for pre-0.9 in-flight tasks.
-    "IMPLEMENT": {"REVIEW", "VERIFICATION", "ANALYSIS", "COMPLETE", "CLOSED"},
-    "REVIEW": {"VERIFICATION", "IMPLEMENT", "ANALYSIS", "CLOSED"},
-    "VERIFICATION": {"MEMORY", "IMPLEMENT", "CLOSED"},
+    "IMPLEMENT": {"QUALITY", "ANALYSIS", "CLOSED"},
+    "QUALITY": {"MEMORY", "IMPLEMENT", "ANALYSIS", "CLOSED"},
     "MEMORY": {"COMPLETE", "CLOSED"},
     "COMPLETE": set(),
     "CLOSED": set(),
@@ -80,8 +78,6 @@ ALWAYS_AUTO_TRANSITIONS = {
     ("INIT", "ANALYSIS"),
     ("MEMORY", "COMPLETE"),
 }
-READ_ONLY_COMPLETION_TRANSITION = ("IMPLEMENT", "COMPLETE")
-NO_CODE_TASK_TYPES = {"analysis", "doc", "report"}
 TDD_INIT_TASK_TYPE = "tdd-init"
 APPROVAL_MODES = {"approve", "guard", "confirm", "auto"}
 CONFIGURED_WORKFLOW_MODES = {"adaptive", "fast", "standard", "strict"}
@@ -89,6 +85,20 @@ WORKFLOW_MODES = {"fast", "standard", "strict"}
 WORKFLOW_MODE_RANK = {"fast": 0, "standard": 1, "strict": 2}
 STRICT_VERIFICATION_CHECK_TYPES = {"lint", "typecheck", "test", "build"}
 REVIEW_FINDING_SEVERITIES = {"error", "warning", "info"}
+QUALITY_GATE_STATUSES = {"passed", "failed", "cancelled"}
+QUALITY_FAILURE_CLASSES = {
+    "code-defect",
+    "test-defect",
+    "contract-ambiguity",
+    "environment",
+    "suggestion",
+}
+QUALITY_CANCELLATION_REASONS = {
+    "implementation-drift",
+    "config-drift",
+    "manual-return",
+    "task-closed",
+}
 HIGH_WORKFLOW_RISK_PATTERN = re.compile(
     r"(\bhigh[-_ ]?risk\b|\bcritical\b|\bsevere\b|\birreversible\b|"
     r"\bdata[-_ ]?loss\b|\bfinancial[-_ ]?loss\b|"
@@ -123,12 +133,14 @@ JAVA_BUILD_FILE_NAMES = {"pom.xml", "build.gradle", "build.gradle.kts"}
 GITLAB_CI_ENTRY_FILES = {".gitlab-ci.yml", ".gitlab-ci.yaml"}
 CRITICAL_CONFIRM_TRANSITIONS = {
     ("ANALYSIS", "IMPLEMENT"),
-    ("VERIFICATION", "MEMORY"),
+    ("QUALITY", "MEMORY"),
 }
 ANALYSIS_CONFIRM_TRANSITION = ("ANALYSIS", "IMPLEMENT")
 
 LEGACY_STAGE_MAP = {
     "WAITING_CONFIRM": "ANALYSIS",
+    "REVIEW": "QUALITY",
+    "VERIFICATION": "QUALITY",
     "MEMORY_SHORT": "MEMORY",
     "MEMORY_LONG": "MEMORY",
 }
@@ -162,6 +174,9 @@ LEGACY_DISPLAY_AGENT_IDENTITIES = {
 LEGACY_STATE_LOCK_TIMEOUT_SECONDS = 5.0
 LEGACY_STATE_LOCK_STALE_SECONDS = 60.0
 LEGACY_STATE_LOCK_POLL_SECONDS = 0.02
+SESSION_COMMAND_LOCK_TIMEOUT_SECONDS = 5.0
+SESSION_COMMAND_LOCK_STALE_SECONDS = 60.0
+SESSION_COMMAND_LOCK_POLL_SECONDS = 0.02
 SHORT_MEMORY_UUID_V7_PATTERN = re.compile(
     r"^SM-[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
 )
@@ -1264,6 +1279,26 @@ def normalize_legacy_task(task: dict) -> bool:
         task["status"] = LEGACY_STAGE_MAP[legacy_status]
         changed = True
 
+    pending = task.get("pending_transition")
+    if isinstance(pending, dict):
+        source = normalize_legacy_stage(pending.get("from"))
+        target = normalize_legacy_stage(pending.get("to"))
+        if source == target:
+            task.pop("pending_transition", None)
+            changed = True
+        elif source != pending.get("from") or target != pending.get("to"):
+            task["pending_transition"] = {**pending, "from": source, "to": target}
+            changed = True
+
+    if not isinstance(task.get("quality_checkpoint"), dict) and isinstance(
+        task.get("verification_checkpoint"), dict
+    ):
+        task["quality_checkpoint"] = task["verification_checkpoint"]
+        changed = True
+    if "verification_checkpoint" in task:
+        task.pop("verification_checkpoint")
+        changed = True
+
     history = task.get("stage_history")
     if isinstance(history, list):
         normalized_history: list[dict] = []
@@ -1289,11 +1324,14 @@ def normalize_legacy_task(task: dict) -> bool:
             task["stage_history"] = normalized_history
 
     if legacy_status == "WAITING_CONFIRM" and not task.get("pending_transition"):
+        requested_by = canonical_agent_identity(
+            task.get("last_agent"), allow_legacy_display=True
+        ) or "legacy-migration"
         task["pending_transition"] = {
             "from": "ANALYSIS",
             "to": "IMPLEMENT",
             "requested_at": now_iso(),
-            "requested_by": str(task.get("last_agent") or "legacy-migration"),
+            "requested_by": requested_by,
             "reason": "migrated-from-WAITING_CONFIRM",
         }
         changed = True
@@ -1341,6 +1379,44 @@ def write_json(path: Path, data: dict) -> None:
     finally:
         if temporary_path.exists():
             temporary_path.unlink()
+
+
+def session_command_lock_path(root: Path, session_path: Path) -> Path:
+    key = hashlib.sha256(str(session_path.resolve()).encode("utf-8")).hexdigest()[:24]
+    return root / ".easy-coding" / "sessions" / f".session-{key}.lock"
+
+
+def acquire_session_command_lock(root: Path, session_path: Path) -> Path:
+    lock_path = session_command_lock_path(root, session_path)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + SESSION_COMMAND_LOCK_TIMEOUT_SECONDS
+    while True:
+        try:
+            lock_path.mkdir()
+            return lock_path
+        except FileExistsError:
+            try:
+                if time.time() - lock_path.stat().st_mtime > SESSION_COMMAND_LOCK_STALE_SECONDS:
+                    lock_path.rmdir()
+                    continue
+            except FileNotFoundError:
+                continue
+            except OSError:
+                pass
+            if time.monotonic() >= deadline:
+                raise StateError("Timed out waiting for the logical session command lock.")
+            time.sleep(SESSION_COMMAND_LOCK_POLL_SECONDS)
+        except OSError as exc:
+            raise StateError("Cannot acquire the logical session command lock.") from exc
+
+
+def release_session_command_lock(lock_path: Path | None) -> None:
+    if lock_path is None:
+        return
+    try:
+        lock_path.rmdir()
+    except OSError:
+        pass
 
 
 def acquire_legacy_state_lock(root: Path) -> Path | None:
@@ -1527,6 +1603,20 @@ def ensure_hook_session(
     agent: str | None,
     ppid: int | None = None,
 ) -> tuple[dict, Path]:
+    session_path = resolve_hook_session_path(root, payload, agent, ppid)
+    lock_path = acquire_session_command_lock(root, session_path)
+    try:
+        return ensure_hook_session_unlocked(root, payload, agent, ppid)
+    finally:
+        release_session_command_lock(lock_path)
+
+
+def ensure_hook_session_unlocked(
+    root: Path,
+    payload: dict,
+    agent: str | None,
+    ppid: int | None = None,
+) -> tuple[dict, Path]:
     identity = hook_session_identity(payload, agent, ppid)
     session_path = resolve_hook_session_path(root, payload, agent, ppid)
     resolved_ppid = ppid if ppid is not None else os.getppid()
@@ -1656,7 +1746,11 @@ def clean_orphan_acceptance_snapshots(root: Path) -> int:
         else:
             task = None
 
-        checkpoint = task.get("verification_checkpoint") if task is not None else None
+        checkpoint = None
+        if task is not None:
+            checkpoint = task.get("quality_checkpoint")
+            if not isinstance(checkpoint, dict):
+                checkpoint = task.get("verification_checkpoint")
         snapshot_file = checkpoint.get("snapshot_file") if isinstance(checkpoint, dict) else None
         referenced = bool(
             isinstance(snapshot_file, str)
@@ -1734,6 +1828,76 @@ def is_valid_review_finding(value: object) -> bool:
         and is_non_empty_string(value.get("issue"))
         and value.get("severity") in REVIEW_FINDING_SEVERITIES
     )
+
+
+def validate_quality_gate_record_schemas(
+    review_records: list[dict], verification_records: list[dict]
+) -> None:
+    latest_reviews: dict[tuple[str, str], dict] = {}
+    for index, record in enumerate(review_records):
+        dimension = str(record.get("dimension") or f"<missing-{index}>")
+        latest_reviews[(str(record.get("source_task_id") or ""), dimension)] = record
+    for record in latest_reviews.values():
+        findings = record.get("findings")
+        if (
+            not is_non_empty_string(record.get("dimension"))
+            or type(record.get("passed")) is not bool
+            or not is_non_empty_string(record.get("reviewer"))
+            or not isinstance(findings, list)
+            or not all(is_valid_review_finding(finding) for finding in findings)
+        ):
+            raise StateError(
+                "Review Gate evidence must include dimension, boolean passed, reviewer, "
+                "timestamp, and valid structured findings."
+            )
+        parse_quality_timestamp(record.get("timestamp"), "review timestamp")
+        failure_classes = record.get("failure_classes")
+        if failure_classes is not None and (
+            not isinstance(failure_classes, list)
+            or any(
+                value not in QUALITY_FAILURE_CLASSES - {"suggestion"}
+                for value in failure_classes
+            )
+        ):
+            raise StateError("Review Gate failure_classes are invalid.")
+
+    latest_verifications: dict[tuple[str, str, str], dict] = {}
+    for index, record in enumerate(verification_records):
+        check = str(record.get("check") or f"<missing-{index}>")
+        latest_verifications[
+            (
+                str(record.get("source_task_id") or ""),
+                check,
+                str(record.get("coverage_scope") or ""),
+            )
+        ] = record
+    for record in latest_verifications.values():
+        applicable = record.get("applicable") is not False
+        if (
+            not is_non_empty_string(record.get("check"))
+            or record.get("check_type")
+            not in STRICT_VERIFICATION_CHECK_TYPES | {"coverage"}
+            or type(record.get("passed")) is not bool
+            or (applicable and not is_non_empty_string(record.get("command")))
+            or (
+                not applicable
+                and not is_non_empty_string(record.get("not_applicable_reason"))
+            )
+        ):
+            raise StateError(
+                "Verification Gate evidence must include check, check_type, boolean passed, "
+                "timestamp, and command or an explicit not-applicable reason."
+            )
+        parse_quality_timestamp(record.get("timestamp"), "verification timestamp")
+        failure_classes = record.get("failure_classes")
+        if failure_classes is not None and (
+            not isinstance(failure_classes, list)
+            or any(
+                value not in QUALITY_FAILURE_CLASSES - {"suggestion"}
+                for value in failure_classes
+            )
+        ):
+            raise StateError("Verification Gate failure_classes are invalid.")
 
 
 def has_acyclic_dependencies(dependencies_by_unit: dict[str, set[str]]) -> bool:
@@ -1838,16 +2002,6 @@ def is_valid_execution_plan(
                 return False
 
     return True
-
-
-def is_read_only_execution_plan(plan: object) -> bool:
-    return (
-        is_valid_execution_plan(plan, allow_empty_files=True)
-        and isinstance(plan, dict)
-        and plan.get("strategy") == "single"
-        and len(plan["units"]) == 1
-        and plan["units"][0].get("files") == []
-    )
 
 
 def stored_spec_path(root: Path, task: dict) -> Path:
@@ -2285,9 +2439,6 @@ def has_valid_execution_plan(root: Path, task_id: str) -> bool:
     except OSError:
         return False
     task = load_task(root, task_id)
-    task_type = str(task.get("type") or "").strip().lower() if task else ""
-    if task_type in NO_CODE_TASK_TYPES:
-        return is_read_only_execution_plan(latest_plan)
     valid = is_valid_execution_plan(
         latest_plan,
         require_unit_contracts=read_project_schema_version(root) >= 3,
@@ -2872,6 +3023,77 @@ def implementation_fingerprint(root: Path, task_id: str) -> str:
     return digest.hexdigest()
 
 
+def canonical_repository_fingerprints(
+    root: Path, task_id: str, task: dict
+) -> dict[str, str]:
+    if not isinstance(task.get("spec_source"), dict):
+        return {}
+    plan = latest_execution_plan(root, task_id) or {}
+    repo_paths = task.get("repo_paths") if isinstance(task.get("repo_paths"), dict) else {}
+    fingerprints: dict[str, str] = {}
+    for repo_id in sorted(
+        {
+            str(unit.get("repo_id"))
+            for unit in plan.get("units", [])
+            if isinstance(unit, dict) and is_non_empty_string(unit.get("repo_id"))
+        }
+    ):
+        raw_base = repo_paths.get(repo_id)
+        if not is_non_empty_string(raw_base):
+            continue
+        base = Path(str(raw_base))
+        if not base.is_absolute():
+            base = root / base
+        base = base.resolve()
+        digest = hashlib.sha256()
+        units = [
+            unit
+            for unit in plan.get("units", [])
+            if isinstance(unit, dict) and unit.get("repo_id") == repo_id
+        ]
+        digest.update(
+            json.dumps(
+                units,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
+        digest.update(b"\0")
+        repository = git_repository_root(base)
+        if repository is not None and repository.resolve() == base:
+            update_git_repository_content_fingerprint(
+                digest,
+                root,
+                repository,
+                [base],
+                set(),
+            )
+        else:
+            for unit in units:
+                for file_name in sorted(
+                    str(value)
+                    for value in unit.get("files", [])
+                    if is_non_empty_string(value)
+                ):
+                    candidate = (base / file_name).resolve()
+                    try:
+                        candidate.relative_to(base)
+                    except ValueError as error:
+                        raise StateError(
+                            f"Execution plan file escapes repository: {file_name}"
+                        ) from error
+                    digest.update(file_name.encode("utf-8"))
+                    digest.update(b"\0")
+                    try:
+                        digest.update(candidate.read_bytes())
+                    except OSError:
+                        digest.update(b"<missing>")
+                    digest.update(b"\0")
+        fingerprints[repo_id] = digest.hexdigest()
+    return fingerprints
+
+
 def config_without_frozen_tdd_settings(payload: bytes) -> bytes:
     """任务冻结 TDD 契约后，从证据指纹中排除仅影响未来任务的实时 TDD 配置。"""
     try:
@@ -2926,6 +3148,895 @@ def evidence_fingerprints(root: Path, task_id: str) -> dict[str, str]:
         "implementation_fingerprint": implementation_fingerprint(root, task_id),
         "config_fingerprint": behavior_config_fingerprint(root, task),
     }
+
+
+def parse_quality_timestamp(value: object, field: str) -> datetime:
+    if not is_non_empty_string(value):
+        raise StateError(f"QUALITY record {field} must be a non-empty ISO timestamp.")
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise StateError(f"QUALITY record {field} must be an ISO timestamp.") from exc
+    if parsed.tzinfo is None:
+        raise StateError(f"QUALITY record {field} must include a timezone.")
+    return parsed.astimezone(timezone.utc)
+
+
+def validated_quality_records(root: Path, task_id: str) -> list[tuple[int, dict]]:
+    validated: list[tuple[int, dict]] = []
+    expected_attempt = 1
+    repair_count = 0
+    for index, record in enumerate(execution_records(root, task_id)):
+        if record.get("type") != "quality":
+            continue
+        outcome = record.get("outcome")
+        if outcome not in {"passed", "repair", "replan", "cancelled"}:
+            raise StateError(
+                "QUALITY record outcome must be passed, repair, replan, or cancelled."
+            )
+        if outcome == "repair":
+            repair_count += 1
+        started_at = parse_quality_timestamp(record.get("started_at"), "started_at")
+        completed_at = parse_quality_timestamp(record.get("completed_at"), "completed_at")
+        duration_ms = record.get("duration_ms")
+        evidence_start = record.get("evidence_start_index")
+        evidence_end = record.get("evidence_end_index")
+        failure_classes = record.get("failure_classes", [])
+        repository_fingerprints = record.get("repository_fingerprints", {})
+        cancellation_reason = record.get("cancellation_reason")
+        if (
+            record.get("attempt") != expected_attempt
+            or not is_non_empty_string(record.get("implementation_fingerprint"))
+            or not is_non_empty_string(record.get("config_fingerprint"))
+            or type(duration_ms) is not int
+            or duration_ms < 0
+            or record.get("repair_count") != repair_count
+            or type(evidence_start) is not int
+            or type(evidence_end) is not int
+            or evidence_start < 0
+            or evidence_end < evidence_start
+            or evidence_end != index
+            or completed_at < started_at
+            or not isinstance(failure_classes, list)
+            or any(value not in QUALITY_FAILURE_CLASSES for value in failure_classes)
+            or not isinstance(repository_fingerprints, dict)
+            or any(
+                not is_non_empty_string(key) or not is_non_empty_string(value)
+                for key, value in repository_fingerprints.items()
+            )
+            or record.get("review_gate") not in QUALITY_GATE_STATUSES
+            or record.get("verification_gate") not in QUALITY_GATE_STATUSES
+            or not is_non_empty_string(record.get("summary"))
+            or (
+                outcome == "cancelled"
+                and cancellation_reason not in QUALITY_CANCELLATION_REASONS
+            )
+            or (outcome != "cancelled" and cancellation_reason is not None)
+        ):
+            raise StateError(
+                "QUALITY records must be sequential, finalized, fingerprint-bound, and append-only."
+            )
+        validated.append((index, record))
+        expected_attempt += 1
+    return validated
+
+
+def build_quality_attempt_context(
+    root: Path,
+    task_id: str,
+    task: dict,
+    infer_existing_evidence: bool = False,
+) -> dict:
+    fingerprints = evidence_fingerprints(root, task_id)
+    records = execution_records(root, task_id)
+    quality_records = validated_quality_records(root, task_id)
+    execution_start_index = len(records)
+    started_at = now_iso()
+    if infer_existing_evidence:
+        previous_quality_index = quality_records[-1][0] if quality_records else -1
+        candidates = [
+            (index, record)
+            for index, record in enumerate(records[previous_quality_index + 1 :], previous_quality_index + 1)
+            if (
+                record.get("type") == "review"
+                and record.get("implementation_fingerprint")
+                == fingerprints["implementation_fingerprint"]
+            )
+            or (
+                record.get("type") == "verify"
+                and record.get("implementation_fingerprint")
+                == fingerprints["implementation_fingerprint"]
+                and record.get("config_fingerprint") == fingerprints["config_fingerprint"]
+            )
+        ]
+        if candidates:
+            execution_start_index = candidates[0][0]
+            timestamps = [
+                str(record.get("timestamp"))
+                for _index, record in candidates
+                if is_non_empty_string(record.get("timestamp"))
+            ]
+            if timestamps:
+                started_at = min(timestamps)
+    return {
+        "schema": 1,
+        "attempt": len(quality_records) + 1,
+        "implementation_fingerprint": fingerprints["implementation_fingerprint"],
+        "config_fingerprint": fingerprints["config_fingerprint"],
+        "started_at": started_at,
+        "execution_start_index": execution_start_index,
+        "repair_count": sum(
+            1 for _index, record in quality_records if record.get("outcome") == "repair"
+        ),
+    }
+
+
+def quality_record_matches_active_attempt(record: dict, active: dict) -> bool:
+    return (
+        record.get("attempt") == active.get("attempt")
+        and record.get("implementation_fingerprint")
+        == active.get("implementation_fingerprint")
+        and record.get("config_fingerprint") == active.get("config_fingerprint")
+        and record.get("evidence_start_index")
+        == active.get("execution_start_index")
+    )
+
+
+def cancel_active_quality_attempt(
+    root: Path,
+    task_id: str,
+    task: dict,
+    agent: str,
+    summary: str,
+    cancellation_reason: str,
+) -> dict | None:
+    current = task.get("quality_attempt")
+    if not isinstance(current, dict):
+        return None
+    quality_records = validated_quality_records(root, task_id)
+    if quality_records:
+        finalized = quality_records[-1][1]
+        if finalized.get("outcome") == "cancelled" and quality_record_matches_active_attempt(
+            finalized, current
+        ):
+            return reconcile_finalized_quality_state(
+                root, task_id, task, finalized, agent
+            )
+    if (
+        current.get("schema") != 1
+        or current.get("attempt") != len(quality_records) + 1
+        or not is_non_empty_string(current.get("implementation_fingerprint"))
+        or not is_non_empty_string(current.get("config_fingerprint"))
+        or type(current.get("execution_start_index")) is not int
+        or current["execution_start_index"] < 0
+        or not is_non_empty_string(current.get("started_at"))
+        or not is_non_empty_string(summary)
+        or cancellation_reason not in QUALITY_CANCELLATION_REASONS
+    ):
+        raise StateError("The active QUALITY attempt metadata is invalid.")
+    started_at = parse_quality_timestamp(current.get("started_at"), "started_at")
+    completed_at = datetime.now(timezone.utc)
+    evidence_end_index = len(execution_records(root, task_id))
+    record = {
+        "type": "quality",
+        "attempt": current["attempt"],
+        "implementation_fingerprint": current["implementation_fingerprint"],
+        "config_fingerprint": current["config_fingerprint"],
+        "started_at": started_at.isoformat(),
+        "completed_at": completed_at.isoformat(),
+        "duration_ms": max(0, int((completed_at - started_at).total_seconds() * 1000)),
+        "repair_count": int(current.get("repair_count") or 0),
+        "outcome": "cancelled",
+        "cancellation_reason": cancellation_reason,
+        "review_gate": "cancelled",
+        "verification_gate": "cancelled",
+        "summary": summary.strip(),
+        "failure_classes": [],
+        "repository_fingerprints": {},
+        "evidence_start_index": current["execution_start_index"],
+        "evidence_end_index": evidence_end_index,
+    }
+    append_execution_record(root, task_id, record)
+    return reconcile_finalized_quality_state(root, task_id, task, record, agent)
+
+
+def ensure_quality_attempt_context(
+    root: Path,
+    task_id: str,
+    task: dict,
+    agent: str,
+    persist: bool = False,
+    infer_existing_evidence: bool = False,
+) -> dict:
+    if isinstance(task.get("canonical_repair_transition"), dict):
+        raise StateError(
+            "Canonical repair transition is incomplete; resume it before collecting new QUALITY evidence."
+        )
+    if isinstance(task.get("quality_return_required"), dict):
+        raise StateError(
+            "QUALITY candidate drift requires a return to IMPLEMENT before collecting new evidence."
+        )
+    current = task.get("quality_attempt")
+    expected = evidence_fingerprints(root, task_id)
+    quality_records = validated_quality_records(root, task_id)
+    if isinstance(current, dict) and quality_records:
+        finalized = quality_records[-1][1]
+        if finalized.get("outcome") == "cancelled" and quality_record_matches_active_attempt(
+            finalized, current
+        ):
+            reconcile_finalized_quality_state(root, task_id, task, finalized, agent)
+            task = load_task(root, task_id) or task
+            current = None
+            if isinstance(task.get("quality_return_required"), dict):
+                raise StateError(
+                    "QUALITY candidate drift requires a return to IMPLEMENT before collecting new evidence."
+                )
+    if isinstance(current, dict):
+        structurally_invalid = (
+            current.get("schema") != 1
+            or current.get("attempt") != len(quality_records) + 1
+            or type(current.get("execution_start_index")) is not int
+            or current["execution_start_index"] < 0
+            or not is_non_empty_string(current.get("started_at"))
+        )
+        implementation_changed = (
+            current.get("implementation_fingerprint")
+            != expected["implementation_fingerprint"]
+        )
+        config_changed = current.get("config_fingerprint") != expected["config_fingerprint"]
+        if structurally_invalid:
+            raise StateError(
+                "The active QUALITY attempt no longer matches the current candidate."
+            )
+        if implementation_changed:
+            if persist:
+                cancel_active_quality_attempt(
+                    root,
+                    task_id,
+                    task,
+                    agent,
+                    "Implementation changed during QUALITY; return to IMPLEMENT.",
+                    "implementation-drift",
+                )
+                raise StateError(
+                    "The QUALITY attempt was cancelled because the implementation changed; "
+                    "return to IMPLEMENT before collecting new evidence."
+                )
+            raise StateError(
+                "The active QUALITY attempt no longer matches the current candidate."
+            )
+        if config_changed:
+            if not persist:
+                raise StateError(
+                    "The active QUALITY attempt no longer matches the current config."
+                )
+            cancel_active_quality_attempt(
+                root,
+                task_id,
+                task,
+                agent,
+                "Behavior config changed during QUALITY; restart the quality attempt.",
+                "config-drift",
+            )
+            current = None
+        if isinstance(current, dict):
+            return current
+    if quality_records:
+        finalized = quality_records[-1][1]
+        if (
+            finalized.get("outcome") in {"passed", "repair", "replan"}
+            and finalized.get("attempt") != task.get("quality_consumed_attempt")
+            and finalized.get("implementation_fingerprint")
+            != expected["implementation_fingerprint"]
+        ):
+            if persist:
+                task["quality_return_required"] = {
+                    "schema": 1,
+                    "reason": "finalized-candidate-drift",
+                    "previous_implementation_fingerprint": finalized.get(
+                        "implementation_fingerprint"
+                    ),
+                    "implementation_fingerprint": expected[
+                        "implementation_fingerprint"
+                    ],
+                    "detected_at": now_iso(),
+                }
+                task["last_agent"] = agent
+                write_task(root, task_id, task)
+            raise StateError(
+                "The finalized QUALITY candidate changed; return to IMPLEMENT before "
+                "collecting new evidence."
+            )
+        if (
+            finalized.get("outcome") in {"passed", "repair", "replan"}
+            and finalized.get("implementation_fingerprint")
+            == expected["implementation_fingerprint"]
+            and finalized.get("config_fingerprint") == expected["config_fingerprint"]
+        ):
+            raise StateError(
+                "The current QUALITY candidate is already finalized; apply its transition "
+                "before starting another attempt."
+            )
+    context = build_quality_attempt_context(
+        root, task_id, task, infer_existing_evidence=infer_existing_evidence
+    )
+    if persist:
+        append_canonical_quality_carry_forward(root, task_id, task, context, agent)
+        task["quality_attempt"] = context
+        task["last_agent"] = agent
+        write_task(root, task_id, task)
+    return context
+
+
+def require_finalized_quality_record(
+    root: Path, task_id: str, task: dict, outcome: str
+) -> dict:
+    records = validated_quality_records(root, task_id)
+    if not records:
+        raise StateError("QUALITY has no finalized attempt record.")
+    record = records[-1][1]
+    fingerprints = evidence_fingerprints(root, task_id)
+    if (
+        record.get("outcome") != outcome
+        or record.get("implementation_fingerprint")
+        != fingerprints["implementation_fingerprint"]
+        or record.get("config_fingerprint") != fingerprints["config_fingerprint"]
+    ):
+        raise StateError(
+            f"The latest QUALITY attempt must finalize the current candidate as {outcome}."
+        )
+    return record
+
+
+def require_checkpoint_quality_record(root: Path, task_id: str, task: dict) -> dict:
+    checkpoint = task.get("quality_checkpoint")
+    records = validated_quality_records(root, task_id)
+    if not isinstance(checkpoint, dict) or not records:
+        raise StateError("QUALITY checkpoint has no finalized passed attempt record.")
+    record = records[-1][1]
+    if (
+        record.get("outcome") != "passed"
+        or record.get("implementation_fingerprint")
+        != checkpoint.get("implementation_fingerprint")
+        or record.get("config_fingerprint") != checkpoint.get("config_fingerprint")
+    ):
+        raise StateError("QUALITY checkpoint is not bound to its finalized passed attempt.")
+    return record
+
+
+def reconcile_finalized_quality_state(
+    root: Path,
+    task_id: str,
+    task: dict,
+    record: dict,
+    agent: str,
+    failures: dict[str, list[str]] | None = None,
+) -> dict:
+    refreshed = load_task(root, task_id) or task
+    active = refreshed.get("quality_attempt")
+    if isinstance(active, dict):
+        if (
+            active.get("attempt") != record.get("attempt")
+            or active.get("implementation_fingerprint")
+            != record.get("implementation_fingerprint")
+            or active.get("config_fingerprint") != record.get("config_fingerprint")
+            or active.get("execution_start_index")
+            != record.get("evidence_start_index")
+        ):
+            raise StateError(
+                "The finalized QUALITY record does not match the active attempt."
+            )
+        refreshed.pop("quality_attempt", None)
+
+    if (
+        record.get("outcome") == "cancelled"
+        and record.get("cancellation_reason") == "implementation-drift"
+    ):
+        current_fingerprint = evidence_fingerprints(root, task_id)[
+            "implementation_fingerprint"
+        ]
+        expected_return = {
+            "schema": 1,
+            "reason": "implementation-drift",
+            "previous_implementation_fingerprint": record[
+                "implementation_fingerprint"
+            ],
+            "implementation_fingerprint": current_fingerprint,
+        }
+        current_return = refreshed.get("quality_return_required")
+        if isinstance(current_return, dict):
+            if any(
+                current_return.get(key) != value
+                for key, value in expected_return.items()
+            ):
+                raise StateError(
+                    "QUALITY implementation-drift return intent no longer matches the cancelled attempt."
+                )
+        else:
+            refreshed["quality_return_required"] = {
+                **expected_return,
+                "detected_at": now_iso(),
+            }
+
+    if record.get("outcome") == "repair" and isinstance(
+        refreshed.get("spec_source"), dict
+    ):
+        repair_failures = failures or quality_repair_failures_for_window(
+            root,
+            task_id,
+            refreshed,
+            int(record["evidence_start_index"]),
+            int(record["evidence_end_index"]),
+            int(record["attempt"]),
+            str(record["implementation_fingerprint"]),
+            str(record["config_fingerprint"]),
+        )
+        if not repair_failures:
+            raise StateError("Canonical QUALITY repair has no affected source tasks.")
+        expected_intent = {
+            "schema": 1,
+            "implementation_fingerprint": record["implementation_fingerprint"],
+            "config_fingerprint": record["config_fingerprint"],
+            "quality_attempt": record["attempt"],
+            "source_task_ids": sorted(repair_failures),
+        }
+        current_intent = refreshed.get("canonical_repair_transition")
+        if isinstance(current_intent, dict):
+            if any(
+                current_intent.get(key) != value
+                for key, value in expected_intent.items()
+            ):
+                raise StateError(
+                    "Canonical repair transition intent no longer matches QUALITY evidence."
+                )
+        else:
+            refreshed["canonical_repair_transition"] = {
+                **expected_intent,
+                "started_at": now_iso(),
+                "started_by": agent,
+            }
+
+    refreshed["last_agent"] = agent
+    write_task(root, task_id, refreshed)
+    validated_quality_records(root, task_id)
+    return record
+
+
+def finalize_quality_attempt(
+    root: Path,
+    task_id: str,
+    task: dict,
+    outcome: str,
+    agent: str,
+    review_gate: str = "passed",
+    verification_gate: str = "passed",
+    failure_classes: list[str] | None = None,
+    summary: str = "QUALITY gates passed for the current candidate.",
+) -> dict:
+    if outcome not in {"passed", "repair", "replan"}:
+        raise StateError("Unknown QUALITY outcome.")
+    if review_gate not in QUALITY_GATE_STATUSES or verification_gate not in QUALITY_GATE_STATUSES:
+        raise StateError("Both QUALITY gates must be passed, failed, or cancelled.")
+    normalized_classes = sorted(set(failure_classes or []))
+    if any(value not in QUALITY_FAILURE_CLASSES for value in normalized_classes):
+        raise StateError("Unknown QUALITY failure class.")
+    if not is_non_empty_string(summary):
+        raise StateError("QUALITY decision summary must be non-empty.")
+    existing = validated_quality_records(root, task_id)
+    fingerprints = evidence_fingerprints(root, task_id)
+    if existing:
+        finalized = existing[-1][1]
+        if (
+            finalized.get("outcome") != "cancelled"
+            and finalized.get("implementation_fingerprint")
+            == fingerprints["implementation_fingerprint"]
+            and finalized.get("config_fingerprint") == fingerprints["config_fingerprint"]
+        ):
+            same_decision = (
+                finalized.get("outcome") == outcome
+                and finalized.get("review_gate") == review_gate
+                and finalized.get("verification_gate") == verification_gate
+                and finalized.get("failure_classes") == normalized_classes
+                and finalized.get("summary") == summary.strip()
+            )
+            active = task.get("quality_attempt")
+            if isinstance(active, dict):
+                if active.get("attempt") == finalized.get("attempt"):
+                    if not same_decision:
+                        raise StateError(
+                            "The current QUALITY candidate already finalized with another decision."
+                        )
+                    return reconcile_finalized_quality_state(
+                        root, task_id, task, finalized, agent
+                    )
+                if active.get("attempt") != int(finalized.get("attempt") or 0) + 1:
+                    raise StateError(
+                        "The active QUALITY attempt does not follow the latest finalized attempt."
+                    )
+            else:
+                if same_decision:
+                    return finalized
+                raise StateError(
+                    "The current QUALITY candidate already finalized with another decision."
+                )
+    context = ensure_quality_attempt_context(
+        root,
+        task_id,
+        task,
+        agent,
+        infer_existing_evidence=True,
+    )
+    evidence_end_index = len(execution_records(root, task_id))
+    window_records = execution_records(root, task_id)[
+        int(context["execution_start_index"]) : evidence_end_index
+    ]
+    matching_reviews = [
+        record
+        for record in window_records
+        if record.get("type") == "review"
+        and record.get("implementation_fingerprint")
+        == context["implementation_fingerprint"]
+    ]
+    matching_verifications = [
+        record
+        for record in window_records
+        if record.get("type") == "verify"
+        and record.get("implementation_fingerprint")
+        == context["implementation_fingerprint"]
+        and record.get("config_fingerprint") == context["config_fingerprint"]
+    ]
+    attempt_binding_required = task.get("workflow_mode_legacy") is not True or isinstance(
+        task.get("spec_source"), dict
+    )
+    if attempt_binding_required:
+        unexpected_attempts = [
+            record
+            for record in [*matching_reviews, *matching_verifications]
+            if type(record.get("quality_attempt")) is not int
+            or record.get("quality_attempt") > context["attempt"]
+        ]
+        if unexpected_attempts:
+            raise StateError(
+                "QUALITY review and verification evidence must bind to the active attempt."
+            )
+        current_reviews = [
+            record
+            for record in matching_reviews
+            if record.get("quality_attempt") == context["attempt"]
+        ]
+        current_verifications = [
+            record
+            for record in matching_verifications
+            if record.get("quality_attempt") == context["attempt"]
+        ]
+    else:
+        current_reviews = matching_reviews
+        current_verifications = matching_verifications
+    if task.get("workflow_mode_legacy") is not True or isinstance(
+        task.get("spec_source"), dict
+    ):
+        validate_quality_gate_record_schemas(current_reviews, current_verifications)
+    carried_reviews, carried_verifications = resolve_canonical_quality_carry_forward(
+        root, task_id, task, context, window_records
+    )
+    readiness_reviews = [*carried_reviews, *current_reviews]
+    readiness_verifications = [*carried_verifications, *current_verifications]
+    failures = quality_repair_failures_for_window(
+        root,
+        task_id,
+        task,
+        int(context["execution_start_index"]),
+        evidence_end_index,
+        int(context["attempt"]),
+    )
+    failure_kinds = {
+        value.split(":", 1)[0]
+        for values in failures.values()
+        for value in values
+    }
+    canonical = isinstance(task.get("spec_source"), dict)
+    latest_failure_records: dict[tuple[str, str], dict] = {}
+    for record in [*current_reviews, *current_verifications]:
+        owner = str(record.get("source_task_id")) if canonical else task_id
+        if record.get("type") == "review" and is_non_empty_string(
+            record.get("dimension")
+        ):
+            label = f"review:{record['dimension']}"
+        elif record.get("type") == "verify" and is_non_empty_string(
+            record.get("check")
+        ):
+            coverage_scope = str(record.get("coverage_scope") or "")
+            label = f"verify:{record['check']}"
+            if coverage_scope:
+                label = f"{label}:{coverage_scope}"
+        else:
+            continue
+        latest_failure_records[(owner, label)] = record
+    evidence_failure_classes: set[str] = set()
+    for owner, labels in failures.items():
+        for label in labels:
+            record = latest_failure_records.get((owner, label))
+            record_classes = record.get("failure_classes") if isinstance(record, dict) else None
+            if (
+                not isinstance(record_classes, list)
+                or not record_classes
+                or any(
+                    value not in QUALITY_FAILURE_CLASSES - {"suggestion"}
+                    for value in record_classes
+                )
+            ):
+                raise StateError(
+                    "Each blocking QUALITY record must include structured failure_classes."
+                )
+            evidence_failure_classes.update(str(value) for value in record_classes)
+    if outcome != "passed" and evidence_failure_classes != {
+        value for value in normalized_classes if value != "suggestion"
+    }:
+        raise StateError(
+            "QUALITY decision failure classes must exactly match the blocking gate evidence."
+        )
+    if outcome == "passed":
+        if review_gate == "passed":
+            validate_review_readiness(root, task_id, task, readiness_reviews)
+        if verification_gate == "passed":
+            validate_verification_readiness(
+                root,
+                task_id,
+                task,
+                validate_review=False,
+                evidence_records=readiness_verifications,
+            )
+    for gate_name, gate_status, gate_records, failure_kind in (
+        (
+            "Review",
+            review_gate,
+            readiness_reviews if review_gate == "passed" else current_reviews,
+            "review",
+        ),
+        (
+            "Verification",
+            verification_gate,
+            readiness_verifications
+            if verification_gate == "passed"
+            else current_verifications,
+            "verify",
+        ),
+    ):
+        if gate_status != "cancelled" and not gate_records:
+            raise StateError(f"The {gate_name} Gate has no evidence for this QUALITY attempt.")
+        if gate_status == "failed" and failure_kind not in failure_kinds:
+            raise StateError(f"The {gate_name} Gate is marked failed without blocking evidence.")
+        if gate_status != "failed" and failure_kind in failure_kinds:
+            raise StateError(f"The {gate_name} Gate has blocking evidence and must be marked failed.")
+
+    if outcome != "passed":
+        if review_gate == "passed":
+            validate_review_readiness(root, task_id, task, readiness_reviews)
+        if verification_gate == "passed":
+            validate_verification_readiness(
+                root,
+                task_id,
+                task,
+                validate_review=False,
+                evidence_records=readiness_verifications,
+            )
+
+    if outcome == "passed":
+        if review_gate != "passed" or verification_gate != "passed":
+            raise StateError("A passed QUALITY attempt requires both gates to pass.")
+        if any(value != "suggestion" for value in normalized_classes):
+            raise StateError("A passed QUALITY attempt can contain only suggestion findings.")
+    else:
+        if not failures:
+            raise StateError(f"QUALITY cannot finalize {outcome} without blocking evidence.")
+        if outcome == "repair" and (
+            not normalized_classes
+            or any(value not in {"code-defect", "test-defect", "suggestion"} for value in normalized_classes)
+            or not ({"code-defect", "test-defect"} & set(normalized_classes))
+        ):
+            raise StateError(
+                "QUALITY repair requires a code-defect or test-defect classification only."
+            )
+        if outcome == "replan" and (
+            "contract-ambiguity" not in normalized_classes
+            or any(
+                value
+                not in {
+                    "contract-ambiguity",
+                    "code-defect",
+                    "test-defect",
+                    "suggestion",
+                }
+                for value in normalized_classes
+            )
+        ):
+            raise StateError(
+                "QUALITY replan requires contract ambiguity and may preserve code/test defects."
+            )
+
+    started_at = parse_quality_timestamp(context.get("started_at"), "started_at")
+    completed_at = datetime.now(timezone.utc)
+    record = {
+        "type": "quality",
+        "attempt": context["attempt"],
+        "implementation_fingerprint": context["implementation_fingerprint"],
+        "config_fingerprint": context["config_fingerprint"],
+        "started_at": started_at.isoformat(),
+        "completed_at": completed_at.isoformat(),
+        "duration_ms": max(0, int((completed_at - started_at).total_seconds() * 1000)),
+        "repair_count": int(context.get("repair_count") or 0)
+        + (1 if outcome == "repair" else 0),
+        "outcome": outcome,
+        "review_gate": review_gate,
+        "verification_gate": verification_gate,
+        "summary": summary.strip(),
+        "failure_classes": normalized_classes,
+        "repository_fingerprints": canonical_repository_fingerprints(
+            root, task_id, task
+        ),
+        "evidence_start_index": context["execution_start_index"],
+        "evidence_end_index": evidence_end_index,
+    }
+    append_execution_record(root, task_id, record)
+    return reconcile_finalized_quality_state(
+        root, task_id, task, record, agent, failures
+    )
+
+
+def ensure_finalized_quality_outcome(
+    root: Path,
+    task_id: str,
+    task: dict,
+    outcome: str,
+    agent: str,
+) -> dict:
+    if not isinstance(task.get("quality_attempt"), dict):
+        return require_finalized_quality_record(root, task_id, task, outcome)
+    if outcome != "passed":
+        raise StateError(
+            f"Finalize the active QUALITY attempt as {outcome} before requesting the transition."
+        )
+    return finalize_quality_attempt(root, task_id, task, outcome, agent)
+
+
+def finalize_quality_decision(
+    root: Path,
+    outcome: str,
+    review_gate: str,
+    verification_gate: str,
+    failure_classes: list[str],
+    summary: str,
+    agent: str,
+    task_id: str | None = None,
+    session_file: str | Path | None = None,
+) -> dict:
+    session, resolved_task_id, task = resolve_current_task(root, task_id, session_file)
+    if task.get("status") != "QUALITY":
+        raise StateError("A QUALITY decision can only be finalized during QUALITY.")
+    record = finalize_quality_attempt(
+        root,
+        resolved_task_id,
+        task,
+        outcome,
+        agent,
+        review_gate,
+        verification_gate,
+        failure_classes,
+        summary,
+    )
+    result = snapshot_state(root, session_file, session)
+    result["action"] = "finalize-quality"
+    result["quality"] = record
+    return result
+
+
+def current_finalized_quality_outcome(
+    root: Path, task_id: str, task: dict
+) -> str | None:
+    if isinstance(task.get("quality_attempt"), dict):
+        return None
+    records = validated_quality_records(root, task_id)
+    if not records:
+        return None
+    record = records[-1][1]
+    fingerprints = evidence_fingerprints(root, task_id)
+    if (
+        record.get("implementation_fingerprint")
+        != fingerprints["implementation_fingerprint"]
+        or record.get("config_fingerprint") != fingerprints["config_fingerprint"]
+    ):
+        return None
+    return str(record.get("outcome"))
+
+
+def active_quality_failures(
+    root: Path, task_id: str, task: dict
+) -> dict[str, list[str]]:
+    attempt = task.get("quality_attempt")
+    if not isinstance(attempt, dict):
+        return {}
+    fingerprints = evidence_fingerprints(root, task_id)
+    if (
+        attempt.get("implementation_fingerprint")
+        != fingerprints["implementation_fingerprint"]
+        or attempt.get("config_fingerprint") != fingerprints["config_fingerprint"]
+    ):
+        return {}
+    return quality_repair_failures_for_window(
+        root,
+        task_id,
+        task,
+        int(attempt.get("execution_start_index") or 0),
+        len(execution_records(root, task_id)),
+        int(attempt.get("attempt") or 0),
+    )
+
+
+def validate_quality_exit_request(
+    root: Path, task_id: str, task: dict, stage: str
+) -> None:
+    required_outcome = "repair" if stage == "IMPLEMENT" else "replan"
+    current_outcome = current_finalized_quality_outcome(root, task_id, task)
+    if isinstance(task.get("canonical_repair_transition"), dict):
+        if stage != "IMPLEMENT":
+            raise StateError(
+                "Canonical repair transition is incomplete and must resume the original "
+                "QUALITY repair before any other exit."
+            )
+        return
+    if isinstance(task.get("quality_return_required"), dict):
+        if stage != "IMPLEMENT":
+            raise StateError(
+                "QUALITY candidate drift must return to IMPLEMENT before another transition."
+            )
+        return
+    if current_outcome == required_outcome:
+        return
+    if current_outcome in {"repair", "replan"}:
+        raise StateError(
+            f"The current QUALITY decision is {current_outcome}; transition to its matching stage."
+        )
+    if active_quality_failures(root, task_id, task):
+        raise StateError(
+            f"Finalize the active QUALITY attempt as {required_outcome} before requesting the transition."
+        )
+
+
+def prepare_quality_exit(
+    root: Path,
+    task_id: str,
+    task: dict,
+    stage: str,
+    agent: str,
+) -> tuple[dict, str]:
+    validate_quality_exit_request(root, task_id, task, stage)
+    required_outcome = "repair" if stage == "IMPLEMENT" else "replan"
+    if isinstance(task.get("canonical_repair_transition"), dict):
+        return task, "repair"
+    if current_finalized_quality_outcome(root, task_id, task) == required_outcome:
+        return task, required_outcome
+    return_required = task.get("quality_return_required")
+    if (
+        isinstance(return_required, dict)
+        and return_required.get("reason") == "implementation-drift"
+        and not isinstance(task.get("quality_attempt"), dict)
+    ):
+        return task, "cancelled"
+
+    if not isinstance(task.get("quality_attempt"), dict):
+        task["quality_attempt"] = build_quality_attempt_context(root, task_id, task)
+        task["last_agent"] = agent
+        write_task(root, task_id, task)
+        task = load_task(root, task_id) or task
+    cancel_active_quality_attempt(
+        root,
+        task_id,
+        task,
+        agent,
+        f"QUALITY returned to {stage} without a gate defect decision.",
+        "manual-return",
+    )
+    return load_task(root, task_id) or task, "cancelled"
 
 
 def acceptance_snapshot_path(root: Path, task_id: str) -> Path:
@@ -3151,28 +4262,28 @@ def build_acceptance_snapshot(root: Path, task_id: str, task: dict) -> dict:
 
 
 def load_acceptance_snapshot(root: Path, task: dict) -> dict:
-    checkpoint = task.get("verification_checkpoint")
+    checkpoint = task.get("quality_checkpoint")
     if not isinstance(checkpoint, dict):
-        raise StateError("VERIFICATION has no frozen acceptance checkpoint.")
+        raise StateError("QUALITY has no frozen acceptance checkpoint.")
     raw_path = checkpoint.get("snapshot_file")
     if not is_non_empty_string(raw_path):
-        raise StateError("Verification checkpoint has no snapshot file.")
+        raise StateError("Quality checkpoint has no snapshot file.")
     candidate = (root / str(raw_path)).resolve()
     sessions_root = (root / ".easy-coding" / "sessions").resolve()
     if not is_path_within(candidate, sessions_root):
-        raise StateError("Verification checkpoint snapshot escapes .easy-coding/sessions.")
+        raise StateError("Quality checkpoint snapshot escapes .easy-coding/sessions.")
     snapshot = load_json(candidate)
     if not isinstance(snapshot, dict) or snapshot.get("schema") != ACCEPTANCE_SNAPSHOT_SCHEMA:
-        raise StateError("Verification checkpoint snapshot is missing or invalid.")
+        raise StateError("Quality checkpoint snapshot is missing or invalid.")
     if canonical_json_sha256(snapshot) != checkpoint.get("snapshot_sha256"):
-        raise StateError("Verification checkpoint snapshot fingerprint changed.")
+        raise StateError("Quality checkpoint snapshot fingerprint changed.")
     if (
         snapshot.get("implementation_fingerprint")
         != checkpoint.get("implementation_fingerprint")
         or snapshot.get("config_fingerprint") != checkpoint.get("config_fingerprint")
         or snapshot.get("contract_fingerprint") != checkpoint.get("contract_fingerprint")
     ):
-        raise StateError("Verification checkpoint metadata does not match its snapshot.")
+        raise StateError("Quality checkpoint metadata does not match its snapshot.")
     return snapshot
 
 
@@ -3184,7 +4295,7 @@ def snapshot_entry_content(repository: Path, entry: dict | None) -> bytes | None
         try:
             return base64.b64decode(encoded, validate=True)
         except ValueError as exc:
-            raise StateError("Verification checkpoint contains invalid file content.") from exc
+            raise StateError("Quality checkpoint contains invalid file content.") from exc
     object_id = entry.get("git_oid")
     if not is_non_empty_string(object_id):
         return None
@@ -3192,7 +4303,7 @@ def snapshot_entry_content(repository: Path, entry: dict | None) -> bytes | None
         return str(object_id).encode("ascii", errors="replace")
     result = run_git(repository, "cat-file", "blob", str(object_id))
     if result is None or result.returncode != 0:
-        raise StateError(f"Cannot restore verification checkpoint Git object: {object_id}")
+        raise StateError(f"Cannot restore quality checkpoint Git object: {object_id}")
     return result.stdout
 
 
@@ -3232,7 +4343,7 @@ def acceptance_change_patch(
 
 
 def inspect_acceptance_drift(root: Path, task_id: str, task: dict) -> dict:
-    checkpoint = task.get("verification_checkpoint")
+    checkpoint = task.get("quality_checkpoint")
     baseline = load_acceptance_snapshot(root, task)
     current = build_acceptance_snapshot(root, task_id, task)
     baseline_entries = acceptance_snapshot_entries(baseline)
@@ -3332,7 +4443,8 @@ def inspect_acceptance_drift(root: Path, task_id: str, task: dict) -> dict:
 
 
 def cleanup_verification_checkpoint(root: Path, task_id: str, task: dict) -> None:
-    checkpoint = task.pop("verification_checkpoint", None)
+    checkpoint = task.pop("quality_checkpoint", None)
+    task.pop("verification_checkpoint", None)
     if not isinstance(checkpoint, dict):
         return
     raw_path = checkpoint.get("snapshot_file")
@@ -3359,20 +4471,38 @@ def record_verification_checkpoint(
     session_file: str | Path | None = None,
 ) -> dict:
     session, resolved_task_id, task = resolve_current_task(root, task_id, session_file)
-    if task.get("status") != "VERIFICATION":
-        raise StateError("Verification checkpoint can only be recorded during VERIFICATION.")
-    if isinstance(task.get("verification_checkpoint"), dict):
+    if task.get("status") != "QUALITY":
+        raise StateError("Quality checkpoint can only be recorded during QUALITY.")
+    if isinstance(task.get("quality_checkpoint"), dict):
+        require_checkpoint_quality_record(root, resolved_task_id, task)
         load_acceptance_snapshot(root, task)
         result = snapshot_state(root, session_file, session)
-        result["action"] = "verification-checkpoint"
-        result["verification_checkpoint"] = task["verification_checkpoint"]
+        result["action"] = "quality-checkpoint"
+        result["quality_checkpoint"] = task["quality_checkpoint"]
         result["checkpoint_unchanged"] = True
         return result
-    validate_verification_readiness(root, resolved_task_id, task)
+    if (
+        not isinstance(task.get("quality_attempt"), dict)
+        and current_finalized_quality_outcome(root, resolved_task_id, task) is None
+    ):
+        ensure_quality_attempt_context(
+            root,
+            resolved_task_id,
+            task,
+            agent,
+            persist=True,
+            infer_existing_evidence=True,
+        )
+        task = load_task(root, resolved_task_id) or task
+    ensure_finalized_quality_outcome(
+        root, resolved_task_id, task, "passed", agent
+    )
+    task = load_task(root, resolved_task_id) or task
+    require_finalized_quality_record(root, resolved_task_id, task, "passed")
     snapshot = build_acceptance_snapshot(root, resolved_task_id, task)
     path = acceptance_snapshot_path(root, resolved_task_id)
     write_json(path, snapshot)
-    task["verification_checkpoint"] = {
+    task["quality_checkpoint"] = {
         "schema": ACCEPTANCE_SNAPSHOT_SCHEMA,
         "implementation_fingerprint": snapshot["implementation_fingerprint"],
         "config_fingerprint": snapshot["config_fingerprint"],
@@ -3385,8 +4515,8 @@ def record_verification_checkpoint(
     task["last_agent"] = agent
     write_task(root, resolved_task_id, task)
     result = snapshot_state(root, session_file, session)
-    result["action"] = "verification-checkpoint"
-    result["verification_checkpoint"] = task["verification_checkpoint"]
+    result["action"] = "quality-checkpoint"
+    result["quality_checkpoint"] = task["quality_checkpoint"]
     return result
 
 
@@ -3420,13 +4550,13 @@ def ensure_verification_checkpoint(
     agent: str,
     session_file: str | Path | None,
 ) -> dict:
-    if isinstance(task.get("verification_checkpoint"), dict):
+    if isinstance(task.get("quality_checkpoint"), dict):
         load_acceptance_snapshot(root, task)
         return task
     record_verification_checkpoint(root, agent, task_id, session_file)
     refreshed = load_task(root, task_id)
     if not isinstance(refreshed, dict):
-        raise StateError(f"Task not found after verification checkpoint: {task_id}")
+        raise StateError(f"Task not found after quality checkpoint: {task_id}")
     return refreshed
 
 
@@ -3437,8 +4567,8 @@ def inspect_transition_drift(
     session_file: str | Path | None = None,
 ) -> dict:
     session, resolved_task_id, task = resolve_current_task(root, task_id, session_file)
-    if task.get("status") != "VERIFICATION":
-        raise StateError("Transition drift can only be inspected during VERIFICATION.")
+    if task.get("status") != "QUALITY":
+        raise StateError("Transition drift can only be inspected during QUALITY.")
     task = ensure_verification_checkpoint(root, resolved_task_id, task, agent, session_file)
     result = snapshot_state(root, session_file, session)
     result["acceptance_drift"] = inspect_acceptance_drift(root, resolved_task_id, task)
@@ -3460,18 +4590,18 @@ def append_transition_acceptance(
     drift = inspect_acceptance_drift(root, task_id, task)
     if drift["config_changed"]:
         raise StateError(
-            "Behavior config changed after verification; rerun verification before MEMORY."
+            "Behavior config changed after quality checks; rerun QUALITY before MEMORY."
         )
     if drift["metadata_changed"]:
         raise StateError(
             "Execution plan, workflow, Canonical design, or nested repository state changed "
-            "after verification; return to ANALYSIS or IMPLEMENT instead of accepting it as a code diff."
+            "after quality checks; return to ANALYSIS or IMPLEMENT instead of accepting it as a code diff."
         )
     changed_files = list(drift["changed_files"])
     if changed_files:
         if expected_diff_sha256 != drift["diff_sha256"]:
             raise StateError(
-                "Verified code changed after the acceptance checkpoint. Inspect the exact drift "
+                "Quality-approved code changed after the acceptance checkpoint. Inspect the exact drift "
                 "and confirm its current diff_sha256 before entering MEMORY."
             )
         if verification_policy not in ACCEPTANCE_VERIFICATION_POLICIES:
@@ -3750,15 +4880,28 @@ def validate_spec_implementation_results(root: Path, task_id: str, task: dict) -
             )
 
 
-def validate_review_readiness(root: Path, task_id: str, task: dict) -> None:
+def validate_review_readiness(
+    root: Path,
+    task_id: str,
+    task: dict,
+    evidence_records: list[dict] | None = None,
+) -> None:
     validate_spec_implementation_results(root, task_id, task)
     is_spec_task = isinstance(task.get("spec_source"), dict)
     if task.get("workflow_mode_legacy") is True and not is_spec_task:
         return
     expected = implementation_fingerprint(root, task_id)
-    accepted_fingerprints = accepted_review_fingerprints(root, task_id, task, expected)
+    accepted_fingerprints = (
+        {expected}
+        if evidence_records is not None
+        else accepted_review_fingerprints(root, task_id, task, expected)
+    )
     latest_by_dimension: dict[str, dict] = {}
-    for record in execution_records(root, task_id):
+    for record in (
+        evidence_records
+        if evidence_records is not None
+        else execution_records(root, task_id)
+    ):
         if (
             record.get("type") == "review"
             and record.get("implementation_fingerprint") in accepted_fingerprints
@@ -3770,7 +4913,7 @@ def validate_review_readiness(root: Path, task_id: str, task: dict) -> None:
             latest_by_dimension[record_key] = record
     if not latest_by_dimension:
         raise StateError(
-            "REVIEW cannot advance to VERIFICATION without a review record for the current implementation fingerprint."
+            "QUALITY cannot advance to MEMORY without review evidence for the current implementation fingerprint."
         )
     for record in latest_by_dimension.values():
         if (
@@ -3835,7 +4978,7 @@ def validate_review_readiness(root: Path, task_id: str, task: dict) -> None:
             break
     if has_failed_dimension:
         raise StateError(
-            "REVIEW cannot advance to VERIFICATION while a current review dimension is not passed or has error findings."
+            "QUALITY cannot advance while a review dimension is not passed or has error findings."
         )
     if task.get("tdd_enabled") is True:
         if is_spec_task:
@@ -3874,24 +5017,34 @@ def validate_review_readiness(root: Path, task_id: str, task: dict) -> None:
             )
 
 
-def validate_verification_readiness(root: Path, task_id: str, task: dict) -> None:
+def validate_verification_readiness(
+    root: Path,
+    task_id: str,
+    task: dict,
+    validate_review: bool = True,
+    evidence_records: list[dict] | None = None,
+) -> None:
     fingerprints = evidence_fingerprints(root, task_id)
-    accepted_fingerprints, acceptance = accepted_verification_fingerprints(
-        root,
-        task_id,
-        task,
-        fingerprints["implementation_fingerprint"],
-        fingerprints["config_fingerprint"],
-    )
+    if evidence_records is not None:
+        accepted_fingerprints = {fingerprints["implementation_fingerprint"]}
+        acceptance = None
+    else:
+        accepted_fingerprints, acceptance = accepted_verification_fingerprints(
+            root,
+            task_id,
+            task,
+            fingerprints["implementation_fingerprint"],
+            fingerprints["config_fingerprint"],
+        )
     is_spec_task = isinstance(task.get("spec_source"), dict)
-    if (
-        (task.get("workflow_mode_legacy") is not True or is_spec_task)
-        and task.get("workflow_mode_legacy_review_bypass_fingerprint")
-        != fingerprints["implementation_fingerprint"]
-    ):
+    if validate_review:
         validate_review_readiness(root, task_id, task)
     latest_by_check: dict[str, dict] = {}
-    for record in execution_records(root, task_id):
+    for record in (
+        evidence_records
+        if evidence_records is not None
+        else execution_records(root, task_id)
+    ):
         if (
             record.get("type") == "verify"
             and record.get("implementation_fingerprint") in accepted_fingerprints
@@ -3920,7 +5073,7 @@ def validate_verification_readiness(root: Path, task_id: str, task: dict) -> Non
             latest_by_check[check] = record
     if not latest_by_check:
         raise StateError(
-            "VERIFICATION cannot advance to MEMORY without verification evidence for the current implementation and config fingerprints."
+            "QUALITY cannot advance to MEMORY without verification evidence for the current implementation and config fingerprints."
         )
     if task.get("workflow_mode_legacy") is not True or is_spec_task:
         for record in latest_by_check.values():
@@ -3966,11 +5119,11 @@ def validate_verification_readiness(root: Path, task_id: str, task: dict) -> Non
     ]
     if not applicable_records:
         raise StateError(
-            "VERIFICATION cannot advance to MEMORY without at least one applicable executed check."
+            "QUALITY cannot advance to MEMORY without at least one applicable executed check."
         )
     if any(record.get("passed") is not True for record in applicable_records):
         raise StateError(
-            "VERIFICATION cannot advance to MEMORY while current verification evidence contains failures."
+            "QUALITY cannot advance to MEMORY while verification evidence contains failures."
         )
     if acceptance and acceptance.get("verification_policy") == "targeted":
         current_records = [
@@ -4230,81 +5383,716 @@ def validate_verification_readiness(root: Path, task_id: str, task: dict) -> Non
                 for record in pending_integration
             )
             raise StateError(
-                "VERIFICATION cannot advance to MEMORY while Canonical Spec integration "
+                "QUALITY cannot advance to MEMORY while Canonical Spec integration "
                 f"dependencies are pending: {edges}."
             )
 
 
-def validate_read_only_completion(root: Path, task_id: str) -> None:
-    task = load_task(root, task_id)
-    task_type = str(task.get("type") or "").strip().lower() if task else ""
-    reasons: list[str] = []
-    if task_type not in NO_CODE_TASK_TYPES:
-        reasons.append("task type is not doc, analysis, or report")
-
-    path = execution_log_path(root, task_id)
-    records: list[dict] = []
-    if not path.exists():
-        reasons.append("execution.jsonl is missing")
+def validate_quality_readiness(root: Path, task_id: str, task: dict) -> None:
+    if isinstance(task.get("quality_checkpoint"), dict):
+        require_checkpoint_quality_record(root, task_id, task)
+        acceptance = latest_acceptance_record(root, task_id, task)
+        if isinstance(acceptance, dict) and acceptance.get(
+            "verification_policy"
+        ) in ACCEPTANCE_VERIFICATION_POLICIES:
+            validate_verification_readiness(root, task_id, task)
     else:
-        try:
-            for line in path.read_text(encoding="utf-8").splitlines():
-                if not line.strip():
-                    continue
-                record = json.loads(line)
-                if not isinstance(record, dict):
-                    reasons.append("execution.jsonl contains a non-object record")
-                    break
-                records.append(record)
-        except (OSError, json.JSONDecodeError):
-            reasons.append("execution.jsonl cannot be read as valid JSONL")
+        require_finalized_quality_record(root, task_id, task, "passed")
 
-    latest_plan_index: int | None = None
-    for index, record in enumerate(records):
-        if record.get("type") == "plan":
-            latest_plan_index = index
 
-    unit_id = ""
-    if latest_plan_index is None:
-        reasons.append("execution.jsonl has no plan record")
-    else:
-        plan = records[latest_plan_index]
-        if not is_read_only_execution_plan(plan):
-            reasons.append("latest plan record is invalid")
-        else:
-            units = plan["units"]
-            unit_id = str(units[0]["id"])
-
-    unit_records: list[dict] = []
-    if latest_plan_index is not None and unit_id:
-        for record in records[latest_plan_index + 1 :]:
-            if record.get("unit_id") == unit_id and record.get("type") in {"dispatch", "result"}:
-                unit_records.append(record)
-    latest_result = (
-        unit_records[-1]
-        if unit_records and unit_records[-1].get("type") == "result"
-        else None
+def quality_repair_failures_for_window(
+    root: Path,
+    task_id: str,
+    task: dict,
+    evidence_start_index: int,
+    evidence_end_index: int,
+    quality_attempt: int | None = None,
+    implementation_fingerprint_value: str | None = None,
+    config_fingerprint_value: str | None = None,
+) -> dict[str, list[str]]:
+    canonical = isinstance(task.get("spec_source"), dict)
+    plan = latest_execution_plan(root, task_id) or {}
+    task_repositories = {
+        str(unit.get("source_task_id")): str(unit.get("repo_id"))
+        for unit in plan.get("units", [])
+        if isinstance(unit, dict)
+        and is_non_empty_string(unit.get("source_task_id"))
+        and is_non_empty_string(unit.get("repo_id"))
+    }
+    fingerprints = evidence_fingerprints(root, task_id)
+    implementation = (
+        implementation_fingerprint_value or fingerprints["implementation_fingerprint"]
     )
-    if latest_result is None:
-        reasons.append("latest read-only unit has no result record")
-    else:
-        matching_dispatch = unit_records[-2] if len(unit_records) >= 2 else None
-        if matching_dispatch is None or matching_dispatch.get("type") != "dispatch":
-            reasons.append("latest read-only result has no matching dispatch record")
-        elif not is_non_empty_string(matching_dispatch.get("timestamp")):
-            reasons.append("latest read-only dispatch record has no timestamp")
-        if latest_result.get("changed_files") != []:
-            reasons.append("read-only result must contain changed_files:[]")
-        if not is_non_empty_string(latest_result.get("deliverable")):
-            reasons.append("read-only result must contain a non-empty deliverable")
-        if latest_result.get("issues") != []:
-            reasons.append("read-only result must contain issues:[]")
-        if latest_result.get("needs_attention") != []:
-            reasons.append("read-only result must contain needs_attention:[]")
+    config = config_fingerprint_value or fingerprints["config_fingerprint"]
+    latest_reviews: dict[tuple[str, str], dict] = {}
+    latest_verifications: dict[tuple[str, str, str], dict] = {}
+    records = execution_records(root, task_id)
+    for record in records[evidence_start_index:evidence_end_index]:
+        record_type = record.get("type")
+        if (
+            quality_attempt is not None
+            and (
+                task.get("workflow_mode_legacy") is not True
+                or isinstance(task.get("spec_source"), dict)
+            )
+            and record_type in {"review", "verify"}
+        ):
+            matches_candidate = (
+                record_type == "review"
+                and record.get("implementation_fingerprint") == implementation
+            ) or (
+                record_type == "verify"
+                and record.get("implementation_fingerprint") == implementation
+                and record.get("config_fingerprint") == config
+            )
+            if matches_candidate:
+                record_attempt = record.get("quality_attempt")
+                if type(record_attempt) is not int or record_attempt > quality_attempt:
+                    raise StateError(
+                        "QUALITY review and verification evidence must bind to the active attempt."
+                    )
+                if record_attempt < quality_attempt:
+                    continue
+        source_task_id = str(record.get("source_task_id") or "")
+        repo_id = str(record.get("repo_id") or "")
+        if record_type == "review" and record.get(
+            "implementation_fingerprint"
+        ) == implementation:
+            findings = record.get("findings")
+            failed = record.get("passed") is not True or (
+                isinstance(findings, list)
+                and any(
+                    isinstance(finding, dict)
+                    and str(finding.get("severity") or "").lower() == "error"
+                    for finding in findings
+                )
+            )
+            if failed and canonical and (
+                source_task_id not in task_repositories
+                or repo_id != task_repositories[source_task_id]
+                or not is_non_empty_string(record.get("dimension"))
+            ):
+                raise StateError(
+                    "Canonical QUALITY failure evidence must preserve a valid "
+                    "repository/source-task/dimension ownership."
+                )
+            if is_non_empty_string(record.get("dimension")) and (
+                not canonical
+                or (
+                    source_task_id in task_repositories
+                    and repo_id == task_repositories[source_task_id]
+                )
+            ):
+                owner = source_task_id if canonical else task_id
+                latest_reviews[(owner, str(record["dimension"]))] = record
+        elif record_type == "verify" and record.get(
+            "implementation_fingerprint"
+        ) == implementation and record.get("config_fingerprint") == config:
+            if (
+                task.get("tdd_enabled") is True
+                and record.get("check_type") == "coverage"
+                and record.get("coverage_scope") == "gitlab"
+            ):
+                continue
+            failed = record.get("applicable") is not False and record.get("passed") is not True
+            if failed and canonical and (
+                source_task_id not in task_repositories
+                or repo_id != task_repositories[source_task_id]
+                or not is_non_empty_string(record.get("check"))
+            ):
+                raise StateError(
+                    "Canonical QUALITY failure evidence must preserve a valid "
+                    "repository/source-task/check ownership."
+                )
+            if not is_non_empty_string(record.get("check")) or (
+                canonical
+                and (
+                    source_task_id not in task_repositories
+                    or repo_id != task_repositories[source_task_id]
+                )
+            ):
+                continue
+            owner = source_task_id if canonical else task_id
+            latest_verifications[
+                (
+                    owner,
+                    str(record["check"]),
+                    str(record.get("coverage_scope") or ""),
+                )
+            ] = record
 
-    if reasons:
+    failures: dict[str, list[str]] = {}
+    for (source_task_id, dimension), record in latest_reviews.items():
+        findings = record.get("findings")
+        has_error = isinstance(findings, list) and any(
+            isinstance(finding, dict)
+            and str(finding.get("severity") or "").lower() == "error"
+            for finding in findings
+        )
+        if record.get("passed") is not True or has_error:
+            failures.setdefault(source_task_id, []).append(f"review:{dimension}")
+    for (source_task_id, check, scope), record in latest_verifications.items():
+        if record.get("applicable") is not False and record.get("passed") is not True:
+            label = f"verify:{check}"
+            if scope:
+                label = f"{label}:{scope}"
+            failures.setdefault(source_task_id, []).append(label)
+    return failures
+
+
+def canonical_carry_forward_sources(
+    root: Path,
+    task_id: str,
+    task: dict,
+    plan: dict,
+    stable_repositories: set[str],
+    failures: dict[str, list[str]],
+) -> set[str]:
+    units = [unit for unit in plan.get("units", []) if isinstance(unit, dict)]
+    unit_sources = {
+        str(unit.get("id")): str(unit.get("source_task_id"))
+        for unit in units
+        if is_non_empty_string(unit.get("id"))
+        and is_non_empty_string(unit.get("source_task_id"))
+    }
+    source_repositories = {
+        str(unit.get("source_task_id")): str(unit.get("repo_id"))
+        for unit in units
+        if is_non_empty_string(unit.get("source_task_id"))
+        and is_non_empty_string(unit.get("repo_id"))
+    }
+    invalid_sources = set(failures) | {
+        source_task_id
+        for source_task_id, repo_id in source_repositories.items()
+        if repo_id not in stable_repositories
+    }
+    inspection, _ = inspect_task_spec(root, task)
+    snapshots = _selected_execution_snapshots(inspection, task)
+    changed = True
+    while changed:
+        changed = False
+        for unit in units:
+            source_task_id = str(unit.get("source_task_id") or "")
+            if not source_task_id or source_task_id in invalid_sources:
+                continue
+            dependency_sources = {
+                unit_sources.get(str(dependency_id), "")
+                for dependency_id in unit.get("depends_on", [])
+            }
+            snapshot = snapshots.get(source_task_id, {})
+            dependency_sources.update(
+                str(dependency.get("task_id"))
+                for dependency in snapshot.get("dependencies", [])
+                if isinstance(dependency, dict)
+                and dependency.get("type") in {"hard", "contract"}
+            )
+            if invalid_sources.intersection(dependency_sources):
+                invalid_sources.add(source_task_id)
+                changed = True
+
+    return {
+        source_task_id
+        for source_task_id, repo_id in source_repositories.items()
+        if repo_id in stable_repositories and source_task_id not in invalid_sources
+    }
+
+
+def append_canonical_quality_carry_forward(
+    root: Path,
+    task_id: str,
+    task: dict,
+    context: dict,
+    agent: str,
+) -> None:
+    if not isinstance(task.get("spec_source"), dict):
+        return
+    consumed_attempt = task.get("quality_consumed_attempt")
+    previous = next(
+        (
+            record
+            for _index, record in reversed(validated_quality_records(root, task_id))
+            if record.get("outcome") == "repair"
+            and record.get("attempt") == consumed_attempt
+        ),
+        None,
+    )
+    if (
+        not isinstance(previous, dict)
+        or previous.get("config_fingerprint") != context.get("config_fingerprint")
+    ):
+        return
+    previous_repositories = previous.get("repository_fingerprints")
+    current_repositories = canonical_repository_fingerprints(root, task_id, task)
+    if not isinstance(previous_repositories, dict):
+        return
+    stable_repositories = {
+        repo_id
+        for repo_id, fingerprint in current_repositories.items()
+        if previous_repositories.get(repo_id) == fingerprint
+    }
+    failures = quality_repair_failures_for_window(
+        root,
+        task_id,
+        task,
+        int(previous["evidence_start_index"]),
+        int(previous["evidence_end_index"]),
+        int(previous["attempt"]),
+        str(previous["implementation_fingerprint"]),
+        str(previous["config_fingerprint"]),
+    )
+    plan = latest_execution_plan(root, task_id) or {}
+    eligible_sources = canonical_carry_forward_sources(
+        root, task_id, task, plan, stable_repositories, failures
+    )
+    if not eligible_sources:
+        return
+    records = execution_records(root, task_id)
+    latest: dict[tuple[str, str, str], tuple[int, dict]] = {}
+    for index in range(
+        int(previous["evidence_start_index"]), int(previous["evidence_end_index"])
+    ):
+        record = records[index]
+        source_task_id = str(record.get("source_task_id") or "")
+        if (
+            source_task_id not in eligible_sources
+            or record.get("quality_attempt") != previous["attempt"]
+        ):
+            continue
+        if record.get("type") == "review" and is_non_empty_string(
+            record.get("dimension")
+        ):
+            key = (source_task_id, "review", str(record["dimension"]))
+        elif record.get("type") == "verify" and is_non_empty_string(
+            record.get("check")
+        ):
+            key = (
+                source_task_id,
+                "verify",
+                f"{record['check']}\0{record.get('coverage_scope') or ''}",
+            )
+        else:
+            continue
+        latest[key] = (index, record)
+    evidence_indices: list[int] = []
+    review_records: list[dict] = []
+    verification_records: list[dict] = []
+    for index, record in latest.values():
+        if record.get("type") == "review":
+            findings = record.get("findings")
+            if record.get("passed") is not True or (
+                isinstance(findings, list)
+                and any(
+                    isinstance(finding, dict)
+                    and finding.get("severity") == "error"
+                    for finding in findings
+                )
+            ):
+                continue
+            review_records.append(record)
+        else:
+            if record.get("applicable") is not False and record.get("passed") is not True:
+                continue
+            verification_records.append(record)
+        evidence_indices.append(index)
+    if not evidence_indices:
+        return
+    validate_quality_gate_record_schemas(review_records, verification_records)
+    append_execution_record(
+        root,
+        task_id,
+        {
+            "type": "quality-carry-forward",
+            "quality_attempt": context["attempt"],
+            "from_attempt": previous["attempt"],
+            "from_implementation_fingerprint": previous[
+                "implementation_fingerprint"
+            ],
+            "implementation_fingerprint": context["implementation_fingerprint"],
+            "config_fingerprint": context["config_fingerprint"],
+            "source_task_ids": sorted(eligible_sources),
+            "evidence_indices": sorted(evidence_indices),
+            "repository_fingerprints": {
+                repo_id: current_repositories[repo_id]
+                for repo_id in sorted(stable_repositories)
+            },
+            "reason": "Unchanged Canonical repositories retain passed Gate evidence.",
+            "timestamp": now_iso(),
+            "carried_by": agent,
+        },
+    )
+
+
+def resolve_canonical_quality_carry_forward(
+    root: Path,
+    task_id: str,
+    task: dict,
+    context: dict,
+    window_records: list[dict],
+) -> tuple[list[dict], list[dict]]:
+    carry_records = [
+        record
+        for record in window_records
+        if record.get("type") == "quality-carry-forward"
+        and record.get("quality_attempt") == context.get("attempt")
+    ]
+    if not carry_records:
+        return [], []
+    if len(carry_records) != 1 or not isinstance(task.get("spec_source"), dict):
+        raise StateError("QUALITY carry-forward metadata is invalid.")
+    carry = carry_records[0]
+    previous = next(
+        (
+            record
+            for _index, record in reversed(validated_quality_records(root, task_id))
+            if record.get("outcome") == "repair"
+            and record.get("attempt") == carry.get("from_attempt")
+        ),
+        None,
+    )
+    source_task_ids = carry.get("source_task_ids")
+    evidence_indices = carry.get("evidence_indices")
+    repository_fingerprints = carry.get("repository_fingerprints")
+    current_repositories = canonical_repository_fingerprints(root, task_id, task)
+    previous_repositories = (
+        previous.get("repository_fingerprints") if isinstance(previous, dict) else {}
+    )
+    stable_repositories = {
+        repo_id: fingerprint
+        for repo_id, fingerprint in current_repositories.items()
+        if isinstance(previous_repositories, dict)
+        and previous_repositories.get(repo_id) == fingerprint
+    }
+    failures = (
+        quality_repair_failures_for_window(
+            root,
+            task_id,
+            task,
+            int(previous["evidence_start_index"]),
+            int(previous["evidence_end_index"]),
+            int(previous["attempt"]),
+            str(previous["implementation_fingerprint"]),
+            str(previous["config_fingerprint"]),
+        )
+        if isinstance(previous, dict)
+        else {}
+    )
+    plan = latest_execution_plan(root, task_id) or {}
+    expected_sources = canonical_carry_forward_sources(
+        root, task_id, task, plan, set(stable_repositories), failures
+    )
+    if (
+        not isinstance(previous, dict)
+        or previous.get("attempt") != task.get("quality_consumed_attempt")
+        or previous.get("config_fingerprint") != context.get("config_fingerprint")
+        or carry.get("from_implementation_fingerprint")
+        != previous.get("implementation_fingerprint")
+        or carry.get("implementation_fingerprint")
+        != context.get("implementation_fingerprint")
+        or carry.get("config_fingerprint") != context.get("config_fingerprint")
+        or not is_string_list(source_task_ids, allow_empty=False)
+        or not isinstance(evidence_indices, list)
+        or not evidence_indices
+        or any(type(index) is not int for index in evidence_indices)
+        or len(set(evidence_indices)) != len(evidence_indices)
+        or not isinstance(repository_fingerprints, dict)
+        or set(source_task_ids) != expected_sources
+        or repository_fingerprints != stable_repositories
+        or not is_non_empty_string(carry.get("reason"))
+        or not is_non_empty_string(carry.get("carried_by"))
+    ):
+        raise StateError("QUALITY carry-forward metadata is invalid.")
+    parse_quality_timestamp(carry.get("timestamp"), "carry-forward timestamp")
+    records = execution_records(root, task_id)
+    latest_indices: dict[tuple[str, str, str], int] = {}
+    for index in range(
+        int(previous["evidence_start_index"]), int(previous["evidence_end_index"])
+    ):
+        record = records[index]
+        source_task_id = str(record.get("source_task_id") or "")
+        if source_task_id not in expected_sources:
+            continue
+        if record.get("type") == "review" and is_non_empty_string(
+            record.get("dimension")
+        ):
+            key = (source_task_id, "review", str(record["dimension"]))
+        elif record.get("type") == "verify" and is_non_empty_string(
+            record.get("check")
+        ):
+            key = (
+                source_task_id,
+                "verify",
+                f"{record['check']}\0{record.get('coverage_scope') or ''}",
+            )
+        else:
+            continue
+        latest_indices[key] = index
+    reviews: list[dict] = []
+    verifications: list[dict] = []
+    for index in evidence_indices:
+        if (
+            index < int(previous["evidence_start_index"])
+            or index >= int(previous["evidence_end_index"])
+            or index >= len(records)
+        ):
+            raise StateError("QUALITY carry-forward evidence index is outside its source attempt.")
+        record = records[index]
+        if record.get("type") == "review":
+            evidence_key = (
+                str(record.get("source_task_id") or ""),
+                "review",
+                str(record.get("dimension") or ""),
+            )
+        else:
+            evidence_key = (
+                str(record.get("source_task_id") or ""),
+                "verify",
+                f"{record.get('check') or ''}\0{record.get('coverage_scope') or ''}",
+            )
+        if (
+            record.get("quality_attempt") != previous["attempt"]
+            or record.get("source_task_id") not in source_task_ids
+            or latest_indices.get(evidence_key) != index
+        ):
+            raise StateError("QUALITY carry-forward evidence ownership is invalid.")
+        carried = {
+            **record,
+            "implementation_fingerprint": context["implementation_fingerprint"],
+            "config_fingerprint": context["config_fingerprint"],
+            "quality_attempt": context["attempt"],
+            "carried_from_attempt": previous["attempt"],
+            "carried_from_evidence_index": index,
+        }
+        if record.get("type") == "review":
+            findings = record.get("findings")
+            if record.get("passed") is not True or (
+                isinstance(findings, list)
+                and any(
+                    isinstance(finding, dict)
+                    and finding.get("severity") == "error"
+                    for finding in findings
+                )
+            ):
+                raise StateError("QUALITY carry-forward review evidence must be passed.")
+            reviews.append(carried)
+        elif record.get("type") == "verify":
+            if record.get("applicable") is not False and record.get("passed") is not True:
+                raise StateError("QUALITY carry-forward verification evidence must be passed.")
+            verifications.append(carried)
+        else:
+            raise StateError("QUALITY carry-forward can reference only Gate evidence.")
+    validate_quality_gate_record_schemas(reviews, verifications)
+    return reviews, verifications
+
+
+def canonical_quality_repair_failures(
+    root: Path, task_id: str, task: dict
+) -> dict[str, list[str]]:
+    if not isinstance(task.get("spec_source"), dict):
+        return {}
+    intent = task.get("canonical_repair_transition")
+    if isinstance(intent, dict):
+        record = next(
+            (
+                candidate
+                for _index, candidate in reversed(
+                    validated_quality_records(root, task_id)
+                )
+                if candidate.get("outcome") == "repair"
+                and candidate.get("attempt") == intent.get("quality_attempt")
+                and candidate.get("implementation_fingerprint")
+                == intent.get("implementation_fingerprint")
+                and candidate.get("config_fingerprint")
+                == intent.get("config_fingerprint")
+            ),
+            None,
+        )
+        if not isinstance(record, dict):
+            raise StateError(
+                "Canonical repair transition intent has no matching QUALITY record."
+            )
+    else:
+        record = require_finalized_quality_record(root, task_id, task, "repair")
+    return quality_repair_failures_for_window(
+        root,
+        task_id,
+        task,
+        int(record["evidence_start_index"]),
+        int(record["evidence_end_index"]),
+        int(record["attempt"]),
+        str(record["implementation_fingerprint"]),
+        str(record["config_fingerprint"]),
+    )
+
+
+def validate_canonical_quality_repair_writeback(
+    root: Path, task_id: str, task: dict
+) -> set[str]:
+    failures = canonical_quality_repair_failures(root, task_id, task)
+    if not failures:
+        raise StateError("Canonical QUALITY repair has no affected source tasks.")
+    intent = task.get("canonical_repair_transition")
+    if isinstance(intent, dict):
+        quality_record = next(
+            candidate
+            for _index, candidate in reversed(validated_quality_records(root, task_id))
+            if candidate.get("outcome") == "repair"
+            and candidate.get("attempt") == intent.get("quality_attempt")
+        )
+    else:
+        quality_record = require_finalized_quality_record(root, task_id, task, "repair")
+    inspection, _ = inspect_task_spec(root, task)
+    snapshots = _selected_execution_snapshots(inspection, task)
+    allowed_statuses = {"blocked"}
+    if isinstance(intent, dict):
+        if (
+            intent.get("schema") != 1
+            or intent.get("implementation_fingerprint")
+            != quality_record.get("implementation_fingerprint")
+            or intent.get("config_fingerprint")
+            != quality_record.get("config_fingerprint")
+            or intent.get("quality_attempt") != quality_record.get("attempt")
+            or set(intent.get("source_task_ids") or []) != set(failures)
+        ):
+            raise StateError("Canonical repair transition intent no longer matches QUALITY evidence.")
+        allowed_statuses.add("in_progress")
+    invalid_status = sorted(
+        source_task_id
+        for source_task_id in failures
+        if snapshots.get(source_task_id, {}).get("status") not in allowed_statuses
+    )
+    if invalid_status:
+        details = "; ".join(
+            f"{source_task_id} ({', '.join(failures[source_task_id])})"
+            for source_task_id in invalid_status
+        )
         raise StateError(
-            "Read-only IMPLEMENT cannot complete before its report is ready: " + "; ".join(reasons)
+            "Canonical QUALITY repair must write affected source tasks blocked before "
+            f"returning to IMPLEMENT: {details}."
+        )
+    execution = inspection.get("execution")
+    events = execution.get("events", []) if isinstance(execution, dict) else []
+    for source_task_id, source_failures in failures.items():
+        if snapshots.get(source_task_id, {}).get("status") == "in_progress":
+            continue
+        latest_status_event = next(
+            (
+                event
+                for event in reversed(events)
+                if isinstance(event, dict)
+                and event.get("type") == "task_status_changed"
+                and event.get("task_id") == source_task_id
+            ),
+            None,
+        )
+        expected_key = (
+            f"{task_id}:{source_task_id}:"
+            f"{quality_record['implementation_fingerprint']}:"
+            f"quality-{quality_record['attempt']}:blocked"
+        )
+        if (
+            not isinstance(latest_status_event, dict)
+            or latest_status_event.get("to_status") != "blocked"
+            or latest_status_event.get("run_id") != task_id
+            or latest_status_event.get("idempotency_key") != expected_key
+        ):
+            raise StateError(
+                "Canonical QUALITY blocked writeback must belong to the current "
+                f"Harness task and QUALITY attempt: {source_task_id}."
+            )
+        evidence = latest_status_event.get("evidence")
+        required_kinds = {value.split(":", 1)[0] for value in source_failures}
+        evidence_kinds = {
+            str(value.get("kind"))
+            for value in evidence
+            if isinstance(value, dict)
+            and value.get("kind") in {"review", "verify"}
+            and value.get("status") == "failed"
+            and value.get("ref")
+            == (
+                "execution.jsonl#"
+                f"quality-attempt={quality_record['attempt']};"
+                f"implementation={quality_record['implementation_fingerprint']};"
+                f"source-task={source_task_id};kind={value.get('kind')}"
+            )
+        } if isinstance(evidence, list) else set()
+        if not required_kinds.issubset(evidence_kinds):
+            raise StateError(
+                "Canonical QUALITY blocked writeback must reference the current "
+                f"failed gate evidence: {source_task_id}."
+            )
+    return set(failures)
+
+
+def prepare_canonical_repair_transition(
+    root: Path, task_id: str, task: dict, agent: str
+) -> tuple[dict, set[str]]:
+    source_task_ids = validate_canonical_quality_repair_writeback(root, task_id, task)
+    if isinstance(task.get("canonical_repair_transition"), dict):
+        return task, source_task_ids
+    quality_record = require_finalized_quality_record(root, task_id, task, "repair")
+    task["canonical_repair_transition"] = {
+        "schema": 1,
+        "implementation_fingerprint": quality_record["implementation_fingerprint"],
+        "config_fingerprint": quality_record["config_fingerprint"],
+        "quality_attempt": quality_record["attempt"],
+        "source_task_ids": sorted(source_task_ids),
+        "started_at": now_iso(),
+        "started_by": agent,
+    }
+    task["last_agent"] = agent
+    write_task(root, task_id, task)
+    return task, source_task_ids
+
+
+def validate_canonical_repair_reopened(
+    root: Path, task_id: str, task: dict, source_task_ids: set[str]
+) -> None:
+    inspection, _ = inspect_task_spec(root, task)
+    snapshots = _selected_execution_snapshots(inspection, task)
+    pending = sorted(
+        source_task_id
+        for source_task_id in source_task_ids
+        if snapshots.get(source_task_id, {}).get("status") != "in_progress"
+    )
+    if pending:
+        raise StateError(
+            "Canonical repair transition remains pending for source tasks: "
+            + ", ".join(pending)
+        )
+    execution = inspection.get("execution")
+    events = execution.get("events", []) if isinstance(execution, dict) else []
+    implement_attempt = 1 + sum(
+        1
+        for entry in task.get("stage_history", [])
+        if isinstance(entry, dict) and entry.get("stage") == "IMPLEMENT"
+    )
+    invalid_ownership: list[str] = []
+    for source_task_id in source_task_ids:
+        latest_status_event = next(
+            (
+                event
+                for event in reversed(events)
+                if isinstance(event, dict)
+                and event.get("type") == "task_status_changed"
+                and event.get("task_id") == source_task_id
+            ),
+            None,
+        )
+        expected_key = (
+            f"{task_id}:{source_task_id}:enter-implement:"
+            f"{task['spec_source']['revision']}:attempt-{implement_attempt}"
+        )
+        if (
+            not isinstance(latest_status_event, dict)
+            or latest_status_event.get("to_status") != "in_progress"
+            or latest_status_event.get("run_id") != task_id
+            or latest_status_event.get("idempotency_key") != expected_key
+        ):
+            invalid_ownership.append(source_task_id)
+    if invalid_ownership:
+        raise StateError(
+            "Canonical repair reopen must belong to the current Harness transition: "
+            + ", ".join(sorted(invalid_ownership))
         )
 
 
@@ -4470,7 +6258,6 @@ def validate_analysis_readiness(
     task_dir = task_json_path(root, task_id).parent
     task = load_task(root, task_id)
     task_type = str(task.get("type") or "").strip().lower() if task else ""
-    is_read_only_task = task_type in NO_CODE_TASK_TYPES
     dev_spec = task_dir / "dev-spec.md"
     skeleton = root / ".easy-coding" / "templates" / "dev-spec-skeleton.md"
     test_strategy = task_dir / "test-strategy.md"
@@ -4492,10 +6279,6 @@ def validate_analysis_readiness(
 
     if dev_spec_content:
         missing_headers, empty_sections = validate_mandatory_dev_spec_sections(dev_spec_content)
-        if is_read_only_task:
-            empty_sections = [
-                header for header in empty_sections if header != "### 改动范围"
-            ]
         if missing_headers:
             reasons.append(
                 "dev-spec.md is missing mandatory headers: "
@@ -4589,7 +6372,7 @@ def validate_analysis_readiness(
     plan_is_valid = has_valid_execution_plan(root, task_id)
     if not plan_is_valid:
         reasons.append("execution.jsonl has no valid plan record")
-    if tdd_enabled and not is_read_only_task:
+    if tdd_enabled:
         readiness = tdd_readiness(root)
         if readiness["status"] != "ready":
             reasons.append(
@@ -4677,7 +6460,7 @@ def validate_analysis_readiness(
             r"^###\s+TDD Mode\s*$", dev_spec_content, re.MULTILINE | re.IGNORECASE
         ):
             reasons.append("tdd-init must keep TDD off and omit the TDD Mode section")
-    elif not is_read_only_task:
+    else:
         if re.search(
             r"^###\s+TDD Mode\s*$", dev_spec_content, re.MULTILINE | re.IGNORECASE
         ):
@@ -4819,15 +6602,11 @@ def validate_analysis_readiness(
             reasons.append(str(exc))
         except OSError:
             reasons.append("test-strategy.md cannot be read")
-    if is_read_only_task:
-        if test_strategy.exists():
-            reasons.append("read-only task must not create test-strategy.md")
-    else:
-        try:
-            if not test_strategy.exists() or not test_strategy.read_text(encoding="utf-8").strip():
-                reasons.append("test-strategy.md is missing or empty")
-        except OSError:
-            reasons.append("test-strategy.md cannot be read")
+    try:
+        if not test_strategy.exists() or not test_strategy.read_text(encoding="utf-8").strip():
+            reasons.append("test-strategy.md is missing or empty")
+    except OSError:
+        reasons.append("test-strategy.md cannot be read")
 
     if reasons:
         raise StateError(
@@ -4957,17 +6736,9 @@ def validate_transition(
 ) -> str | None:
     if previous == current:
         return None
-    normalized_task_type = task_type.strip().lower()
     allowed = set(VALID_TRANSITIONS.get(previous, set()))
-    if previous == "IMPLEMENT" and normalized_task_type in NO_CODE_TASK_TYPES:
-        allowed = {"ANALYSIS", "COMPLETE", "CLOSED"}
-    elif previous == "IMPLEMENT":
+    if previous == "IMPLEMENT":
         allowed.discard("COMPLETE")
-        if not (
-            isinstance(task, dict)
-            and task.get("workflow_mode_legacy_direct_edge") is True
-        ):
-            allowed.discard("VERIFICATION")
     if current in allowed:
         return None
     return (
@@ -5088,6 +6859,8 @@ def snapshot_state(
         "session_confirm_mode": session_approval_mode,
         "effective_confirm_mode": effective_approval_mode,
         "harness_disabled": resolved_session.get("harness_disabled") is True,
+        "lite_mode": resolved_session.get("lite_mode") is True,
+        "lite_proposal": resolved_session.get("lite_proposal"),
     }
 
 
@@ -5098,6 +6871,17 @@ def build_status_line(
     session_file: str | Path | None = None,
 ) -> str:
     state = snapshot_state(root, session_file, session)
+    if state["lite_mode"]:
+        lite_state = (
+            "Awaiting Confirmation"
+            if isinstance(state.get("lite_proposal"), dict)
+            and not state["lite_proposal"].get("confirmed_at")
+            else "Ready"
+        )
+        return (
+            f"> **Easy Coding** · **Lite Direct** · {lite_state} · "
+            "No Task / Quality / Memory · Use `ec-lite` to exit"
+        )
     approval = str(state["effective_approval_mode"]).capitalize()
     workflow = str(state["concrete_workflow_mode"] or state["configured_workflow_mode"]).capitalize()
     status_brand = f"> **Easy Coding** · **Approval: {approval}** · **Workflow: {workflow}**"
@@ -5168,17 +6952,7 @@ def build_machine_breadcrumbs(
             if target:
                 lines.append(f"[easy-coding:pending-transition:{source}->{target}]")
                 task_type = str(task.get("type") or "") if task else ""
-                legacy_review_bypass = (
-                    source == "IMPLEMENT"
-                    and target == "REVIEW"
-                    and isinstance(task, dict)
-                    and task.get("workflow_mode_legacy_direct_edge") is True
-                )
-                if legacy_review_bypass:
-                    lines.append(
-                        "[easy-coding:lite-review-bypass-required:IMPLEMENT->REVIEW]"
-                    )
-                elif pending.get("confirmation_override") == "evidence-drift":
+                if pending.get("confirmation_override") == "evidence-drift":
                     lines.append(
                         "[easy-coding:acceptance-drift-confirmation-required]"
                     )
@@ -5243,6 +7017,17 @@ def build_status_context(
                 f"[easy-coding:session-file:{display_path(root, session_path)}]",
             ]
         )
+    if session.get("lite_mode") is True:
+        session_path = resolve_session_path(root, session_file)
+        proposal = session.get("lite_proposal")
+        lines = [
+            build_status_line(root, session, agent, session_file),
+            "[easy-coding:lite-direct]",
+            f"[easy-coding:session-file:{display_path(root, session_path)}]",
+        ]
+        if isinstance(proposal, dict):
+            lines.append(f"[easy-coding:lite-proposal:{proposal.get('digest', 'missing')}]")
+        return "\n".join(lines)
     return "\n".join(
         [
             build_status_line(root, session, agent, session_file),
@@ -5324,6 +7109,8 @@ def set_current_task(root: Path, task_id: str, agent: str, session_file: str | P
     if task is None:
         raise StateError(f"Task not found: {task_id}")
     session = ensure_session(root, session_file)
+    if session.get("lite_mode") is True:
+        raise StateError("Exit ec-lite before attaching a Harness task.")
     session["current_task"] = task_id
     session["last_seen_task"] = task_id
     session["last_seen_stage"] = str(task.get("status") or "PENDING")
@@ -5504,6 +7291,339 @@ def clear_session_tdd(
     return snapshot
 
 
+def normalize_lite_target_files(root: Path, target_files: list[str]) -> list[str]:
+    normalized: list[str] = []
+    for raw_file in target_files:
+        raw_path = raw_file.strip()
+        candidate = Path(raw_path)
+        if (
+            not raw_path
+            or candidate.is_absolute()
+            or ".." in candidate.parts
+            or candidate == Path(".")
+            or candidate.parts[:2] == (".easy-coding", "sessions")
+        ):
+            raise StateError("Lite target files must be safe project-relative file paths.")
+        resolved = (root / candidate).resolve()
+        if not is_path_within(resolved, root.resolve()) or resolved.is_dir():
+            raise StateError("Lite target files must stay within the project and cannot be directories.")
+        normalized.append(candidate.as_posix())
+    normalized = list(dict.fromkeys(normalized))
+    if not normalized or len(normalized) > 50:
+        raise StateError("Lite proposal requires 1 to 50 target files.")
+    return normalized
+
+
+def lite_git_head(repository: Path) -> str | None:
+    result = run_git(repository, "rev-parse", "--verify", "HEAD")
+    if result is None:
+        raise StateError("Cannot inspect the Git baseline for Lite Direct.")
+    if result.returncode != 0:
+        return None
+    head = result.stdout.decode("ascii", errors="ignore").strip()
+    if re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", head) is None:
+        raise StateError("Lite Direct received an invalid Git baseline.")
+    return head
+
+
+def lite_git_dirty_paths(root: Path, repository: Path) -> set[str]:
+    try:
+        project_prefix = root.resolve().relative_to(repository.resolve()).as_posix() or "."
+    except ValueError as exc:
+        raise StateError("Lite Direct project root is outside its Git repository.") from exc
+
+    commands = (
+        ("diff", "--name-only", "--no-renames", "-z", "--", project_prefix),
+        ("diff", "--cached", "--name-only", "--no-renames", "-z", "--", project_prefix),
+        ("ls-files", "--others", "--exclude-standard", "-z", "--", project_prefix),
+    )
+    paths: set[str] = set()
+    for command in commands:
+        result = run_git(repository, *command)
+        if result is None or result.returncode != 0:
+            raise StateError("Cannot inspect Lite Direct Git changes.")
+        for raw_path in filter(None, result.stdout.split(b"\0")):
+            resolved = (repository / os.fsdecode(raw_path)).resolve()
+            if is_path_within(resolved, root.resolve()):
+                relative = resolved.relative_to(root.resolve())
+                if relative.parts[:2] != (".easy-coding", "sessions"):
+                    paths.add(relative.as_posix())
+    return paths
+
+
+def lite_file_state(path: Path) -> dict:
+    if not path.exists() and not path.is_symlink():
+        return {"exists": False, "mode": None, "sha256": None}
+    if path.is_dir():
+        return {"exists": True, "mode": "directory", "sha256": None}
+    try:
+        content = os.fsencode(os.readlink(path)) if path.is_symlink() else path.read_bytes()
+    except OSError as exc:
+        raise StateError(f"Cannot inspect Lite Direct file: {path}") from exc
+    return {
+        "exists": True,
+        "mode": worktree_git_mode(path).decode("ascii", errors="replace"),
+        "sha256": hashlib.sha256(content).hexdigest(),
+    }
+
+
+def capture_lite_baseline(root: Path, target_files: list[str]) -> dict:
+    repository = git_repository_root(root)
+    if repository is None:
+        raise StateError("Lite Direct scope verification requires a Git worktree.")
+    repository = repository.resolve()
+    for target_file in target_files:
+        target_repository = git_repository_root(root / target_file)
+        if target_repository is None or target_repository.resolve() != repository:
+            raise StateError(
+                "Lite Direct target files must belong to the current project Git repository."
+            )
+    dirty_paths = lite_git_dirty_paths(root, repository)
+    tracked_paths = dirty_paths | set(target_files)
+    return {
+        "schema": 1,
+        "repository_root": str(repository),
+        "head": lite_git_head(repository),
+        "dirty_paths": sorted(dirty_paths),
+        "states": {
+            path_name: lite_file_state(root / path_name)
+            for path_name in sorted(tracked_paths)
+        },
+    }
+
+
+def validate_lite_completion(root: Path, proposal: dict) -> list[str]:
+    target_files = proposal.get("target_files")
+    baseline = proposal.get("baseline")
+    if not is_string_list(target_files, allow_empty=False) or not isinstance(baseline, dict):
+        raise StateError("Lite proposal has no confirmed Git scope baseline.")
+    repository = git_repository_root(root)
+    if (
+        repository is None
+        or baseline.get("schema") != 1
+        or str(repository.resolve()) != baseline.get("repository_root")
+        or lite_git_head(repository.resolve()) != baseline.get("head")
+    ):
+        raise StateError("Lite Direct Git baseline changed; present and confirm the proposal again.")
+    baseline_dirty = baseline.get("dirty_paths")
+    baseline_states = baseline.get("states")
+    if not is_string_list(baseline_dirty) or not isinstance(baseline_states, dict):
+        raise StateError("Lite proposal contains an invalid Git scope baseline.")
+
+    current_dirty = lite_git_dirty_paths(root, repository.resolve())
+    target_set = set(target_files)
+    baseline_dirty_set = set(baseline_dirty)
+    candidate_paths = baseline_dirty_set | current_dirty | target_set
+    changed_paths: list[str] = []
+    for path_name in sorted(candidate_paths):
+        before = baseline_states.get(path_name)
+        after = lite_file_state(root / path_name)
+        if path_name in baseline_dirty_set or path_name in target_set:
+            if before != after:
+                changed_paths.append(path_name)
+        elif path_name in current_dirty:
+            changed_paths.append(path_name)
+
+    outside_scope = [path_name for path_name in changed_paths if path_name not in target_set]
+    if outside_scope:
+        raise StateError(
+            "Lite Direct changed files outside the confirmed scope: " + ", ".join(outside_scope)
+        )
+    changed_targets = [path_name for path_name in changed_paths if path_name in target_set]
+    if not changed_targets:
+        raise StateError("Lite Direct did not change any confirmed target file.")
+    return changed_targets
+
+
+def enable_lite_mode(
+    root: Path,
+    agent: str,
+    active_task_policy: str | None = None,
+    expected_task_id: str | None = None,
+    session_file: str | Path | None = None,
+) -> dict:
+    session = ensure_session(root, session_file)
+    if session.get("harness_disabled") is True:
+        raise StateError("Enable Harness before entering ec-lite.")
+    if session.get("lite_mode") is True:
+        snapshot = snapshot_state(root, session_file, session)
+        snapshot["action"] = "lite-already-enabled"
+        return snapshot
+    if active_task_policy == "cancel":
+        snapshot = snapshot_state(root, session_file, session)
+        snapshot["action"] = "lite-enable-cancelled"
+        return snapshot
+
+    task_id = session.get("current_task")
+    task = load_task(root, str(task_id)) if task_id else None
+    if task_id and (task is None or task.get("status") in TERMINAL_STATUSES):
+        clear_session_pointer(session, agent)
+        task_id = None
+        task = None
+    if active_task_policy in {"close", "ignore"} and expected_task_id != str(task_id or ""):
+        raise StateError(
+            "Active task changed after the Lite decision was shown; inspect it again."
+        )
+
+    if task_id and task and task.get("status") not in TERMINAL_STATUSES:
+        if active_task_policy is None:
+            snapshot = snapshot_state(root, session_file, session)
+            snapshot["action"] = "lite-active-task-decision-required"
+            snapshot["active_task"] = {
+                "id": str(task_id),
+                "title": task.get("title"),
+                "status": task.get("status"),
+            }
+            snapshot["choices"] = ["cancel", "close", "ignore"]
+            return snapshot
+        if active_task_policy == "close":
+            close_current_task(
+                root,
+                "user-switched-to-lite",
+                agent,
+                session_file,
+                expected_task_id=str(task_id),
+            )
+            session = ensure_session(root, session_file)
+        elif active_task_policy == "ignore":
+            session = ensure_session(root, session_file)
+            if session.get("current_task") != expected_task_id:
+                raise StateError(
+                    "Active task changed after the Lite decision was shown; inspect it again."
+                )
+            clear_session_pointer(session, agent)
+        else:
+            raise StateError("Active task policy must be cancel, close, or ignore.")
+
+    session["lite_mode"] = True
+    session.pop("lite_proposal", None)
+    session["last_agent"] = agent
+    write_session(root, session, session_file)
+    snapshot = snapshot_state(root, session_file, session)
+    snapshot["action"] = "enable-lite"
+    return snapshot
+
+
+def disable_lite_mode(
+    root: Path,
+    agent: str,
+    session_file: str | Path | None = None,
+) -> dict:
+    session = ensure_session(root, session_file)
+    session.pop("lite_mode", None)
+    session.pop("lite_proposal", None)
+    session["last_agent"] = agent
+    write_session(root, session, session_file)
+    snapshot = snapshot_state(root, session_file, session)
+    snapshot["action"] = "disable-lite"
+    return snapshot
+
+
+def set_lite_proposal(
+    root: Path,
+    summary: str,
+    target_files: list[str],
+    agent: str,
+    session_file: str | Path | None = None,
+) -> dict:
+    session = ensure_session(root, session_file)
+    if session.get("lite_mode") is not True:
+        raise StateError("ec-lite is not enabled.")
+    if session.get("current_task"):
+        raise StateError("Lite proposal cannot coexist with a Harness task pointer.")
+    normalized_summary = summary.strip()
+    normalized_files = normalize_lite_target_files(root, target_files)
+    if not normalized_summary or len(normalized_summary) > 2000:
+        raise StateError("Lite proposal summary must contain 1 to 2000 characters.")
+    proposal_payload = {
+        "proposal_id": secrets.token_hex(16),
+        "summary": normalized_summary,
+        "target_files": normalized_files,
+        "baseline": capture_lite_baseline(root, normalized_files),
+    }
+    session["lite_proposal"] = {
+        **proposal_payload,
+        "digest": canonical_json_sha256(proposal_payload),
+        "created_at": now_iso(),
+    }
+    session["last_agent"] = agent
+    write_session(root, session, session_file)
+    snapshot = snapshot_state(root, session_file, session)
+    snapshot["action"] = "set-lite-proposal"
+    return snapshot
+
+
+def confirm_lite_proposal(
+    root: Path,
+    digest: str,
+    agent: str,
+    session_file: str | Path | None = None,
+) -> dict:
+    session = ensure_session(root, session_file)
+    proposal = session.get("lite_proposal")
+    if session.get("lite_mode") is not True or not isinstance(proposal, dict):
+        raise StateError("No Lite proposal is awaiting confirmation.")
+    if proposal.get("confirmed_at"):
+        raise StateError("This Lite proposal was already confirmed and cannot be replayed.")
+    current_digest = canonical_json_sha256(
+        {
+            "proposal_id": proposal.get("proposal_id"),
+            "summary": proposal.get("summary"),
+            "target_files": proposal.get("target_files"),
+            "baseline": proposal.get("baseline"),
+        }
+    )
+    if proposal.get("digest") != current_digest or digest != current_digest:
+        raise StateError("Lite proposal digest changed; present the current proposal again.")
+    if capture_lite_baseline(root, list(proposal["target_files"])) != proposal.get(
+        "baseline"
+    ):
+        raise StateError(
+            "Lite Direct Git baseline changed before confirmation; present the proposal again."
+        )
+    proposal["confirmed_at"] = now_iso()
+    proposal["confirmed_by"] = agent
+    session["last_agent"] = agent
+    write_session(root, session, session_file)
+    snapshot = snapshot_state(root, session_file, session)
+    snapshot["action"] = "confirm-lite-proposal"
+    return snapshot
+
+
+def complete_lite_proposal(
+    root: Path,
+    digest: str,
+    agent: str,
+    session_file: str | Path | None = None,
+) -> dict:
+    session = ensure_session(root, session_file)
+    proposal = session.get("lite_proposal")
+    if session.get("lite_mode") is not True or not isinstance(proposal, dict):
+        raise StateError("No confirmed Lite proposal is active.")
+    current_digest = canonical_json_sha256(
+        {
+            "proposal_id": proposal.get("proposal_id"),
+            "summary": proposal.get("summary"),
+            "target_files": proposal.get("target_files"),
+            "baseline": proposal.get("baseline"),
+        }
+    )
+    if (
+        proposal.get("digest") != current_digest
+        or digest != current_digest
+        or not proposal.get("confirmed_at")
+    ):
+        raise StateError("Complete the exact user-confirmed Lite proposal.")
+    changed_files = validate_lite_completion(root, proposal)
+    session.pop("lite_proposal", None)
+    session["last_agent"] = agent
+    write_session(root, session, session_file)
+    snapshot = snapshot_state(root, session_file, session)
+    snapshot["action"] = "complete-lite-proposal"
+    snapshot["changed_files"] = changed_files
+    return snapshot
+
+
 def set_harness_disabled(
     root: Path,
     disabled: bool,
@@ -5572,6 +7692,10 @@ def claim_task(root: Path, task_id: str, agent: str, session_file: str | Path | 
     if status in TERMINAL_STATUSES:
         raise StateError(f"Cannot claim terminal task: {task_id}")
 
+    session = ensure_session(root, session_file)
+    if session.get("lite_mode") is True:
+        raise StateError("Exit ec-lite before claiming a Harness task.")
+
     previous_agent = task.get("last_agent")
     action = (
         "continue"
@@ -5582,7 +7706,6 @@ def claim_task(root: Path, task_id: str, agent: str, session_file: str | Path | 
     task["last_agent"] = agent
     write_task(root, task_id, task)
 
-    session = ensure_session(root, session_file)
     session["current_task"] = task_id
     session["last_seen_task"] = task_id
     session["last_seen_stage"] = status
@@ -5618,8 +7741,13 @@ def create_task(
     task_fields: dict | None = None,
 ) -> dict:
     assert_safe_task_id(task_id)
-    if set_current:
-        resolve_session_path(root, session_file)
+    if task_type.strip().lower() in {"analysis", "doc", "report"}:
+        raise StateError(
+            "Read-only conversation does not create a Harness task; stay Ready and answer directly."
+        )
+    session = ensure_session(root, session_file)
+    if session.get("lite_mode") is True:
+        raise StateError("Exit ec-lite before creating a Harness task.")
     path = task_json_path(root, task_id)
     if path.exists():
         raise StateError(f"Task already exists: {task_id}")
@@ -6752,6 +8880,7 @@ def writeback_ready_tasks_for_implement(
     task: dict,
     agent: str,
     restart_statuses: set[str] | None = None,
+    source_task_ids: set[str] | None = None,
 ) -> None:
     inspection, _ = inspect_task_spec(root, task)
     implement_attempt = 1 + sum(
@@ -6766,6 +8895,8 @@ def writeback_ready_tasks_for_implement(
     }
     selected_snapshots = _selected_execution_snapshots(inspection, task)
     for source_task_id in task.get("selected_spec_tasks") or []:
+        if source_task_ids is not None and str(source_task_id) not in source_task_ids:
+            continue
         snapshot = selected_snapshots.get(str(source_task_id))
         if not snapshot or snapshot.get("status") == "in_progress":
             continue
@@ -7237,9 +9368,6 @@ def calculate_workflow_floor(root: Path, task_id: str) -> tuple[str, list[str]]:
     if task is None:
         raise StateError(f"Task not found: {task_id}")
     task_type = str(task.get("type") or "").strip().lower()
-    if task_type in NO_CODE_TASK_TYPES:
-        return "fast", ["read-only-task"]
-
     plan = latest_execution_plan(root, task_id)
     if not plan:
         raise StateError("Cannot calculate workflow floor without a valid execution plan.")
@@ -7280,7 +9408,7 @@ def calculate_workflow_floor(root: Path, task_id: str) -> tuple[str, list[str]]:
     complexity_reasons: list[str] = []
     if len(repositories) > 1:
         complexity_reasons.append("cross-repository-change")
-    if len(units) >= 4 or len(files) >= 10:
+    if len(units) >= 5 or len(files) >= 15:
         complexity_reasons.append("broad-change-scope")
     if WIDE_WORKFLOW_CONTRACT_PATTERN.search(" ".join(contract_values)):
         complexity_reasons.append("wide-contract-impact")
@@ -7295,11 +9423,11 @@ def calculate_workflow_floor(root: Path, task_id: str) -> tuple[str, list[str]]:
     if high_risk:
         standard_reasons.append("bounded-high-risk-change")
     standard_reasons.extend(complexity_reasons)
-    if len(units) > 1:
+    if len(units) >= 4:
         standard_reasons.append("multiple-units")
-    if len(files) > 5:
+    if len(files) > 8:
         standard_reasons.append("multi-file-impact")
-    if plan.get("strategy") == "parallel":
+    if plan.get("strategy") == "parallel" and len(units) >= 3:
         standard_reasons.append("parallel-execution")
     if standard_reasons:
         return "standard", list(dict.fromkeys(standard_reasons))
@@ -7355,9 +9483,7 @@ def freeze_tdd_mode(
     behavior = resolve_behavior(root, session)
     task_type = str(task.get("type") or "").strip().lower()
     task["tdd_enabled"] = (
-        behavior[8]
-        if task_type not in NO_CODE_TASK_TYPES | {TDD_INIT_TASK_TYPE}
-        else False
+        behavior[8] if task_type != TDD_INIT_TASK_TYPE else False
     )
     task["tdd_coverage_threshold"] = behavior[11]
     if task["tdd_enabled"] is True:
@@ -7397,12 +9523,12 @@ def raise_workflow_mode(
 ) -> dict:
     session, resolved_task_id, task = resolve_current_task(root, task_id, session_file)
     stage = str(task.get("status") or "")
-    if stage == "VERIFICATION":
+    if stage == "QUALITY":
         raise StateError(
-            "Return to IMPLEMENT before raising workflow mode from VERIFICATION so the "
-            "task can re-enter REVIEW with fresh evidence."
+            "Return to IMPLEMENT before raising workflow mode from QUALITY so the "
+            "task can re-enter QUALITY with fresh evidence."
         )
-    if stage not in {"IMPLEMENT", "REVIEW"}:
+    if stage != "IMPLEMENT":
         raise StateError("A frozen workflow mode can only be raised during active execution.")
     current = str(task.get("workflow_mode") or "")
     if current not in WORKFLOW_MODES or mode not in WORKFLOW_MODES:
@@ -7460,24 +9586,33 @@ def request_transition(
                 task.get("workflow_mode_proposal"),
                 resolved_task_id,
             )
-    if previous == "REVIEW" and stage == "VERIFICATION":
-        validate_review_readiness(root, resolved_task_id, task)
+    if previous == "QUALITY" and stage in {"IMPLEMENT", "ANALYSIS"}:
+        validate_quality_exit_request(root, resolved_task_id, task, stage)
+        if (
+            stage == "IMPLEMENT"
+            and current_finalized_quality_outcome(root, resolved_task_id, task)
+            == "repair"
+            and isinstance(task.get("spec_source"), dict)
+        ):
+            validate_canonical_quality_repair_writeback(
+                root, resolved_task_id, task
+            )
     acceptance_drift: dict | None = None
-    if previous == "VERIFICATION" and stage == "MEMORY":
+    if previous == "QUALITY" and stage == "MEMORY":
         task = ensure_verification_checkpoint(
             root, resolved_task_id, task, agent, session_file
         )
         acceptance_drift = inspect_acceptance_drift(root, resolved_task_id, task)
         if acceptance_drift["config_changed"]:
             raise StateError(
-                "Behavior config changed after verification; rerun verification before MEMORY."
+                "Behavior config changed after quality checks; rerun QUALITY before MEMORY."
             )
         if acceptance_drift["metadata_changed"]:
             raise StateError(
-                "Non-code verification metadata changed; return to ANALYSIS or IMPLEMENT."
+                "Quality metadata changed; return to ANALYSIS or IMPLEMENT."
             )
         if acceptance_drift["status"] == "clean":
-            validate_verification_readiness(root, resolved_task_id, task)
+            validate_quality_readiness(root, resolved_task_id, task)
     existing = task.get("pending_transition")
     if isinstance(existing, dict):
         if existing.get("from") != previous or existing.get("to") != stage:
@@ -7485,11 +9620,27 @@ def request_transition(
                 "A different transition is already pending. Cancel it before requesting another."
             )
     else:
+        transition_binding: dict[str, object] = {}
+        repair_intent = task.get("canonical_repair_transition")
+        if (
+            previous == "QUALITY"
+            and stage == "IMPLEMENT"
+            and isinstance(repair_intent, dict)
+        ):
+            transition_binding = {
+                "quality_attempt": repair_intent.get("quality_attempt"),
+                "implementation_fingerprint": repair_intent.get(
+                    "implementation_fingerprint"
+                ),
+                "config_fingerprint": repair_intent.get("config_fingerprint"),
+                "source_task_ids": repair_intent.get("source_task_ids"),
+            }
         task["pending_transition"] = {
             "from": previous,
             "to": stage,
             "requested_at": now_iso(),
             "requested_by": agent,
+            **transition_binding,
             **({"reason": reason.strip()} if reason and reason.strip() else {}),
         }
         task["last_agent"] = agent
@@ -7516,7 +9667,6 @@ def apply_transition(
     previous = str(task.get("status") or "idle")
     task_type = str(task.get("type") or "")
     approval_mode = resolve_approval_mode(root, session)[2]
-    legacy_edge = task.get("workflow_mode_legacy") is True
     violation = validate_transition(previous, stage, task_type, task)
     if violation:
         raise StateError(violation)
@@ -7525,19 +9675,39 @@ def apply_transition(
         if task.get("workflow_mode_legacy") is not True:
             freeze_workflow_mode(root, session, resolved_task_id, task, agent)
         freeze_tdd_mode(root, session, resolved_task_id, task, agent)
+    repair_source_task_ids: set[str] | None = None
+    quality_exit_outcome: str | None = None
+    if previous == "QUALITY" and stage in {"IMPLEMENT", "ANALYSIS"}:
+        task, quality_exit_outcome = prepare_quality_exit(
+            root, resolved_task_id, task, stage, agent
+        )
+        if (
+            stage == "IMPLEMENT"
+            and quality_exit_outcome == "repair"
+            and isinstance(task.get("spec_source"), dict)
+        ):
+            task, repair_source_task_ids = prepare_canonical_repair_transition(
+                root, resolved_task_id, task, agent
+            )
     if stage == "IMPLEMENT" and previous != "IMPLEMENT":
-        if isinstance(task.get("spec_source"), dict):
+        if isinstance(task.get("spec_source"), dict) and (
+            previous != "QUALITY" or quality_exit_outcome == "repair"
+        ):
             writeback_ready_tasks_for_implement(
                 root,
                 resolved_task_id,
                 task,
                 agent,
-                {"blocked"} if previous in {"REVIEW", "VERIFICATION"} else None,
+                {"blocked"} if previous == "QUALITY" else None,
+                repair_source_task_ids,
             )
-    if previous == "REVIEW" and stage == "VERIFICATION":
-        validate_review_readiness(root, resolved_task_id, task)
-    if previous == "VERIFICATION" and stage == "MEMORY":
-        validate_verification_readiness(root, resolved_task_id, task)
+            task = load_task(root, resolved_task_id) or task
+            if previous == "QUALITY" and repair_source_task_ids is not None:
+                validate_canonical_repair_reopened(
+                    root, resolved_task_id, task, repair_source_task_ids
+                )
+    if previous == "QUALITY" and stage == "MEMORY":
+        validate_quality_readiness(root, resolved_task_id, task)
         if isinstance(task.get("spec_source"), dict):
             writeback_verified_tasks(
                 root, resolved_task_id, task, agent, session_file
@@ -7550,20 +9720,38 @@ def apply_transition(
             raise StateError("MEMORY cannot advance to COMPLETE before memory processing completes.")
         if isinstance(task.get("spec_source"), dict):
             writeback_completed_tasks(root, resolved_task_id, task, agent)
-    if (previous, stage) == READ_ONLY_COMPLETION_TRANSITION:
-        validate_read_only_completion(root, resolved_task_id)
     if previous != stage:
         task["status"] = stage
         append_stage_history(task, stage, agent)
-        if legacy_edge:
-            task.pop("workflow_mode_legacy", None)
-            if previous in {"IMPLEMENT", "REVIEW"} and stage == "VERIFICATION":
-                task["workflow_mode_legacy_review_bypass_fingerprint"] = (
-                    implementation_fingerprint(root, resolved_task_id)
-                )
+        task.pop("workflow_mode_legacy", None)
         task.pop("workflow_mode_legacy_direct_edge", None)
-        if stage in {"ANALYSIS", "IMPLEMENT", "MEMORY", "COMPLETE", "CLOSED"}:
-            task.pop("workflow_mode_legacy_review_bypass_fingerprint", None)
+        task.pop("workflow_mode_legacy_review_bypass_fingerprint", None)
+    if (
+        previous == "QUALITY"
+        and stage in {"IMPLEMENT", "ANALYSIS"}
+        and quality_exit_outcome in {"repair", "replan"}
+    ):
+        quality_records = validated_quality_records(root, resolved_task_id)
+        task["quality_consumed_attempt"] = quality_records[-1][1]["attempt"]
+    if (
+        previous == "QUALITY"
+        and stage == "IMPLEMENT"
+        and quality_exit_outcome == "repair"
+        and repair_source_task_ids is not None
+    ):
+        task.pop("canonical_repair_transition", None)
+    if previous == "QUALITY" and stage in {"IMPLEMENT", "ANALYSIS"}:
+        task.pop("quality_return_required", None)
+    if previous == "QUALITY" and stage == "CLOSED":
+        cancel_active_quality_attempt(
+            root,
+            resolved_task_id,
+            task,
+            agent,
+            "Task closed during QUALITY.",
+            "task-closed",
+        )
+        task = load_task(root, resolved_task_id) or task
     if stage in {"ANALYSIS", "IMPLEMENT", "MEMORY", "COMPLETE", "CLOSED"}:
         cleanup_verification_checkpoint(root, resolved_task_id, task)
     task.pop("pending_transition", None)
@@ -7607,18 +9795,18 @@ def auto_transition(
             "A different transition is already pending. Cancel it before automatic transition."
         )
 
-    if previous == "VERIFICATION" and stage == "MEMORY":
+    if previous == "QUALITY" and stage == "MEMORY":
         task = ensure_verification_checkpoint(
             root, resolved_task_id, task, agent, session_file
         )
         drift = inspect_acceptance_drift(root, resolved_task_id, task)
         if drift["config_changed"]:
             raise StateError(
-                "Behavior config changed after verification; rerun verification before MEMORY."
+                "Behavior config changed after quality checks; rerun QUALITY before MEMORY."
             )
         if drift["metadata_changed"]:
             raise StateError(
-                "Non-code verification metadata changed; return to ANALYSIS or IMPLEMENT."
+                "Quality metadata changed; return to ANALYSIS or IMPLEMENT."
             )
         if drift["changed_files"]:
             task["pending_transition"] = {
@@ -7626,7 +9814,7 @@ def auto_transition(
                 "to": stage,
                 "requested_at": now_iso(),
                 "requested_by": agent,
-                "reason": "verification checkpoint drift requires exact user acceptance",
+                "reason": "quality checkpoint drift requires exact user acceptance",
                 "confirmation_override": "evidence-drift",
             }
             task["last_agent"] = agent
@@ -7681,8 +9869,22 @@ def confirm_transition(
             f"Transition {source} -> {target} is automatic in {approval_mode} mode; "
             "use auto-transition instead."
         )
+    if source == "QUALITY" and target == "IMPLEMENT" and "quality_attempt" in pending:
+        repair_intent = task.get("canonical_repair_transition")
+        if (
+            not isinstance(repair_intent, dict)
+            or pending.get("quality_attempt") != repair_intent.get("quality_attempt")
+            or pending.get("implementation_fingerprint")
+            != repair_intent.get("implementation_fingerprint")
+            or pending.get("config_fingerprint")
+            != repair_intent.get("config_fingerprint")
+            or pending.get("source_task_ids") != repair_intent.get("source_task_ids")
+        ):
+            raise StateError(
+                "Pending Canonical repair transition no longer matches its QUALITY intent."
+            )
 
-    if source == "VERIFICATION" and target == "MEMORY":
+    if source == "QUALITY" and target == "MEMORY":
         task = ensure_verification_checkpoint(
             root, resolved_task_id, task, agent, session_file
         )
@@ -7775,7 +9977,7 @@ def memory_short_complete(
                 *(f"targeted_source_task:{task_name}" for task_name in missing_targeted_tasks),
             ]
             raise StateError(
-                "Short memory must record the complete accepted post-verification decision; "
+                "Short memory must record the complete accepted post-quality decision; "
                 "missing: " + ", ".join(missing_labels)
             )
     progress = task.get("memory_progress")
@@ -7895,14 +10097,29 @@ def close_current_task(
     reason: str,
     agent: str,
     session_file: str | Path | None = None,
+    expected_task_id: str | None = None,
 ) -> dict:
     session = ensure_session(root, session_file)
     task_id = session.get("current_task")
     if not task_id:
         raise StateError("No current task is set.")
+    if expected_task_id is not None and str(task_id) != expected_task_id:
+        raise StateError(
+            "Active task changed after the Lite decision was shown; inspect it again."
+        )
     task = load_task(root, str(task_id))
     if task is None:
         raise StateError(f"Task not found: {task_id}")
+    if task.get("status") == "QUALITY":
+        cancel_active_quality_attempt(
+            root,
+            str(task_id),
+            task,
+            agent,
+            "Task closed during QUALITY.",
+            "task-closed",
+        )
+        task = load_task(root, str(task_id)) or task
     if isinstance(task.get("spec_source"), dict) and task.get("status") not in TERMINAL_STATUSES:
         cancel_shared_tasks(root, str(task_id), task, reason, agent)
     if task.get("status") != "CLOSED":
@@ -8200,11 +10417,39 @@ def main() -> int:
     fingerprints_parser.add_argument("--agent", required=True)
     fingerprints_parser.add_argument("--task-id")
 
+    finalize_quality_parser = subcommands.add_parser(
+        "finalize-quality", parents=[common]
+    )
+    finalize_quality_parser.add_argument(
+        "--outcome", required=True, choices=["repair", "replan"]
+    )
+    finalize_quality_parser.add_argument(
+        "--review-gate", required=True, choices=sorted(QUALITY_GATE_STATUSES)
+    )
+    finalize_quality_parser.add_argument(
+        "--verification-gate", required=True, choices=sorted(QUALITY_GATE_STATUSES)
+    )
+    finalize_quality_parser.add_argument(
+        "--failure-class",
+        required=True,
+        action="append",
+        choices=sorted(QUALITY_FAILURE_CLASSES),
+    )
+    finalize_quality_parser.add_argument("--summary", required=True)
+    finalize_quality_parser.add_argument("--agent", required=True)
+    finalize_quality_parser.add_argument("--task-id")
+
     verification_checkpoint_parser = subcommands.add_parser(
         "verification-checkpoint", parents=[common]
     )
     verification_checkpoint_parser.add_argument("--agent", required=True)
     verification_checkpoint_parser.add_argument("--task-id")
+
+    quality_checkpoint_parser = subcommands.add_parser(
+        "quality-checkpoint", parents=[common]
+    )
+    quality_checkpoint_parser.add_argument("--agent", required=True)
+    quality_checkpoint_parser.add_argument("--task-id")
 
     inspect_transition_drift_parser = subcommands.add_parser(
         "inspect-transition-drift", parents=[common]
@@ -8217,6 +10462,33 @@ def main() -> int:
 
     enable_harness_parser = subcommands.add_parser("enable-harness", parents=[common])
     enable_harness_parser.add_argument("--agent", required=True)
+
+    enable_lite_parser = subcommands.add_parser("enable-lite", parents=[common])
+    enable_lite_parser.add_argument(
+        "--active-task-policy", choices=["cancel", "close", "ignore"]
+    )
+    enable_lite_parser.add_argument("--expected-task-id")
+    enable_lite_parser.add_argument("--agent", required=True)
+
+    disable_lite_parser = subcommands.add_parser("disable-lite", parents=[common])
+    disable_lite_parser.add_argument("--agent", required=True)
+
+    lite_proposal_parser = subcommands.add_parser("set-lite-proposal", parents=[common])
+    lite_proposal_parser.add_argument("--summary", required=True)
+    lite_proposal_parser.add_argument("--target-file", action="append", default=[])
+    lite_proposal_parser.add_argument("--agent", required=True)
+
+    confirm_lite_parser = subcommands.add_parser(
+        "confirm-lite-proposal", parents=[common]
+    )
+    confirm_lite_parser.add_argument("--digest", required=True)
+    confirm_lite_parser.add_argument("--agent", required=True)
+
+    complete_lite_parser = subcommands.add_parser(
+        "complete-lite-proposal", parents=[common]
+    )
+    complete_lite_parser.add_argument("--digest", required=True)
+    complete_lite_parser.add_argument("--agent", required=True)
 
     handoff = subcommands.add_parser("handoff-task", parents=[common])
     handoff.add_argument("--agent", required=True)
@@ -8313,6 +10585,7 @@ def main() -> int:
     satisfy_dependency.add_argument("--task-id")
 
     args = parser.parse_args()
+    command_lock: Path | None = None
     try:
         root = resolve_root(getattr(args, "cwd", None))
         session_file = getattr(args, "session_file", None)
@@ -8337,6 +10610,10 @@ def main() -> int:
                     "Cannot resolve the logical session. Pass --session-file or --agent."
                 )
             _, session_file = ensure_hook_session(root, {}, session_agent)
+        if session_file is not None:
+            command_lock = acquire_session_command_lock(
+                root, resolve_session_path(root, session_file)
+            )
         if command == "snapshot":
             emit(snapshot_state(root, session_file))
         elif command == "inspect-dev-spec":
@@ -8651,21 +10928,73 @@ def main() -> int:
                 )
             )
         elif command == "evidence-fingerprints":
-            session, resolved_task_id, _ = resolve_current_task(
+            session, resolved_task_id, task = resolve_current_task(
                 root, args.task_id, session_file
             )
+            fingerprints = evidence_fingerprints(root, resolved_task_id)
+            quality_attempt = None
+            checkpoint = task.get("quality_checkpoint")
+            checkpoint_config_changed = (
+                isinstance(checkpoint, dict)
+                and checkpoint.get("config_fingerprint")
+                != fingerprints["config_fingerprint"]
+            )
+            if task.get("status") == "QUALITY" and checkpoint_config_changed:
+                cleanup_verification_checkpoint(root, resolved_task_id, task)
+                task["last_agent"] = agent
+                write_task(root, resolved_task_id, task)
+                task = load_task(root, resolved_task_id) or task
+                checkpoint = None
+            accepted_candidate_drift = (
+                isinstance(checkpoint, dict)
+                and checkpoint.get("implementation_fingerprint")
+                != fingerprints["implementation_fingerprint"]
+            )
+            if task.get("status") == "QUALITY" and not accepted_candidate_drift:
+                quality_attempt = ensure_quality_attempt_context(
+                    root,
+                    resolved_task_id,
+                    task,
+                    agent,
+                    persist=True,
+                    infer_existing_evidence=True,
+                )
             emit(
                 attach_status_context(
                     root,
                     {
                         "task_id": resolved_task_id,
-                        **evidence_fingerprints(root, resolved_task_id),
+                        **fingerprints,
+                        **(
+                            {"quality_attempt": quality_attempt}
+                            if quality_attempt is not None
+                            else {}
+                        ),
                     },
                     visible_agent,
                     session_file,
                 )
             )
-        elif command == "verification-checkpoint":
+        elif command == "finalize-quality":
+            emit(
+                attach_status_context(
+                    root,
+                    finalize_quality_decision(
+                        root,
+                        args.outcome,
+                        args.review_gate,
+                        args.verification_gate,
+                        args.failure_class,
+                        args.summary,
+                        agent,
+                        args.task_id,
+                        session_file,
+                    ),
+                    agent,
+                    session_file,
+                )
+            )
+        elif command in {"quality-checkpoint", "verification-checkpoint"}:
             emit(
                 attach_status_context(
                     root,
@@ -8701,6 +11030,59 @@ def main() -> int:
                 attach_status_context(
                     root,
                     set_harness_disabled(root, False, agent, session_file),
+                    agent,
+                    session_file,
+                )
+            )
+        elif command == "enable-lite":
+            emit(
+                attach_status_context(
+                    root,
+                    enable_lite_mode(
+                        root,
+                        agent,
+                        args.active_task_policy,
+                        args.expected_task_id,
+                        session_file,
+                    ),
+                    agent,
+                    session_file,
+                )
+            )
+        elif command == "disable-lite":
+            emit(
+                attach_status_context(
+                    root,
+                    disable_lite_mode(root, agent, session_file),
+                    agent,
+                    session_file,
+                )
+            )
+        elif command == "set-lite-proposal":
+            emit(
+                attach_status_context(
+                    root,
+                    set_lite_proposal(
+                        root, args.summary, args.target_file, agent, session_file
+                    ),
+                    agent,
+                    session_file,
+                )
+            )
+        elif command == "confirm-lite-proposal":
+            emit(
+                attach_status_context(
+                    root,
+                    confirm_lite_proposal(root, args.digest, agent, session_file),
+                    agent,
+                    session_file,
+                )
+            )
+        elif command == "complete-lite-proposal":
+            emit(
+                attach_status_context(
+                    root,
+                    complete_lite_proposal(root, args.digest, agent, session_file),
                     agent,
                     session_file,
                 )
@@ -8882,6 +11264,8 @@ def main() -> int:
     except (StateError, EasyDevSpecError) as error:
         print(json.dumps({"error": str(error)}, ensure_ascii=False), file=sys.stderr)
         return 1
+    finally:
+        release_session_command_lock(command_lock)
 
 
 if __name__ == "__main__":

@@ -30,31 +30,31 @@ easy-coding-harness 是从 Easy Coding Skill（v4.3.2）升级而来，而非另
 
 - **项目知识四层体系不变**：SOUL.md（身份层）→ RULES.md（约束层）→ ABSTRACT.md（认知层）→ memory/（记忆层），文件格式、读取顺序、作用域定义完全兼容。
 - **记忆系统 schema v2 不变**：短期记忆的 frontmatter 格式、滑动窗口机制（max 10 / keep 5）、长期记忆的三文件结构（MEMORY.md + BUSINESS.md + TECHNICAL.md）——已有项目的记忆文件可以直接复用。
-- **审批与执行深度正交**：固定状态机、读写分离、REVIEW 和 VERIFICATION 硬门始终保留；`approval_mode` 调整等待范围，`workflow_mode` 调整每个状态内部的执行深度。
+- **审批与执行深度正交**：固定状态机、读写分离、QUALITY 双门始终保留；`approval_mode` 调整等待范围，`workflow_mode` 调整每个状态内部的执行深度。
 - **项目模式检测保留**：自动区分初创/迭代项目并调整行为策略，这是 easy-coding 独有的能力。
 
 从 Skill 升级到 Harness，用户的项目知识文件、记忆数据、编码规范零迁移成本。
 
-### 三、六工作阶段 + 审批/工作流双模式约束编码流程
+### 三、五工作阶段 + 审批/工作流双模式约束编码流程
 
 三个对标项目（easy-coding、Trellis、superpowers）中**最严格的**控制系统。
 
-**状态机**：INIT → ANALYSIS → IMPLEMENT → REVIEW → VERIFICATION → MEMORY → COMPLETE。新代码任务不可跳过 REVIEW 或 VERIFICATION；显式只读任务在 IMPLEMENT 展示完整报告后直接结束。
+**状态机**：INIT → ANALYSIS → IMPLEMENT → QUALITY → MEMORY → COMPLETE。所有仓库修改任务不可跳过 QUALITY；纯只读对话保持 Ready，不创建任务。
 
 **双模式 + 专项硬门控**：
 
 1. **状态边审批**——INIT → ANALYSIS、MEMORY → COMPLETE 始终自动；approve 逐边确认，
-   guard 确认 ANALYSIS → IMPLEMENT 与 VERIFICATION → MEMORY，confirm 只确认
+   guard 确认 ANALYSIS → IMPLEMENT 与 QUALITY → MEMORY，confirm 只确认
    ANALYSIS → IMPLEMENT，之后在机械门禁通过后自动执行，auto 从开始即自动执行。
    CLOSED 始终由显式关闭操作进入。
 2. **状态内深度**——Adaptive 在 ANALYSIS 结束时根据机械风险下限解析并冻结 Fast、Standard 或 Strict；冻结后只能升档。三个模式都运行完整代码状态链。
-3. **VERIFICATION 门控**——Fast 执行最小充分的定向检查，Standard 执行受影响范围的 lint/typecheck/test，Strict 执行项目适用的完整 lint/typecheck/test/build；所选模式要求的检查都必须留下当前指纹下的新鲜绿色证据。只读任务不进入该阶段。
+3. **QUALITY 双门**——同一候选下并行执行只读 Review Gate 与 Verification Gate；Fast 使用主 Agent 自审和最小定向验证，Standard 使用一个独立 reviewer 与受影响检查，Strict 使用至少两个独立维度并只对实际修改仓库执行完整适用检查。
 4. **MEMORY 长期门控**——MEMORY 先写短期记忆，再由状态 API 按阈值决定长期沉淀或 no-op；提示词不能绕过机械指令。
 
 **修复循环有范围守卫**：用户提出新的修复要求时会对照 dev-spec 判断范围——范围内修复回到
-IMPLEMENT 并重新进入 REVIEW，范围外建议创建新任务。若只是 VERIFICATION 绿色检查点后
+IMPLEMENT 并重新进入 QUALITY，范围外建议创建新任务。若只是 QUALITY 绿色检查点后
 检测到用户或外部工具已经保存的代码差异，则先展示精确 diff；用户接受当前 digest 后沿用原
-REVIEW 结论，只按差异性质沿用验证、补定向验证或记录风险豁免，不因保存动作本身重走流程。
+Review Gate 结论，只按差异性质沿用验证、补定向验证或记录风险豁免，不因保存动作本身重走流程。
 
 **CLOSED 是独立终态**：从任何阶段都可由用户中断到 CLOSED，且不执行记忆流程——未完成任务的记忆是脏数据。
 
@@ -85,7 +85,7 @@ easy-coding-harness 的核心设计原则是**不绑定任何特定 Agent 平台
 - 每个需要确认的边界都提供显式交接入口，handoff 保留当前 `pending_transition`；自动边直接由状态 API 推进
 - ec-workflow 统一承接所有恢复场景——跨会话中断和跨 Agent 交接走同一条路径
 
-**不做过度设计**：不做阶段-Agent 亲和性绑定（每次任务的 Agent 选择可能不同），不做 Agent 间实时通信（Dead Drop 模式够用且简单可靠），不做并发控制（个人开发工具，不是分布式系统）。
+**不做过度设计**：不做阶段-Agent 亲和性绑定（每次任务的 Agent 选择可能不同），不做 Agent 间实时通信或分布式锁（Dead Drop 模式够用且简单可靠）；只对共享 session/task 状态使用有界本地原子锁，防止同机命令竞争覆盖。
 
 ---
 
@@ -132,7 +132,7 @@ CLI 是纯粹的文件搬运工——不做任何智能判断，所有需要 AI 
 | 命令 | 职责 |
 |------|------|
 | `easy-coding init` | 首次初始化：选择 Agent 平台，安装 Skills/Hooks/主约束文件，创建运行时目录和 project-init 任务 |
-| `easy-coding add-agent` | 追加 Agent 平台支持（复用 configurator，跳过运行时初始化） |
+| `easy-coding add-agent` | 为同版本 Harness 追加 Agent；版本不一致时要求先整体 upgrade |
 | `easy-coding upgrade` | 升级功能文件到最新版本（覆盖 Skills/Hooks，保留用户资产） |
 | `easy-coding config` | 交互修改当前项目的确认模式 |
 | `easy-coding status` | 查看项目安装状态、已安装平台、版本信息 |
@@ -190,20 +190,16 @@ ec-workflow 是整个系统的指挥官——拥有阶段流转和任务生命�
 #### 2.1 状态流转
 
 ```
-INIT ─自动→ ANALYSIS → IMPLEMENT → REVIEW → VERIFICATION → MEMORY ─自动→ COMPLETE
-                                  └────────────→ VERIFICATION
-                                  └─只读按模式──────────────────→ COMPLETE
+INIT ─自动→ ANALYSIS → IMPLEMENT → QUALITY → MEMORY ─自动→ COMPLETE
           ↑            ↑          │
           +--- 重规划 --+          +--- 修复 ----+
-                       ↑                         │
-                       +------- 验收修复 --------+
 审批模式 ──[approve / guard / confirm / auto]──→ 状态边等待策略
 工作流模式 ──[adaptive => fast / standard / strict]──→ 状态内执行深度
 
 任何阶段 ──[用户主动中断]──→ CLOSED
 ```
 
-**6 个工作阶段 + 2 个终态**，每个阶段由对应的 Stage Skill 负责具体执行，ec-workflow 只决定"什么时候"执行"谁"。
+**5 个工作阶段 + 2 个终态**，每个阶段由对应的 Stage Skill 负责具体执行，ec-workflow 只决定"什么时候"执行"谁"。
 
 #### 2.2 硬门控设计
 
@@ -213,10 +209,10 @@ INIT ─自动→ ANALYSIS → IMPLEMENT → REVIEW → VERIFICATION → MEMORY 
   关闭。
 - **工作流模式**：session 覆盖优先于项目 `behavior.workflow_mode`，缺失时为 `adaptive`。
   ANALYSIS 保存 configured/selected/minimum/source/reasons 提案，进入 IMPLEMENT 时原子冻结。
-  机械 floor 以 Standard 为普通业务默认：Fast 要求单个实际修改仓库、单 Unit、非并行、
-  最多 5 个文件且没有明确高风险/宽契约；Strict 则必须同时命中明确高风险与真实复杂度。
+  机械 floor 以 Standard 为普通业务默认：Fast 允许单个实际修改仓库、最多三个内聚 Unit、
+  最多 8 个文件且没有明确高风险/宽契约；Strict 则必须同时命中明确高风险与真实复杂度。
   Canonical/supermodule 的未修改仓库元数据不参与定级。
-- **Java TDD 模式**：session 覆盖优先于项目 `behavior.tdd_enabled`，默认关闭；覆盖率阈值默认 90，可配置 1..100。开启入口必须先验证 `ec-tdd-init` readiness，不存在“先开启、稍后初始化”。专用 `tdd-init` 代码任务始终冻结 TDD 关闭，只建设 JUnit/JaCoCo/GitLab changed-line coverage 基础设施，不补存量业务单测或要求全量覆盖。后续业务任务进入 IMPLEMENT 时原子冻结 baseline 与阈值，以 100% 为测试设计目标、以配置阈值作为新增/修改生产代码行最低门禁；VERIFICATION 对每个仓库（Canonical 下每个 source task）同时要求通过的本地单测证据与本地 changed-line coverage 证据。GitLab TEST stage 继续复用同一脚本，但远程 pipeline URL、job identity 与成功状态不进入 Harness 验收；beta.1/beta.2 的历史 GitLab coverage 记录保留并在新门禁中忽略。
+- **Java TDD 模式**：session 覆盖优先于项目 `behavior.tdd_enabled`，默认关闭；覆盖率阈值默认 90，可配置 1..100。开启入口必须先验证 `ec-tdd-init` readiness，不存在“先开启、稍后初始化”。专用 `tdd-init` 代码任务始终冻结 TDD 关闭，只建设 JUnit/JaCoCo/GitLab changed-line coverage 基础设施，不补存量业务单测或要求全量覆盖。后续业务任务进入 IMPLEMENT 时原子冻结 baseline 与阈值，以 100% 为测试设计目标、以配置阈值作为新增/修改生产代码行最低门禁；QUALITY 对每个实际修改仓库（Canonical 下每个 source task）同时要求通过的本地单测证据与本地 changed-line coverage 证据。GitLab TEST stage 继续复用同一脚本，但远程 pipeline URL、job identity 与成功状态不进入 Harness 验收；beta.1/beta.2 的历史 GitLab coverage 记录保留并在新门禁中忽略。
 - **共享 Canonical 执行投影**：Canonical Spec 的静态设计和机器执行区分层管理。Harness
   用 design revision + `design_sha256` 绑定本地计划，只把跨应用必须消费的 Task、Step、
   dependency 状态投影到 `EDS:EXECUTION`；详细 result/review/verify 仍保留在本地
@@ -230,9 +226,9 @@ INIT ─自动→ ANALYSIS → IMPLEMENT → REVIEW → VERIFICATION → MEMORY 
   仓库和 change/test baseline。ANALYSIS 负责唯一一次消费闭包读取，exact/scope-unchanged
   直接投影运行时产物，scope-drifted 只分析所选任务漂移。未选仓库路径、旧本地 Harness
   task 和 Git 提交考古都不能成为当前分析门禁。
-- **pending_transition**：仅审批模式要求人工确认时记录；自动边走受限 `auto-transition`。所有新代码主链从 IMPLEMENT 进入 REVIEW。
+- **pending_transition**：仅审批模式要求人工确认时记录；自动边走受限 `auto-transition`。所有修改任务从 IMPLEMENT 进入 QUALITY。
 - **确认门展示**：存在人工确认边时，Agent 完整展示“确认进入/返回目标阶段”“交接给其他智能体”和 free-form Other。模式选择已包含在 ANALYSIS 方案中，用户可在风险下限之上修改。取消、超时或无法解析时保留 `pending_transition`。
-- **VERIFICATION**：Fast 运行最小充分的定向检查，Standard 运行受影响范围的 lint/typecheck/test，Strict 运行项目适用的完整 lint/typecheck/test/build；所选模式要求的检查必须绑定当前实现与配置指纹并全部通过，"should pass" 不是证据。
+- **QUALITY**：Review 与 Verification 绑定同一候选指纹并可并行；全部结果汇总成一次 Repair Bundle。环境失败留在 QUALITY 重试，不触发重复 Review。
 - **MEMORY**：进入方式服从确认模式；进入后先写短期记忆，再执行长期记忆阈值门禁，完成后自动进入 COMPLETE。
 
 #### 2.3 启动序列
@@ -240,9 +236,10 @@ INIT ─自动→ ANALYSIS → IMPLEMENT → REVIEW → VERIFICATION → MEMORY 
 ec-workflow 每次激活都执行统一的启动序列：
 
 1. 初始化守卫：检查 project-init 任务状态
-2. 必读文件：SOUL.md、RULES.md、最近 5 条短期记忆
-3. 状态检查：有活跃任务则恢复，无则扫描未完成任务或准备接收新任务
-4. 新任务创建
+2. 状态快照：读取当前 session、Lite Direct 和任务指针
+3. 意图匹配：只恢复与当前请求匹配的任务；意图不明确时保持 Ready 对话
+4. 阶段加载：仅加载当前阶段需要的规则和任务资产，记忆由 ANALYSIS 按相关性渐进读取
+5. 任务创建：仅在仓库修改意图与路由范围明确后创建
 
 这使得 ec-workflow 成为用户日常使用的**唯一入口**——无论是新任务、中断恢复还是跨 Agent 交接，都走同一条路径。
 
@@ -270,7 +267,7 @@ ec-analysis 是从需求到可执行方案的翻译器。
   不输出最终摘要、不提议进入 IMPLEMENT。
 - **双重门控**：分析完成后先自检每个“现状”声明和具体修改方案；状态 API 在申请及确认
   `ANALYSIS → IMPLEMENT` 时再次校验完整 Dev-Spec、唯一的 `decision_status: closed` 和
-  最新有效 execution plan。代码任务还要求非空 test strategy；只读任务禁止生成该文件。
+  最新有效 execution plan。所有 Harness 修改任务都要求非空 test strategy；纯只读请求不创建任务。
 - **会话摘要**：ANALYSIS 结束时只展示核心方案、验收摘要、Workflow Mode 与主要风险；
   完整 `dev-spec.md` 通过绝对 Markdown 本地链接或绝对路径按需查看。
 - **文件编码保护**：改动范围表强制包含文件编码列，防止 AI 在修改文件时擅自转换编码（如 GBK → UTF-8）。
@@ -287,7 +284,9 @@ ec-analysis 是从需求到可执行方案的翻译器。
 ],"parallel_groups":[{"level":0,"units":["U1"]},{"level":1,"units":["U2"]}]}
 ```
 
-状态 API 会校验 unit 必填字段、依赖引用、依赖图无环，以及 `parallel_groups` 的层级必须晚于其依赖。显式 `doc` / `analysis` / `report` 无代码任务可使用 `single` + `files:[]`，子代理只返回 `deliverable` 且不得修改项目文件；代码任务不允许空文件范围。
+状态 API 会校验 unit 必填字段、非空文件范围、依赖引用、依赖图无环，以及
+`parallel_groups` 的层级必须晚于其依赖。纯只读请求保持 Ready，不创建 Unit；文档、配置
+或报告一旦需要写入仓库，就作为普通修改任务声明实际文件范围。
 
 三种执行策略：
 - `single`：一个单元；由冻结的 Workflow Mode 和独立性要求决定主 Agent 内联或派发
@@ -318,8 +317,9 @@ ec-analysis 是从需求到可执行方案的翻译器。
 - **作者归属**：项目存在作者署名惯例时，新署名固定为当前宿主 Agent 名称加
   `with Easy Coding`，例如 `Codex with Easy Coding`。该值只是作者/Canonical 展示归属，
   不是工作流 owner；状态 API 只接受 `claude-code` / `codex` / `qoder`。
-- **字段注释**：新增数据模型字段、枚举成员和常量必须逐项解释语义，并按需记录单位、
-  格式、取值、空值、默认值或兼容约束；类型级注释不能替代字段级注释。
+- **字段注释**：新增数据模型字段必须逐项解释语义，并按需记录单位、格式、取值、空值、
+  默认值或兼容约束；类型级注释不能替代字段级注释。枚举成员和稳定领域常量仅在最近邻
+  风格或非直观语义需要时补充说明，不为注释而提取常量。
 - **核心 Java 注释**：新增核心 Java 类的每个方法和字段、已有核心类中新增或实质修改的
   方法和字段必须有 Javadoc；核心/复杂逻辑补充意图和约束注释，不批量改造未触碰的历史代码。
 - **步进式报告**：只在 Unit 边界输出简短进度，不为每个琐碎编辑单独汇报。
@@ -349,12 +349,11 @@ ec-analysis 是从需求到可执行方案的翻译器。
 - 不读取 Skills 或 .easy-coding 目录
 - 只修改「可修改范围」内的文件
 ## 任务         {单元描述}
-## 交付模式     {code | no-code read-only}
-## 可修改范围    {unit.files | NONE — read-only deliverable}
+## 可修改范围    {unit.files}
 ## 编码规范     {RULES.md 相关段落}
 ## 架构上下文   {ABSTRACT.md 相关段落}
 ## 局部基线     {同模块同职责代码的可核验惯例与路径}
-## 输出格式     changed_files, summary, deliverable, issues, needs_attention
+## 输出格式     changed_files, summary, checks, issues, needs_attention
 ```
 
 **三层防逃逸约束**：
@@ -364,74 +363,59 @@ ec-analysis 是从需求到可执行方案的翻译器。
 
 ---
 
-显式 `doc` / `analysis` / `report` 无代码任务使用 `single` 空文件范围且不生成 `test-strategy.md`。执行者不得修改文件，必须在 `deliverable` 返回完整结果；主 Agent 原样展示后，通过受限的 IMPLEMENT → COMPLETE 边结束。此类任务不进入 REVIEW、VERIFICATION、MEMORY，也不写任务记忆。
+纯分析、解释、报告和只读 review 不进入 Harness 状态机，保持 Ready 直接对话。文档、配置
+或报告一旦需要写入仓库，就作为普通修改任务使用完整状态机。
 
 ---
 
-### 5. 代码审查（ec-reviewing）
+### 5. 统一质量阶段（ec-quality）
 
-#### 5.1 多维度审查
+QUALITY 冻结一个候选实现指纹，同时编排两个互不越权的只读门：
 
-| 维度 | 检查内容 |
-|------|---------|
-| 正确性 | 修改是否符合 dev-spec 的需求描述 |
-| 规范性 | 是否符合 RULES.md |
-| 完整性 | 改动范围表中的文件是否都已处理 |
-| 测试 | 必测/应测条目是否有对应测试 |
-| 安全 | 硬编码密钥、SQL 拼接等明显风险 |
+- **Review Gate**：检查需求正确性、契约、安全、测试设计、最近邻代码风格、核心 Java
+  Javadoc 和最小修改范围，不执行命令、不修改代码。
+- **Verification Gate**：执行实际 lint/typecheck/test/build/coverage 命令并记录真实退出
+  状态，不修改源码。非 TDD 的 IMPLEMENT 不提前运行这些命令；TDD 的当前指纹绿色证据
+  可以直接复用。
 
-#### 5.2 分级判定
+Fast 使用主 Agent 聚焦自审和最小定向验证；Standard 使用一个独立 reviewer 与受影响
+检查；Strict 使用至少两个独立维度，并只对实际修改仓库执行完整适用检查。两个 Gate 可以
+并行，但必须完成或明确取消后才能形成结论。每条 review/verify 证据同时绑定候选指纹和
+状态层分配的 `quality_attempt`，迟到的旧 attempt 结果不能进入新一轮聚合。
 
-- `accept`：全部通过，推进到 VERIFICATION
-- `fix`：发现问题但可修，在 REVIEW 内按语义单元合并修复，只复审受影响维度；同类
-  问题连续两轮仍存在时停止盲目返工，转为 `replan` 或 `blocked`
-- `replan`：方案本身有缺陷，回退 ANALYSIS
-- `blocked`：外部阻塞，暂停报告
+所有阻塞结果一次性分类为代码缺陷、测试缺陷、契约歧义、环境问题或非阻塞建议，并汇总成
+一个 Repair Bundle。状态 API 要求两个 Gate 都有终态并机械校验结构化分类：仅有代码/测试
+缺陷时以 `repair` 回 IMPLEMENT；只要存在契约歧义，就以 `replan` 优先回 ANALYSIS，同时保留
+同轮发现的代码/测试分类；环境问题留在 QUALITY 重试，不重复 Review，也不能伪装成 repair。
+候选漂移把当前 attempt 一次性终结为 `cancelled` 并持久化回退门禁，必须先回 IMPLEMENT 才能
+开始新 attempt；配置漂移可取消后原地重启，主动返工和任务关闭也会终结活动 attempt。修复后
+按差异类型补定向检查或重跑完整受影响门禁。Canonical 未受影响仓库只有在方案与仓库内容
+指纹均未变化，且不属于变化 source 的 hard/contract 下游时，状态层才会追加
+`quality-carry-forward`，精确引用上一 repair attempt 的已通过证据索引；Agent 不能复制、改写
+或自行拼接不同 attempt 的证据。
 
-每个发现必须引用具体文件和行号——"looks good" 不是合格的审查意见。
+Canonical 修复的 `blocked` 写回必须绑定 Harness task、source task、候选指纹、QUALITY
+attempt 和当前失败证据。任意外部或旧轮次留下的同名 `blocked` 状态不能满足本轮门禁；部分
+source task 重开失败时，持久化的修复意图允许从已完成位置继续。该 intent 在 repair 决策
+落盘时即创建，确认边同时绑定 attempt、双指纹和 affected source；因此 blocked 投影后即使
+候选或配置漂移，也只能续跑原修复事务，不能降级为普通 cancelled 退出。
 
-#### 5.3 按工作流模式选择审查独立性
+QUALITY 通过后冻结验收快照并按 `approval_mode` 处理 MEMORY 边界。若用户或外部工具随后
+保存代码，Harness 展示精确 diff 和 `diff_sha256`；用户接受后遵从其 carry-forward、targeted
+或 waived 决策，不自动重跑 Review。配置、方案、契约或 Canonical 设计变化不能走该例外。
 
-- `fast`：主 Agent 对最终 diff 做一次覆盖正确性、范围、测试和明显安全风险的自审。
-- `standard`：派发一个独立 reviewer，组合检查正确性、契约、测试和规范。
-- `strict`：至少派发两个独立维度，分别覆盖正确性/契约与规范/测试/安全；状态 API
-  要求当前实现指纹下至少两个不同维度全部通过。
+### 6. Lite Direct（ec-lite）
 
-代码任务无论模式都进入 REVIEW；降低调度数量不等于删除检查维度。只读任务在
-IMPLEMENT 展示报告后已直接结束，不进入 REVIEW。
-
----
-
-### 6. 验证闸门（ec-verification）
-
-#### 6.1 按影响面执行门禁
-
-- `fast`：执行直接覆盖改动行为的最小命令和必要回归。
-- `standard`：执行受影响范围的 lint、typecheck、test 与全部必测项。
-- `strict`：执行项目适用的完整 lint、typecheck、test、build 门禁。
-
-相互独立且能实质节省时间的检查可以并行；不能为了并行而固定启动与当前项目或改动
-无关的命令。所有证据必须绑定最终实现与配置指纹，任一当前证据失败都不能放行。
-
-#### 6.2 测试覆盖校验
-
-对照 `test-strategy.md`：
-- [必测] 条目 → 必须有对应测试用例
-- [应测] 条目 → 必须有对应测试用例
-- Bug 修复 → 必须有回归测试
-- 未覆盖 → 阻塞，回退 IMPLEMENT 补测试
-
-#### 6.3 验收修复循环
-
-验证通过后按 `approval_mode` 处理 MEMORY 边界：`approve` / `guard` 等待用户验收，
-`confirm` / `auto` 在绿色检查点未变化时自动进入 MEMORY。此时按以下边界处理：
-
-- 用户提出新的范围内修复要求 → 回退 IMPLEMENT，完成后重新进入 REVIEW；
-- 用户提出超出 dev-spec 的新要求 → 建议创建新任务；
-- 仅检测到检查点后的现有代码差异 → 展示完整差异与 `diff_sha256`。用户接受后不回退
-  IMPLEMENT、不重跑 REVIEW；非执行差异沿用原验证，可执行差异补当前指纹的定向验证，
-  或由用户显式接受未验证风险；
-- 用户取消任务 → `ec-task-close`。
+`ec-lite` 完全由用户显式启停，不是 Fast 的别名。它只保留“紧凑方案 → 用户确认 → 最小
+实现”，不创建任务、Dev-Spec、执行日志、QUALITY 或 MEMORY，且默认不运行测试。存在活动
+任务时，用户选择取消启动、关闭任务后启动，或只清除当前 session 任务指针后启动；系统
+不得代选，并通过 session 命令锁与展示时的 task ID 原子防止确认期间换目标。方案要求
+1..50 个安全项目相对文件；每次提案生成不可重放 nonce，并把当时的 Git 基线纳入待确认
+digest；确认只能执行一次且不能改写基线，若当前 Git 状态已偏离提案基线则要求重提方案；
+完成时机械拒绝范围外改动、无实际
+目标改动或 HEAD 漂移。Harness 自身
+`.easy-coding/sessions/` 账本不参与业务范围校验，也不能作为 Lite 目标。Lite 会持续到用户
+再次调用退出；`ec-no-harness` 只临时取得路由优先级，不删除 Lite 或已确认方案。
 
 ---
 
@@ -565,7 +549,8 @@ payload 的 `session_id` 优先级最高；Codex App 未提供该字段时，使
 重新读取并比对内容，已被并发刷新则跳过。
 
 `sessions/acceptance/` 独立清理确定性孤儿：对应任务不存在、已经 COMPLETE/CLOSED，或
-当前 `verification_checkpoint.snapshot_file` 不再引用该快照时才删除。活动任务仍引用的
+当前 `quality_checkpoint.snapshot_file` 不再引用该快照时才删除。升级前的
+`verification_checkpoint` 仅作为 GC 兼容读取。活动任务仍引用的
 验收证据始终保留，GC 不修改 tasks、memory、spec、project.yaml 或项目知识。实际执行
 `easy-coding upgrade` 时对每个待升级目标额外运行一次同样的存量 GC；`--dry-run` 只展示
 影响，不执行删除。
@@ -628,7 +613,7 @@ Claude Code 同样将 session 初始化限定在 `SessionStart`；Qoder 没有�
 
 ---
 
-### 13. 任务与模式管理（ec-task-management + ec-config + ec-tdd-init + ec-task-close）
+### 13. 任务与模式管理（ec-task-management + ec-config + ec-tdd-init + ec-lite + ec-task-close）
 
 职责清晰分离：
 
@@ -638,8 +623,9 @@ Claude Code 同样将 session 初始化限定在 `SessionStart`；Qoder 没有�
 | ec-task-management | 任务查看、创建、选择、恢复与交接 |
 | ec-config | 只读配置面板 + 项目/session Approval、Workflow、TDD 与阈值配置 |
 | ec-tdd-init | TDD 关闭态下初始化/刷新 Java changed-line coverage 基础设施 |
+| ec-lite | 显式切换 Lite Direct；只执行方案确认与最小实现，不创建 Harness 任务 |
 | ec-task-close | 任务中断与关闭（确认意图 → 记录原因 → 清理状态） |
-| ec-no-harness | 当前 session 旁路 Easy Coding；保留任务状态与其他 skills/hooks |
+| ec-no-harness | 当前 session 旁路 Easy Coding；保留任务、Lite 状态与其他 skills/hooks |
 
 `ec-task-management` 只拥有任务生命周期；模式配置从该 skill 迁移到 `ec-config`。`ec-config` 裸唤起只读，展示项目/session/生效值、任务冻结值与 readiness，只有用户明确选择且 readiness 通过后才调用状态 API 开启 session TDD，项目配置统一引导至 `easy-coding config`。`ec-tdd-init` 使用强制 TDD 关闭的专用代码任务消除 CI 初始化循环依赖，完成后仍由用户显式开启 TDD。
 
@@ -655,9 +641,18 @@ JSONL 格式天然 append-only，同时承担**计划**和**执行日志**两个
 {"type":"plan",...}                    // ANALYSIS 阶段
 {"type":"dispatch","unit_id":"U1",...} // IMPLEMENT 阶段
 {"type":"result","unit_id":"U1",...}   // IMPLEMENT 阶段
-{"type":"review","dimension":"...",...} // REVIEW 阶段
-{"type":"verify","check":"test",...}   // VERIFICATION 阶段
+{"type":"review","dimension":"...","quality_attempt":1,...} // QUALITY Review Gate
+{"type":"verify","check":"test","quality_attempt":1,...}   // QUALITY Verification Gate
+{"type":"quality","attempt":1,"started_at":"...","completed_at":"...","duration_ms":1,"outcome":"passed","review_gate":"passed","verification_gate":"passed","summary":"...",...} // 状态 API 追加的 QUALITY 完结记录
 {"type":"handoff","from":"...",...}    // 跨 Agent 交接
 ```
 
-各阶段只管往后 append，后续阶段能读前序结果——review 读 result 知道改了哪些文件，ec-memory 直接读此文件生成记忆。完整的生命周期记录，一个文件跑完全过程。
+各阶段只管往后 append，后续阶段能读前序结果——review 读 result 知道改了哪些文件，
+ec-memory 直接读此文件生成记忆。QUALITY 起始上下文暂存在 task.json；两个 Gate 完结后由
+状态 API 原子追加一条带候选/配置指纹、双 Gate 终态、结构化分类、摘要、证据窗口和连续
+attempt 的完整终态记录；结果可以是 passed、repair、replan 或 cancelled。Canonical 修复后
+对未变化仓库的复用另写 `quality-carry-forward`，保存来源 attempt、证据索引和仓库指纹。
+候选变化会先把
+旧 attempt 完结为 cancelled，并强制返回 IMPLEMENT 后才能开始新 attempt；配置变化可取消后
+原地重启。记录不回写已有行，也不允许缺失、重复或残缺记录进入 MEMORY。完整的生命周期
+记录，一个文件跑完全过程。

@@ -31,7 +31,7 @@ that a bounded task might be complicated.
 For a task with `task.json.spec_source`, re-run `inspect-dev-spec` against the stored source, exact
 `selected_spec_tasks`, and only their stored `task.repo_paths` bindings. Schema, Spec ID, design
 revision, and `design_sha256` must still match. A changed `document_sha256` with the same design is
-normal shared progress; refresh `execution_revision` without invalidating plan/review/verify
+normal shared progress; refresh `execution_revision` without invalidating plan/QUALITY
 evidence. An execution revision rollback is blocking. Then call the selector once for the exact
 selection:
 
@@ -156,9 +156,10 @@ these markers mechanically.
 Prefer one coherent unit over artificial file-level splitting. Do not split a class or method by
 line count, or create many one-use helpers, merely to make the plan look modular. Extract only a
 clear semantic boundary, reuse point, or independently testable responsibility. Use parallel only
-for truly independent write scopes. Better unit contracts reduce later REVIEW rework.
+for truly independent write scopes. Better unit contracts reduce later QUALITY rework.
 
-Code tasks require `test-strategy.md`; explicit `doc`, `analysis`, and `report` tasks do not.
+Every Harness task is a repository-mutation task and requires `test-strategy.md`. Pure read-only
+conversation never enters ANALYSIS and creates no task.
 
 ## Optional Java TDD analysis
 
@@ -221,15 +222,15 @@ self-reported floor. The state API rechecks the floor when the proposal is saved
 
 The calculation is intentionally Standard-centered:
 
-- `fast`: one coherent, non-parallel unit in one actually modified repository, at most five
+- `fast`: up to three coherent low-risk units in one actually modified repository, at most eight
   changed files, no explicit high-risk signal, and no public or cross-repository contract impact.
   Small parameter changes, bounded field/mapping edits, and a few ordinary model files should
   normally remain Fast.
-- `standard`: the default for ordinary business work. Multiple units/files, bounded compatibility
-  work, actual but contained multi-repository changes, broad low-risk work, and bounded high-risk
-  work remain Standard.
+- `standard`: the default for ordinary business work. Four or more units, more than eight files,
+  bounded compatibility work, actual but contained multi-repository changes, broad low-risk work,
+  and bounded high-risk work remain Standard.
 - `strict`: requires both an explicit high-risk signal and concrete complexity/blast-radius
-  evidence. Complexity means actual multi-repository edits, at least four units, at least ten
+  evidence. Complexity means actual multi-repository edits, at least five units, at least fifteen
   changed files, or a public/cross-repository contract. Parallel execution is a Standard signal
   by itself. Generic domain words in a risk description, title, file path, Spec repository
   catalog, or unselected task are never sufficient evidence of high risk.

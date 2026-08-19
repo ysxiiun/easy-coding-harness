@@ -148,7 +148,7 @@ describe("task-json", () => {
       "ANALYSIS",
     ]);
     expect(waiting.pending_transition).toMatchObject({ from: "ANALYSIS", to: "IMPLEMENT" });
-    expect(waiting.workflow_mode).toBe("strict");
+    expect(waiting.workflow_mode).toBe("standard");
     expect(waiting.workflow_mode_legacy).toBe(true);
     expect(waiting).not.toHaveProperty("workflow_mode_legacy_direct_edge");
 
@@ -159,7 +159,7 @@ describe("task-json", () => {
     ]);
     expect(memory.memory_progress.short_memory_written).toBe(true);
     expect(memory.memory_progress.legacy_short_memory_assumed).toBe(true);
-    expect(memory.workflow_mode).toBe("strict");
+    expect(memory.workflow_mode).toBe("standard");
 
     const session = JSON.parse(await readFile(sessionPath, "utf8"));
     expect(session.last_seen_stage).toBe("ANALYSIS");
@@ -243,10 +243,11 @@ describe("task-json", () => {
       tdd_confirmed_by: "codex",
     });
     expect(task.stage_history[0].agent).toBe("codex");
-    expect(task.pending_transition.requested_by).toBe("codex");
+    expect(task.pending_transition).toBeUndefined();
     expect(task.workflow_mode_proposal.proposed_by).toBe("codex");
     expect(task.workflow_mode_escalations[0].raised_by).toBe("qoder");
-    expect(task.verification_checkpoint.recorded_by).toBe("codex");
+    expect(task.quality_checkpoint.recorded_by).toBe("codex");
+    expect(task.verification_checkpoint).toBeUndefined();
     expect(task.memory_progress.architecture_assessment.recorded_by).toBe("claude-code");
     expect(task.spec_dependency_evidence[0].satisfied_by).toBe("codex");
     expect(JSON.parse(await readFile(sessionPath, "utf8"))).toMatchObject({
@@ -254,6 +255,60 @@ describe("task-json", () => {
       last_agent: "codex",
     });
     expect(await readFile(executionPath, "utf8")).toBe(executionRecord);
+  });
+
+  it("removes legacy checkpoints when a quality checkpoint already exists or legacy data is invalid", async () => {
+    const fixtures = [
+      {
+        taskId: "checkpoint-both",
+        quality: { implementation_fingerprint: "current" },
+        legacy: { implementation_fingerprint: "legacy" },
+      },
+      {
+        taskId: "checkpoint-invalid",
+        quality: undefined,
+        legacy: null,
+      },
+    ];
+    for (const fixture of fixtures) {
+      const taskPath = getTaskJsonPath(tempDir, fixture.taskId);
+      await mkdir(path.dirname(taskPath), { recursive: true });
+      await writeFile(
+        taskPath,
+        JSON.stringify({
+          type: "feature",
+          status: "QUALITY",
+          created_at: "2026-08-14T00:00:00Z",
+          created_by: "codex",
+          last_agent: "codex",
+          stage_history: [],
+          workflow_mode: "standard",
+          tdd_enabled: false,
+          quality_checkpoint: fixture.quality,
+          verification_checkpoint: fixture.legacy,
+        }),
+        "utf8",
+      );
+    }
+
+    expect(await migrateLegacyWorkflowState(tempDir)).toEqual({
+      tasksUpdated: 2,
+      sessionsUpdated: 0,
+    });
+    expect(await migrateLegacyWorkflowState(tempDir)).toEqual({
+      tasksUpdated: 0,
+      sessionsUpdated: 0,
+    });
+    expect(await hasLegacyWorkflowState(tempDir)).toBe(false);
+
+    const both = JSON.parse(await readFile(getTaskJsonPath(tempDir, "checkpoint-both"), "utf8"));
+    expect(both.quality_checkpoint).toEqual({ implementation_fingerprint: "current" });
+    expect(both).not.toHaveProperty("verification_checkpoint");
+    const invalid = JSON.parse(
+      await readFile(getTaskJsonPath(tempDir, "checkpoint-invalid"), "utf8"),
+    );
+    expect(invalid).not.toHaveProperty("quality_checkpoint");
+    expect(invalid).not.toHaveProperty("verification_checkpoint");
   });
 
   it("does not let one stale lite session downgrade a shared migrated task", async () => {
@@ -301,7 +356,7 @@ describe("task-json", () => {
 
     const task = JSON.parse(await readFile(taskPath, "utf8"));
     expect(task).toMatchObject({
-      workflow_mode: "strict",
+      workflow_mode: "standard",
       workflow_mode_confirmed_by: "upgrade-migration",
       workflow_mode_legacy: true,
     });
@@ -358,12 +413,9 @@ describe("task-json", () => {
       workflow_mode: "fast",
       workflow_mode_confirmed_by: "upgrade-migration",
       workflow_mode_legacy: true,
-      workflow_mode_legacy_direct_edge: true,
     });
-    expect(task.pending_transition).toMatchObject({
-      from: "IMPLEMENT",
-      to: "REVIEW",
-    });
+    expect(task).not.toHaveProperty("workflow_mode_legacy_direct_edge");
+    expect(task.pending_transition).toMatchObject({ from: "IMPLEMENT", to: "QUALITY" });
   });
 
   it("keeps a legacy non-lite session override above a project-level lite default", async () => {
@@ -409,7 +461,7 @@ describe("task-json", () => {
 
     const task = JSON.parse(await readFile(taskPath, "utf8"));
     expect(task).toMatchObject({
-      workflow_mode: "strict",
+      workflow_mode: "standard",
       workflow_mode_confirmed_by: "upgrade-migration",
       workflow_mode_legacy: true,
     });
@@ -424,7 +476,7 @@ describe("task-json", () => {
     expect(session).not.toHaveProperty("workflow_mode_legacy_confirm_override");
   });
 
-  it("preserves an explicitly pending legacy direct edge", async () => {
+  it("migrates an explicitly pending legacy direct edge into QUALITY", async () => {
     const taskPath = getTaskJsonPath(tempDir, "pending-direct-task");
     await mkdir(path.dirname(taskPath), { recursive: true });
     await writeFile(
@@ -455,10 +507,11 @@ describe("task-json", () => {
 
     const task = JSON.parse(await readFile(taskPath, "utf8"));
     expect(task).toMatchObject({
-      workflow_mode: "strict",
+      workflow_mode: "standard",
       workflow_mode_legacy: true,
-      workflow_mode_legacy_direct_edge: true,
     });
+    expect(task.pending_transition).toMatchObject({ from: "IMPLEMENT", to: "QUALITY" });
+    expect(task).not.toHaveProperty("workflow_mode_legacy_direct_edge");
   });
 
   it("does not downgrade a user-frozen task mode from a legacy lite session", async () => {
@@ -517,5 +570,72 @@ describe("task-json", () => {
       workflow_mode_legacy_confirm_override: true,
     });
     expect(session).not.toHaveProperty("confirm_mode");
+  });
+
+  it("retires active read-only tasks while preserving their history and clearing sessions", async () => {
+    const taskPath = getTaskJsonPath(tempDir, "legacy-report");
+    await mkdir(path.dirname(taskPath), { recursive: true });
+    await writeFile(
+      taskPath,
+      JSON.stringify({
+        type: "report",
+        title: "Legacy report",
+        status: "VERIFICATION",
+        created_at: "2026-07-27T00:00:00Z",
+        created_by: "codex",
+        last_agent: "codex",
+        stage_history: [
+          { stage: "ANALYSIS", agent: "codex", entered_at: "2026-07-27T00:00:00Z" },
+          { stage: "VERIFICATION", agent: "codex", entered_at: "2026-07-27T00:01:00Z" },
+        ],
+        verification_checkpoint: {
+          implementation_fingerprint: "fixture",
+          recorded_at: "2026-07-27T00:02:00Z",
+          recorded_by: "codex",
+        },
+      }),
+      "utf8",
+    );
+    const sessionPath = path.join(tempDir, ".easy-coding", "sessions", "legacy-report.json");
+    await mkdir(path.dirname(sessionPath), { recursive: true });
+    await writeFile(
+      sessionPath,
+      JSON.stringify({
+        current_task: "legacy-report",
+        last_seen_task: "legacy-report",
+        last_seen_stage: "VERIFICATION",
+      }),
+      "utf8",
+    );
+
+    expect(await migrateLegacyWorkflowState(tempDir)).toEqual({
+      tasksUpdated: 1,
+      sessionsUpdated: 1,
+    });
+
+    const task = JSON.parse(await readFile(taskPath, "utf8"));
+    expect(task).toMatchObject({
+      status: "CLOSED",
+      closed_reason: "legacy-read-only-task-retired",
+      quality_checkpoint: {
+        implementation_fingerprint: "fixture",
+        recorded_by: "codex",
+      },
+    });
+    expect(task.stage_history.map((entry: { stage: string }) => entry.stage)).toEqual([
+      "ANALYSIS",
+      "QUALITY",
+      "CLOSED",
+    ]);
+    expect(task).not.toHaveProperty("verification_checkpoint");
+    expect(task).not.toHaveProperty("workflow_mode");
+    expect(task).not.toHaveProperty("tdd_enabled");
+
+    const session = JSON.parse(await readFile(sessionPath, "utf8"));
+    expect(session).toMatchObject({
+      current_task: null,
+      last_seen_task: null,
+      last_seen_stage: "idle",
+    });
   });
 });

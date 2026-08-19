@@ -2,8 +2,7 @@ export type Stage =
   | "INIT"
   | "ANALYSIS"
   | "IMPLEMENT"
-  | "REVIEW"
-  | "VERIFICATION"
+  | "QUALITY"
   | "MEMORY"
   | "COMPLETE"
   | "CLOSED";
@@ -23,7 +22,7 @@ export type WorkflowActorIdentity =
 
 export interface StageHistoryEntry {
   stage: Stage;
-  agent: WorkflowAgentIdentity;
+  agent: WorkflowActorIdentity;
   entered_at: string;
 }
 
@@ -33,11 +32,15 @@ export interface PendingTransition {
   requested_at: string;
   requested_by: WorkflowActorIdentity;
   reason?: string;
+  quality_attempt?: number;
+  implementation_fingerprint?: string;
+  config_fingerprint?: string;
+  source_task_ids?: string[];
   /** 自动边仅在验证快照漂移后临时转为人工确认。 */
   confirmation_override?: "evidence-drift";
 }
 
-export interface VerificationCheckpoint {
+export interface QualityCheckpoint {
   /** 验收快照结构版本。 */
   schema: 1;
   /** 绿色验证完成时的实现指纹。 */
@@ -55,6 +58,9 @@ export interface VerificationCheckpoint {
   /** 冻结检查点的规范化 Agent 身份。 */
   recorded_by: WorkflowAgentIdentity;
 }
+
+/** Pre-1.0 persisted checkpoint shape; migrated to quality_checkpoint on upgrade. */
+export type VerificationCheckpoint = QualityCheckpoint;
 
 export interface MemoryInstruction {
   short_count: number;
@@ -146,6 +152,23 @@ export interface SessionFile {
   workflow_mode_legacy_confirm_override?: boolean;
   workflow_mode_legacy_alias_override?: boolean;
   harness_disabled?: boolean;
+  lite_mode?: boolean;
+  lite_proposal?: {
+    proposal_id: string;
+    summary: string;
+    target_files: string[];
+    digest: string;
+    created_at: string;
+    confirmed_at?: string;
+    confirmed_by?: WorkflowAgentIdentity;
+    baseline: {
+      schema: 1;
+      repository_root: string;
+      head: string | null;
+      dirty_paths: string[];
+      states: Record<string, { exists: boolean; mode: string | null; sha256: string | null }>;
+    };
+  };
   last_seen_task?: string | null;
   last_seen_stage?: string;
 }
@@ -231,9 +254,35 @@ export interface TaskJson {
   status: TaskStatus;
   created_at: string;
   created_by: WorkflowActorIdentity;
-  last_agent: WorkflowAgentIdentity | "cli";
+  last_agent: WorkflowActorIdentity;
   stage_history: StageHistoryEntry[];
   pending_transition?: PendingTransition;
+  quality_attempt?: {
+    schema: 1;
+    attempt: number;
+    implementation_fingerprint: string;
+    config_fingerprint: string;
+    started_at: string;
+    execution_start_index: number;
+    repair_count: number;
+  };
+  quality_return_required?: {
+    schema: 1;
+    reason: "implementation-drift" | "finalized-candidate-drift";
+    previous_implementation_fingerprint: string;
+    implementation_fingerprint: string;
+    detected_at: string;
+  };
+  quality_consumed_attempt?: number;
+  canonical_repair_transition?: {
+    schema: 1;
+    implementation_fingerprint: string;
+    config_fingerprint: string;
+    quality_attempt: number;
+    source_task_ids: string[];
+    started_at: string;
+    started_by: WorkflowAgentIdentity;
+  };
   workflow_mode_proposal?: {
     configured_mode: ConfiguredWorkflowMode;
     selected_mode: WorkflowMode;
@@ -256,7 +305,9 @@ export interface TaskJson {
   workflow_mode_legacy?: boolean;
   workflow_mode_legacy_direct_edge?: boolean;
   workflow_mode_legacy_review_bypass_fingerprint?: string;
-  /** VERIFICATION 通过后、进入 MEMORY 前冻结的本地验收快照。 */
+  /** QUALITY 通过后、进入 MEMORY 前冻结的本地验收快照。 */
+  quality_checkpoint?: QualityCheckpoint;
+  /** Pre-1.0 compatibility; migrated to quality_checkpoint on upgrade. */
   verification_checkpoint?: VerificationCheckpoint;
   tdd_enabled?: boolean;
   tdd_coverage_threshold?: number;
@@ -352,6 +403,8 @@ export type ExecutionRecord =
       dimension: string;
       passed: boolean;
       implementation_fingerprint: string;
+      quality_attempt: number;
+      failure_classes?: Array<"code-defect" | "test-defect" | "contract-ambiguity" | "environment">;
       reviewer: string;
       timestamp: string;
       repo_id?: string;
@@ -364,6 +417,46 @@ export type ExecutionRecord =
       }[];
     }
   | {
+      type: "quality";
+      attempt: number;
+      implementation_fingerprint: string;
+      config_fingerprint: string;
+      started_at: string;
+      completed_at: string;
+      duration_ms: number;
+      repair_count: number;
+      outcome: "passed" | "repair" | "replan" | "cancelled";
+      /** 仅 cancelled 终态存在，用于中断后恢复正确的回退语义。 */
+      cancellation_reason?:
+        | "implementation-drift"
+        | "config-drift"
+        | "manual-return"
+        | "task-closed";
+      review_gate: "passed" | "failed" | "cancelled";
+      verification_gate: "passed" | "failed" | "cancelled";
+      summary: string;
+      evidence_start_index: number;
+      evidence_end_index: number;
+      failure_classes: Array<
+        "code-defect" | "test-defect" | "contract-ambiguity" | "environment" | "suggestion"
+      >;
+      repository_fingerprints: Record<string, string>;
+    }
+  | {
+      type: "quality-carry-forward";
+      quality_attempt: number;
+      from_attempt: number;
+      from_implementation_fingerprint: string;
+      implementation_fingerprint: string;
+      config_fingerprint: string;
+      source_task_ids: string[];
+      evidence_indices: number[];
+      repository_fingerprints: Record<string, string>;
+      reason: string;
+      timestamp: string;
+      carried_by: WorkflowAgentIdentity;
+    }
+  | {
       type: "verify";
       check: string;
       check_type: "lint" | "typecheck" | "test" | "build" | "coverage";
@@ -373,6 +466,8 @@ export type ExecutionRecord =
       not_applicable_reason?: string;
       implementation_fingerprint: string;
       config_fingerprint: string;
+      quality_attempt: number;
+      failure_classes?: Array<"code-defect" | "test-defect" | "contract-ambiguity" | "environment">;
       timestamp: string;
       repo_id?: string;
       source_task_id?: string;
@@ -411,7 +506,7 @@ export type ExecutionRecord =
       authorization: "explicit-user" | "approval-policy";
       /** 应用验收边界时生效的审批模式。 */
       approval_mode: ApprovalMode;
-      /** 是否沿用检查点前 REVIEW 证据。 */
+      /** 是否沿用检查点前 Review Gate 证据。 */
       review_policy: "current" | "user-accepted-without-rereview";
       /** 当前差异采用的验证处理策略。 */
       verification_policy: "current" | "carry-forward" | "targeted" | "waived";

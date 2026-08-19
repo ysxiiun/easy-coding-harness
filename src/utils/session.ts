@@ -297,7 +297,7 @@ async function isOrphanAcceptanceSnapshot(
     return true;
   }
 
-  const checkpoint = task.verification_checkpoint;
+  const checkpoint = task.quality_checkpoint ?? task.verification_checkpoint;
   return (
     typeof checkpoint?.snapshot_file !== "string" ||
     path.resolve(cwd, checkpoint.snapshot_file) !== path.resolve(snapshotPath)

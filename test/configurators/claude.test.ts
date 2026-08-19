@@ -1,4 +1,4 @@
-import { execFileSync, execSync } from "node:child_process";
+import { execFileSync, execSync, spawn } from "node:child_process";
 import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -116,18 +116,15 @@ describe("configureClaude", () => {
     expect(skill).toContain("`/ec-init`");
     expect(skill).toContain("approval_mode = approve|guard|confirm|auto");
     expect(skill).toContain("workflow_mode = adaptive|fast|standard|strict");
-    expect(skill).toContain("New code tasks never skip REVIEW");
+    expect(skill).toContain("Every repository-mutation task uses this graph");
     expect(skill).toContain("Preserve `pending_transition` on cancellation");
     expect(skill).toContain("raise-workflow-mode");
     expect(skill).toContain("review fingerprint");
     expect(skill).toContain("verification fingerprint");
     expect(skill).toContain("Missing: tell the user to run `easy-coding init`");
-    expect(skill).toContain("During VERIFICATION, return to IMPLEMENT before");
-    expect(skill).toContain(
-      "[easy-coding:lite-review-bypass-required:IMPLEMENT->REVIEW]",
-    );
-    expect(skill).toContain("one-time `workflow_mode_legacy_direct_edge`");
-    expect(skill).not.toContain("Skip REVIEW");
+    expect(skill).toContain("During QUALITY, return to IMPLEMENT before");
+    expect(skill).toContain("[easy-coding:lite-direct]");
+    expect(skill).not.toContain("workflow_mode_legacy_direct_edge");
     expect(skill).not.toContain("open the target agent");
     expect(skill).not.toContain("next_agent");
     expect(skill).not.toContain("{{");
@@ -154,7 +151,7 @@ describe("configureClaude", () => {
     expect(analysisSkill).toContain("decision_status: closed");
     expect(analysisSkill).toContain("progressive cost budget");
     expect(analysisSkill).toContain("## Local implementation baseline");
-    expect(analysisSkill).toContain("at most five");
+    expect(analysisSkill).toContain("at least five units");
     expect(analysisSkill).toContain("compound high-risk and complexity signals");
     expect(analysisSkill).toContain("unused `repo_paths`");
 
@@ -164,9 +161,9 @@ describe("configureClaude", () => {
     );
     expect(implementingSkill).toContain("A single low-risk unit may be implemented inline");
     expect(implementingSkill).toContain("acceptance_criteria");
-    expect(implementingSkill).toContain("Code tasks enter REVIEW");
+    expect(implementingSkill).toContain("Every Harness task transitions from IMPLEMENT to QUALITY");
     expect(implementingSkill).toContain("Codex with Easy Coding");
-    expect(implementingSkill).toContain("Every new model field, enum member, and constant");
+    expect(implementingSkill).toContain("Every newly added field in a data-bearing model");
     expect(implementingSkill).toContain("user-facing host Agent");
     expect(implementingSkill).toContain("## Code Comments");
     expect(implementingSkill).toContain("## Local Baseline");
@@ -178,30 +175,35 @@ describe("configureClaude", () => {
       path.join(tempDir, ".claude", "agents", "ec-implementer.md"),
       "utf8",
     );
-    expect(implementerAgent).toContain("NONE — read-only deliverable");
-    expect(implementerAgent).toContain("`deliverable`");
+    expect(implementerAgent).toContain("Do not run quality commands");
+    expect(implementerAgent).toContain("otherwise an empty array");
     expect(implementerAgent).toContain("`Code Comments`");
     expect(implementerAgent).toContain("`Local Baseline`");
     expect(implementerAgent).toContain("fragmented one-use");
     expect(implementerAgent).toContain("new core Java class");
 
-    const reviewingSkill = await readFile(
-      path.join(tempDir, ".claude", "skills", "ec-reviewing", "SKILL.md"),
+    const qualitySkill = await readFile(
+      path.join(tempDir, ".claude", "skills", "ec-quality", "SKILL.md"),
       "utf8",
     );
-    expect(reviewingSkill).toContain("Every new code task enters REVIEW");
-    expect(reviewingSkill).toContain("implementation_fingerprint");
-    expect(reviewingSkill).toContain("two consecutive rounds");
-    expect(reviewingSkill).toContain("Review local fit before recommending generic cleanup");
-    expect(reviewingSkill).toContain("constants created only for one getter");
-    expect(reviewingSkill).not.toContain("Deliverable mode");
+    expect(qualitySkill).toContain("one candidate, two read-only gates");
+    expect(qualitySkill).toContain("implementation/config fingerprints");
+    expect(qualitySkill).toContain("The first review must report the complete in-scope finding set");
+    expect(qualitySkill).toContain("Do not demand defensive null checks");
+    expect(qualitySkill).toContain("constant extraction");
+    expect(qualitySkill).toContain("One repair bundle");
 
     const reviewerAgent = await readFile(
       path.join(tempDir, ".claude", "agents", "ec-reviewer.md"),
       "utf8",
     );
     expect(reviewerAgent).toContain("evidenced Local Baseline");
-    expect(reviewerAgent).toContain("missing Javadoc on any method/field");
+    expect(reviewerAgent).toContain("missing multiline Javadoc");
+    const verifierAgent = await readFile(
+      path.join(tempDir, ".claude", "agents", "ec-verifier.md"),
+      "utf8",
+    );
+    expect(verifierAgent).toContain("lint | typecheck | test | build | coverage");
 
     const devSpecSkeleton = await readFile(
       path.join(tempDir, ".easy-coding", "templates", "dev-spec-skeleton.md"),
@@ -219,6 +221,10 @@ describe("configureClaude", () => {
       "utf8",
     );
     expect(taskManagementSkill).toContain("Mode inspection and configuration belongs to `ec-config`");
+    expect(taskManagementSkill).toContain("inspect-dev-spec --manifest-only");
+    expect(taskManagementSkill).toContain(
+      "Do not call\n`select-dev-spec-scope` during routing",
+    );
     expect(taskManagementSkill).not.toContain("set-approval-mode");
     expect(taskManagementSkill).not.toContain("{{");
     const configSkill = await readFile(
@@ -237,13 +243,9 @@ describe("configureClaude", () => {
     expect(tddInitSkill).toContain("TDD off -> initialize infrastructure");
     expect(tddInitSkill).toContain("not a Harness task acceptance dependency");
     expect(tddInitSkill).not.toContain("{{");
-    const tddVerificationSkill = await readFile(
-      path.join(tempDir, ".claude", "skills", "ec-verification", "SKILL.md"),
-      "utf8",
-    );
-    expect(tddVerificationSkill).toContain('one coverage record with `coverage_scope:"local"`');
-    expect(tddVerificationSkill).not.toContain('coverage_scope:"gitlab"');
-    expect(tddVerificationSkill).not.toContain("pipeline_url");
+    expect(qualitySkill).toContain('coverage result with `coverage_scope:"local"`');
+    expect(qualitySkill).not.toContain('coverage_scope:"gitlab"');
+    expect(qualitySkill).not.toContain("pipeline_url");
     expect(
       await pathExists(path.join(tempDir, ".easy-coding", "tools", "easy_coding_java_coverage.py")),
     ).toBe(true);
@@ -333,13 +335,13 @@ describe("configureClaude", () => {
     expect(main).toContain("project `behavior.approval_mode`");
     expect(main).toContain("project `behavior.workflow_mode`");
     expect(main).toContain("`auto-transition`");
-    expect(main).toContain("Every new code task runs REVIEW");
+    expect(main).toContain("Every mutation task runs QUALITY");
     expect(main).toContain("A confirmation-required boundary is not fully presented");
-    expect(main).toContain("code IMPLEMENT gate must preserve enter REVIEW");
+    expect(main).toContain("IMPLEMENT gate must preserve enter QUALITY");
     expect(main).toContain("explicitly guarantees an indefinite wait");
     expect(main).toContain("pre-render the matching numbered fallback");
     expect(main).toContain("consume a matching\n  numbered reply against the stored edge");
-    expect(main).toContain("read-only task creates no test-strategy.md");
+    expect(main).toContain("Pure read-only conversation stays Ready and creates no task");
     expect(main).toContain("set `decision_status: open`");
     expect(main).toContain("progressively record");
     expect(main).toContain("never paste the full");
@@ -359,16 +361,22 @@ describe("configureClaude", () => {
     expect(analysisSkill).toContain("`exact` and `scope-unchanged` use the fast projection path");
     expect(analysisSkill).toContain("second round of Spec");
 
-    const verificationSkill = await readFile(
-      path.join(tempDir, ".claude", "skills", "ec-verification", "SKILL.md"),
+    expect(qualitySkill).toContain("evidence-fingerprints");
+    expect(qualitySkill).toContain("candidate fingerprint");
+    expect(qualitySkill).toContain("config fingerprints");
+    expect(qualitySkill).not.toContain("then re-REVIEW");
+    expect(qualitySkill).not.toContain("MEMORY_SHORT");
+    expect(qualitySkill).not.toContain("MEMORY_LONG");
+
+    const liteSkill = await readFile(
+      path.join(tempDir, ".claude", "skills", "ec-lite", "SKILL.md"),
       "utf8",
     );
-    expect(verificationSkill).toContain("evidence-fingerprints");
-    expect(verificationSkill).toContain("implementation_fingerprint");
-    expect(verificationSkill).toContain("config_fingerprint");
-    expect(verificationSkill).not.toContain("then re-REVIEW");
-    expect(verificationSkill).not.toContain("MEMORY_SHORT");
-    expect(verificationSkill).not.toContain("MEMORY_LONG");
+    expect(liteSkill).toContain("controlled only by the user");
+    expect(liteSkill).toContain("Cancel Lite startup");
+    expect(liteSkill).toContain("Close the task and start Lite");
+    expect(liteSkill).toContain("Ignore the original task and start Lite");
+    expect(liteSkill).toContain("No Task / Quality / Memory");
 
     const memorySkill = await readFile(
       path.join(tempDir, ".claude", "skills", "ec-memory", "SKILL.md"),
@@ -444,10 +452,10 @@ describe("configureClaude", () => {
       "ec-memory",
       "ec-meta",
       "ec-no-harness",
-      "ec-reviewing",
+      "ec-lite",
+      "ec-quality",
       "ec-task-close",
       "ec-task-management",
-      "ec-verification",
       "ec-workflow",
     ];
     for (const dir of skillDirs) {
@@ -1204,10 +1212,10 @@ describe("configureClaude", () => {
     expect(createOutput.status_context).toContain("[workflow-state:INIT]");
     expect(createOutput.status_context).toContain("[current-task:06-12-api]");
 
-    const stages = ["ANALYSIS", "IMPLEMENT", "REVIEW", "VERIFICATION", "MEMORY", "COMPLETE"];
-    const automaticStages = new Set(["ANALYSIS", "REVIEW", "VERIFICATION", "COMPLETE"]);
+    const stages = ["ANALYSIS", "IMPLEMENT", "QUALITY", "MEMORY", "COMPLETE"];
+    const automaticStages = new Set(["ANALYSIS", "QUALITY", "COMPLETE"]);
     for (const stage of stages) {
-      if (stage === "VERIFICATION" || stage === "MEMORY") {
+      if (stage === "MEMORY") {
         const fingerprints = JSON.parse(
           execFileSync(
             "python3",
@@ -1224,29 +1232,32 @@ describe("configureClaude", () => {
         ) as {
           implementation_fingerprint: string;
           config_fingerprint: string;
+          quality_attempt: { attempt: number };
         };
-        const record =
-          stage === "VERIFICATION"
-            ? {
-                type: "review",
-                dimension: "integration",
-                passed: true,
-                reviewer: "claude-code",
-                implementation_fingerprint: fingerprints.implementation_fingerprint,
-                timestamp: "2026-07-27T00:00:00Z",
-                findings: [],
-              }
-            : {
-                type: "verify",
-                check: "integration fixture",
-                check_type: "test",
-                command: "fixture",
-                passed: true,
-                applicable: true,
-                implementation_fingerprint: fingerprints.implementation_fingerprint,
-                config_fingerprint: fingerprints.config_fingerprint,
-                timestamp: "2026-07-27T00:00:00Z",
-              };
+        const records = [
+          {
+            type: "review",
+            dimension: "integration",
+            passed: true,
+            reviewer: "claude-code",
+            implementation_fingerprint: fingerprints.implementation_fingerprint,
+            quality_attempt: fingerprints.quality_attempt.attempt,
+            timestamp: "2026-07-27T00:00:00Z",
+            findings: [],
+          },
+          {
+            type: "verify",
+            check: "integration fixture",
+            check_type: "test",
+            command: "fixture",
+            passed: true,
+            applicable: true,
+            implementation_fingerprint: fingerprints.implementation_fingerprint,
+            config_fingerprint: fingerprints.config_fingerprint,
+            quality_attempt: fingerprints.quality_attempt.attempt,
+            timestamp: "2026-07-27T00:00:00Z",
+          },
+        ];
         await appendFile(
           path.join(
             tempDir,
@@ -1255,7 +1266,7 @@ describe("configureClaude", () => {
             "06-12-api",
             "execution.jsonl",
           ),
-          `${JSON.stringify(record)}\n`,
+          `${records.map((record) => JSON.stringify(record)).join("\n")}\n`,
           "utf8",
         );
       }
@@ -1402,6 +1413,322 @@ describe("configureClaude", () => {
     const session = JSON.parse(await readFile(path.join(tempDir, sessionFile), "utf8"));
     expect(session.current_task).toBeNull();
     expect(session.last_seen_stage).toBe("idle");
+  });
+
+  it("state API keeps Lite direct, proposal, and active-task choices separate from tasks", async () => {
+    execFileSync("git", ["init"], { cwd: tempDir });
+    await configureClaude(tempDir);
+    await writeRuntimeScaffold(tempDir, ["claude-code"]);
+
+    const stateApi = path.join(tempDir, ".claude", "hooks", "easy_coding_state.py");
+    const sessionFile = ".easy-coding/sessions/lite-session.json";
+    const runState = (args: string[]) =>
+      JSON.parse(
+        execFileSync(
+          "python3",
+          [stateApi, ...args, "--session-file", sessionFile, "--agent", "claude-code"],
+          { cwd: tempDir, encoding: "utf8" },
+        ),
+      ) as Record<string, unknown>;
+
+    const enabled = runState(["enable-lite"]);
+    expect(enabled).toMatchObject({ action: "enable-lite", lite_mode: true, status: "idle" });
+    expect(String(enabled.status_line)).toContain(
+      "**Lite Direct** · Ready · No Task / Quality / Memory",
+    );
+    expect(String(enabled.status_context)).toContain("[easy-coding:lite-direct]");
+    expect(() =>
+      runState(["set-lite-proposal", "--summary", "Missing target"]),
+    ).toThrow();
+    expect(() =>
+      runState([
+        "set-lite-proposal",
+        "--summary",
+        "Unsafe target",
+        "--target-file",
+        "../outside.ts",
+      ]),
+    ).toThrow();
+    expect(() =>
+      runState([
+        "set-lite-proposal",
+        "--summary",
+        "Runtime target",
+        "--target-file",
+        ".easy-coding/sessions/lite-session.json",
+      ]),
+    ).toThrow();
+
+    const setProposal = () =>
+      runState([
+        "set-lite-proposal",
+        "--summary",
+        "Change one local parameter",
+        "--target-file",
+        "src/example.ts",
+      ]);
+    const proposalDigest = (proposal: Record<string, unknown>) =>
+      String((proposal.lite_proposal as { digest: string }).digest);
+
+    const proposed = setProposal();
+    const digest = String((proposed.lite_proposal as { digest: string }).digest);
+    expect(digest).toMatch(/^[0-9a-f]{64}$/);
+    expect(String(proposed.status_line)).toContain("Awaiting Confirmation");
+
+    const liteSessionPath = path.join(tempDir, sessionFile);
+    const tamperedBeforeConfirm = JSON.parse(await readFile(liteSessionPath, "utf8"));
+    tamperedBeforeConfirm.lite_proposal.summary = "Different unconfirmed change";
+    await writeFile(liteSessionPath, JSON.stringify(tamperedBeforeConfirm), "utf8");
+    expect(() => runState(["confirm-lite-proposal", "--digest", digest])).toThrow();
+
+    const driftedProposal = setProposal();
+    const driftedDigest = proposalDigest(driftedProposal);
+    await mkdir(path.join(tempDir, "src"), { recursive: true });
+    await writeFile(path.join(tempDir, "src", "example.ts"), "external change\n", "utf8");
+    expect(() => runState(["confirm-lite-proposal", "--digest", driftedDigest])).toThrow();
+    await rm(path.join(tempDir, "src", "example.ts"));
+
+    const reproposed = setProposal();
+    const reproposedDigest = proposalDigest(reproposed);
+    expect(reproposedDigest).not.toBe(digest);
+    expect(runState(["confirm-lite-proposal", "--digest", reproposedDigest])).toMatchObject({
+      action: "confirm-lite-proposal",
+      lite_mode: true,
+    });
+    expect(() =>
+      runState(["confirm-lite-proposal", "--digest", reproposedDigest]),
+    ).toThrow();
+
+    const tamperedBeforeComplete = JSON.parse(await readFile(liteSessionPath, "utf8"));
+    tamperedBeforeComplete.lite_proposal.target_files = ["src/other.ts"];
+    await writeFile(liteSessionPath, JSON.stringify(tamperedBeforeComplete), "utf8");
+    expect(() =>
+      runState(["complete-lite-proposal", "--digest", reproposedDigest]),
+    ).toThrow();
+
+    const baselineProposal = setProposal();
+    const baselineDigest = proposalDigest(baselineProposal);
+    runState(["confirm-lite-proposal", "--digest", baselineDigest]);
+    const tamperedBaseline = JSON.parse(await readFile(liteSessionPath, "utf8"));
+    tamperedBaseline.lite_proposal.baseline.dirty_paths = ["src/outside.ts"];
+    await writeFile(liteSessionPath, JSON.stringify(tamperedBaseline), "utf8");
+    expect(() =>
+      runState(["complete-lite-proposal", "--digest", baselineDigest]),
+    ).toThrow();
+
+    const finalProposal = setProposal();
+    const finalDigest = proposalDigest(finalProposal);
+    expect(finalDigest).not.toBe(reproposedDigest);
+    runState(["confirm-lite-proposal", "--digest", finalDigest]);
+    expect(() => runState(["complete-lite-proposal", "--digest", finalDigest])).toThrow();
+    await mkdir(path.join(tempDir, "src"), { recursive: true });
+    await writeFile(path.join(tempDir, "src", "example.ts"), "export const value = 1;\n", "utf8");
+    await writeFile(path.join(tempDir, "src", "outside.ts"), "export const outside = 1;\n", "utf8");
+    expect(() => runState(["confirm-lite-proposal", "--digest", finalDigest])).toThrow();
+    expect(() => runState(["complete-lite-proposal", "--digest", finalDigest])).toThrow();
+    await rm(path.join(tempDir, "src", "outside.ts"));
+    expect(runState(["complete-lite-proposal", "--digest", finalDigest])).toMatchObject({
+      action: "complete-lite-proposal",
+      lite_mode: true,
+      lite_proposal: null,
+      changed_files: ["src/example.ts"],
+    });
+    expect(() =>
+      runState([
+        "create-task",
+        "--task-id",
+        "lite-forbidden",
+        "--type",
+        "feature",
+        "--title",
+        "Must not be created",
+      ]),
+    ).toThrow();
+
+    runState(["disable-lite"]);
+    expect(() =>
+      runState([
+        "create-task",
+        "--task-id",
+        "read-only-forbidden",
+        "--type",
+        "analysis",
+        "--title",
+        "Conversation only",
+      ]),
+    ).toThrow();
+    runState([
+      "create-task",
+      "--task-id",
+      "active-lite-choice",
+      "--type",
+      "feature",
+      "--title",
+      "Active task",
+    ]);
+
+    const decision = runState(["enable-lite"]);
+    expect(decision).toMatchObject({
+      action: "lite-active-task-decision-required",
+      choices: ["cancel", "close", "ignore"],
+      lite_mode: false,
+    });
+    runState([
+      "create-task",
+      "--task-id",
+      "switched-lite-choice",
+      "--type",
+      "feature",
+      "--title",
+      "Switched task",
+    ]);
+    expect(() =>
+      runState([
+        "enable-lite",
+        "--active-task-policy",
+        "close",
+        "--expected-task-id",
+        "active-lite-choice",
+      ]),
+    ).toThrow();
+    expect(
+      JSON.parse(
+        await readFile(
+          path.join(tempDir, ".easy-coding", "tasks", "switched-lite-choice", "task.json"),
+          "utf8",
+        ),
+      ),
+    ).toMatchObject({ status: "INIT" });
+    runState(["claim-task", "--task-id", "active-lite-choice"]);
+    expect(runState(["enable-lite", "--active-task-policy", "cancel"])).toMatchObject({
+      action: "lite-enable-cancelled",
+      current_task: "active-lite-choice",
+      lite_mode: false,
+    });
+    expect(
+      runState([
+        "enable-lite",
+        "--active-task-policy",
+        "ignore",
+        "--expected-task-id",
+        "active-lite-choice",
+      ]),
+    ).toMatchObject({
+      action: "enable-lite",
+      current_task: null,
+      lite_mode: true,
+    });
+    expect(
+      JSON.parse(
+        await readFile(
+          path.join(tempDir, ".easy-coding", "tasks", "active-lite-choice", "task.json"),
+          "utf8",
+        ),
+      ),
+    ).toMatchObject({ status: "INIT" });
+
+    runState(["disable-lite"]);
+    runState(["claim-task", "--task-id", "active-lite-choice"]);
+    expect(
+      runState([
+        "enable-lite",
+        "--active-task-policy",
+        "close",
+        "--expected-task-id",
+        "active-lite-choice",
+      ]),
+    ).toMatchObject({
+      action: "enable-lite",
+      current_task: null,
+      lite_mode: true,
+    });
+    expect(
+      JSON.parse(
+        await readFile(
+          path.join(tempDir, ".easy-coding", "tasks", "active-lite-choice", "task.json"),
+          "utf8",
+        ),
+      ),
+    ).toMatchObject({ status: "CLOSED", closed_reason: "user-switched-to-lite" });
+  }, 10_000);
+
+  it("serializes Lite task decisions against concurrent task selection", async () => {
+    await configureClaude(tempDir);
+    await writeRuntimeScaffold(tempDir, ["claude-code"]);
+
+    const stateApi = path.join(tempDir, ".claude", "hooks", "easy_coding_state.py");
+    const sessionFile = ".easy-coding/sessions/lite-race.json";
+    const commonArgs = ["--session-file", sessionFile, "--agent", "claude-code"];
+    const runState = (args: string[]) =>
+      execFileSync(pythonCmd, [stateApi, ...args, ...commonArgs], {
+        cwd: tempDir,
+        encoding: "utf8",
+      });
+    const runStateAsync = (args: string[]) =>
+      new Promise<{ code: number | null; stderr: string }>((resolve) => {
+        const child = spawn(pythonCmd, [stateApi, ...args, ...commonArgs], {
+          cwd: tempDir,
+        });
+        let stderr = "";
+        child.stderr.setEncoding("utf8");
+        child.stderr.on("data", (chunk) => {
+          stderr += chunk;
+        });
+        child.on("close", (code) => resolve({ code, stderr }));
+      });
+
+    for (const taskId of ["lite-race-a", "lite-race-b"]) {
+      runState([
+        "create-task",
+        "--task-id",
+        taskId,
+        "--type",
+        "feature",
+        "--title",
+        taskId,
+      ]);
+    }
+    runState(["claim-task", "--task-id", "lite-race-a"]);
+
+    const [liteResult, claimResult] = await Promise.all([
+      runStateAsync([
+        "enable-lite",
+        "--active-task-policy",
+        "close",
+        "--expected-task-id",
+        "lite-race-a",
+      ]),
+      runStateAsync(["claim-task", "--task-id", "lite-race-b"]),
+    ]);
+    const session = JSON.parse(
+      await readFile(path.join(tempDir, sessionFile), "utf8"),
+    ) as { current_task: string | null; lite_mode?: boolean };
+    const taskA = JSON.parse(
+      await readFile(
+        path.join(tempDir, ".easy-coding", "tasks", "lite-race-a", "task.json"),
+        "utf8",
+      ),
+    ) as { status: string };
+    const taskB = JSON.parse(
+      await readFile(
+        path.join(tempDir, ".easy-coding", "tasks", "lite-race-b", "task.json"),
+        "utf8",
+      ),
+    ) as { status: string };
+
+    expect(taskB.status).toBe("INIT");
+    if (session.lite_mode) {
+      expect(liteResult.code).toBe(0);
+      expect(claimResult.code).toBe(1);
+      expect(session.current_task).toBeNull();
+      expect(taskA.status).toBe("CLOSED");
+    } else {
+      expect(liteResult.code).toBe(1);
+      expect(liteResult.stderr).toContain("Active task changed");
+      expect(claimResult.code).toBe(0);
+      expect(session.current_task).toBe("lite-race-b");
+      expect(taskA.status).toBe("INIT");
+    }
   });
 
   it("state API closes the current task and clears the session pointer", async () => {

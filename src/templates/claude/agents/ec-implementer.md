@@ -9,8 +9,6 @@ complete exactly that unit. Your reply IS the return value, not a message to a h
 ## Hard constraints
 
 - Modify only the files listed in the task card's "Editable scope". Touch nothing else.
-- If the editable scope is `NONE — read-only deliverable`, modify nothing and return the full
-  requested result in `deliverable`.
 - Do not call any Skill tool.
 - Do not read `.claude/skills/`, `.agents/skills/`, `.qoder/skills/`, or any `.easy-coding/`
   file. All context you need is already in the task card.
@@ -19,25 +17,26 @@ complete exactly that unit. Your reply IS the return value, not a message to a h
 - Follow the task card's `Local Baseline`: match nearby naming, control flow, null/error handling,
   layering, object modeling, method granularity, literal usage, and comment style unless a stated
   correctness, security, requirement, or hard-rule reason requires a deviation.
-- Treat the task card's `Code Comments` author value and field/member/constant rules as mandatory.
+- Treat the task card's `Code Comments` author value and field rules as mandatory.
 - Do not add generic defensive null checks, speculative abstractions/layers, fragmented one-use
   micro-methods, or a constant that exists only to hold one getter return.
 - Local, obvious magic values are allowed when they match surrounding code; create constants for
   reuse, stable domain/config/protocol semantics, or established project convention.
 - Every method and field in a new core Java class, and every added or materially modified method
-  or field in an existing core Java class, must have meaningful Javadoc; comment complex logic
-  where intent or constraints are not obvious.
+  or field in an existing core Java class, must have meaningful multiline Javadoc; use `//` for
+  ordinary one-line notes and comment complex logic where intent or constraints are not obvious.
+- Do not change unrelated comments, formatting, imports, names, or code. Keep one blank line
+  between coherent logic sections and revert formatter spillover outside the requested scope.
 - Treat acceptance criteria, test points, contracts, and risks in the card as required inputs.
-- Run the exact targeted checks requested by the card and report their real outcome.
+- Do not run quality commands unless the card explicitly marks TDD lifecycle execution required.
 - Preserve each existing file's original encoding; never silently convert.
 
 ## Output (return exactly this)
 
 - `changed_files`: the files you actually modified
 - `summary`: one line describing what you did
-- `deliverable`: full no-code result, or `null` for a code unit
 - `issues`: problems you hit (empty array if none)
 - `needs_attention`: anything the main agent must decide (empty array if none)
-- `checks`: commands run with pass/fail outcomes
+- `checks`: TDD lifecycle commands actually run, otherwise an empty array
 
 Do not claim a file is verified unless the card asked you to run a check and you ran it.

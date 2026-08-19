@@ -448,7 +448,7 @@
         </div>
         <div class="meta">
           <span>来源：<code>docs/introduction.md</code></span>
-          <span>版本：<code>0.10.0-beta.10</code></span>
+          <span>版本：<code>1.0.0-beta.0</code></span>
           <span>适配：Claude Code · Codex · Qoder</span>
         </div>
       </header>
@@ -499,7 +499,7 @@
             <div class="idea-card">
               <div class="num">2</div>
               <h3>人机共创，关键节点设硬门控</h3>
-              <p><code>approval_mode</code> 控制状态边是否等待，<code>workflow_mode</code> 控制状态内执行深度。ANALYSIS 先通过问答闭合技术路线、接口、模型、状态、范围和验收问题，只有 Dev-Spec 写入唯一的 <code>decision_status: closed</code> 后才允许进入 IMPLEMENT；分析按实际修改闭包使用渐进成本预算，会话只展示核心方案和主要风险，完整内容通过本地链接或绝对路径按需查看。新版 Canonical Spec 把静态设计与共享执行状态分离：Harness 用 design digest 冻结方案，并通过 CAS、幂等键和断点对账把 Task、Step 与依赖结论投影回共享 Spec，正常进度回写不会被误判为设计漂移。Confirm 只在 ANALYSIS 后确认一次，随后在质量门禁通过后自动推进；Adaptive 以 Standard 为普通业务默认，单仓单 Unit、非并行且最多 5 个文件的低风险修改优先 Fast，只有明确高风险与真实复杂度同时存在才进入 Strict；Spec 或 supermodule 中未修改的仓库不参与定级。Java TDD 默认关闭，首次开启前由 <code>ec-tdd-init</code> 在 TDD 关闭态建设 JUnit、JaCoCo 与 GitLab 增量覆盖率基础设施，不补存量业务单测；readiness 通过后才允许显式开启，并只以本地单测和本地差异覆盖率验收相对任务 baseline 的新增或修改生产代码行（默认 90%）。GitLab job 仍会生成，但远程结果不阻塞 Harness。IMPLEMENT 在不违反正确性、安全和项目硬规则时沿用局部代码风格，避免投机性抽象、碎片化小方法和无意义常量，允许符合局部惯例的直观魔法值；新增模型字段、枚举成员和常量必须逐项注释；新增核心 Java 类的每个方法和字段、已有核心类中新增或实质修改的方法和字段必须有 Javadoc。所有新代码任务都保留 REVIEW 与 VERIFICATION 门控。</p>
+              <p><code>approval_mode</code> 控制状态边是否等待，<code>workflow_mode</code> 控制状态内执行深度。ANALYSIS 闭合影响技术路线、接口、模型、状态、范围和验收的问题；Canonical Spec 只消费 selected task 与直接依赖，未修改仓库和 supermodule 子项目不参与定级。普通业务默认 Standard，单仓、最多三个内聚 Unit、最多 8 个文件的低风险局部修改优先 Fast，只有明确高风险与真实复杂度同时存在才进入 Strict。非 TDD 的 IMPLEMENT 只负责编码；QUALITY 将 Review Gate 与 Verification Gate 绑定同一候选并尽量并行，汇总后只回修一次。TDD 的 RED/GREEN/REFACTOR 是唯一测试例外。编码贴合最近邻风格，坚持最小修改，避免冗余校验、投机抽象、碎片方法和无意义常量；核心 Java 新增或实质修改的方法与字段使用多行 Javadoc，普通单行说明使用 <code>//</code>。纯只读请求保持 Ready。用户还可显式启用 <code>ec-lite</code>，以一次紧凑方案确认直接完成极简修改，不创建任务、QUALITY 或 MEMORY。</p>
             </div>
             <div class="idea-card">
               <div class="num">3</div>
@@ -530,9 +530,7 @@
               <span class="arrow">→</span>
               <div class="stage">IMPLEMENT</div>
               <span class="arrow">→</span>
-              <div class="stage">REVIEW<small>代码任务必经</small></div>
-              <span class="arrow">→</span>
-              <div class="stage gate">VERIFICATION<small>验证门</small></div>
+              <div class="stage gate">QUALITY<small>Review + Verification</small></div>
               <span class="arrow">→</span>
               <div class="stage memory">MEMORY<small>短期 + 长期门禁</small></div>
               <span class="arrow">自动→</span>
@@ -549,12 +547,9 @@
 
           <details>
             <summary>查看原始状态机（ASCII）</summary>
-            <pre><code>INIT --[always auto]--> ANALYSIS -> IMPLEMENT -> REVIEW -> VERIFICATION -> MEMORY --[always auto]--> COMPLETE
-                                    \--[read-only, mode-aware]-----------------------> COMPLETE
-                 ^            ^          |             |
-                 +-- replan ---+          +--- fix -----+
-                              ^                         |
-                              +------- repair ----------+
+            <pre><code>INIT --[always auto]--> ANALYSIS -> IMPLEMENT -> QUALITY -> MEMORY --[always auto]--> COMPLETE
+                 ^            ^          |
+                 +-- replan ---+          +--- repair ---+
 approval --[approve / guard / confirm / auto]--> transition wait policy
 workflow --[adaptive => fast / standard / strict]--> stage execution depth</code></pre>
           </details>
@@ -605,8 +600,8 @@ workflow --[adaptive => fast / standard / strict]--> stage execution depth</code
               <div class="dot">1</div>
               <div>
                 <h4>安装 CLI</h4>
-                <p>0.x 内测阶段推荐 beta 通道，或源码安装。</p>
-                <pre><code># npm 内测环境（0.x 阶段推荐）
+                <p>预发布版本使用 beta 通道，稳定版本使用 latest；也可从源码安装。</p>
+                <pre><code># npm 预发布版本
 npm install -g easy-coding-harness@beta
 
 # 或源码安装（开发者 / 内网）
@@ -648,7 +643,7 @@ easy-coding init --agent=claude-code,codex,qoder  # 指定多个平台</code></p
               <thead><tr><th>命令</th><th>用途</th></tr></thead>
               <tbody>
                 <tr><td><code>easy-coding init</code></td><td>首次接入项目，部署所选平台的全部 harness 文件</td></tr>
-                <tr><td><code>easy-coding add-agent</code></td><td>给已接入项目追加某个平台支持</td></tr>
+                <tr><td><code>easy-coding add-agent</code></td><td>给同版本已接入项目追加平台支持；版本不一致时先 upgrade</td></tr>
                 <tr><td><code>easy-coding upgrade</code></td><td>CLI 升级后同步项目内生成文件，用户资产保留</td></tr>
                 <tr><td><code>easy-coding update</code></td><td>更新全局 CLI 到最新发布版</td></tr>
                 <tr><td><code>easy-coding config</code></td><td>交互修改 Approval、Workflow、Java TDD 与覆盖率阈值</td></tr>

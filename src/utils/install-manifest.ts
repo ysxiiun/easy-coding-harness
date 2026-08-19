@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readFile, rmdir, unlink } from "node:fs/promises";
 import path from "node:path";
 import { EASY_CODING_DIR, INSTALL_MANIFEST_FILE } from "../constants/paths.js";
 import { type AgentPlatform, isAgentPlatform } from "../types/platform.js";
@@ -54,6 +54,11 @@ export interface InstallManifestHookRegistration {
 export interface InstallManifestConstraintRegion {
   path: string;
   platform: AgentPlatform;
+}
+
+export interface PrunedInstallFiles {
+  removed: string[];
+  preserved: string[];
 }
 
 export function fileArtifact(
@@ -201,6 +206,54 @@ export async function readInstallManifest(cwd: string): Promise<InstallManifest 
   } catch {
     return null;
   }
+}
+
+export async function pruneRetiredManagedFiles(
+  cwd: string,
+  previous: InstallManifest | null,
+  artifacts: InstallArtifact[],
+): Promise<PrunedInstallFiles> {
+  if (!previous) {
+    return { removed: [], preserved: [] };
+  }
+
+  const installedPaths = new Set(
+    artifacts
+      .filter(
+        (artifact): artifact is Extract<InstallArtifact, { type: "file" }> =>
+          artifact.type === "file",
+      )
+      .map((artifact) => toProjectPath(cwd, artifact.filePath)),
+  );
+  const removed: string[] = [];
+  const preserved: string[] = [];
+
+  for (const file of previous.files) {
+    if (installedPaths.has(file.path)) {
+      continue;
+    }
+
+    const filePath = manifestPath(cwd, file.path);
+    if (!(await pathExists(filePath))) {
+      continue;
+    }
+    if (!(await manifestFileMatches(filePath, file.sha256))) {
+      preserved.push(file.path);
+      continue;
+    }
+
+    await unlink(filePath);
+    removed.push(file.path);
+    try {
+      await rmdir(path.dirname(filePath));
+    } catch (error) {
+      if (!["ENOENT", "ENOTEMPTY"].includes((error as NodeJS.ErrnoException).code ?? "")) {
+        throw error;
+      }
+    }
+  }
+
+  return { removed, preserved };
 }
 
 export async function manifestFileMatches(filePath: string, sha256: string): Promise<boolean> {

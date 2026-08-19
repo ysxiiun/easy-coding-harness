@@ -1,6 +1,6 @@
 ---
 name: ec-implementing
-description: IMPLEMENT-stage skill. Executes the confirmed plan with workflow-mode-aware orchestration, strict scope control, shift-left tests, and structured execution evidence.
+description: IMPLEMENT-stage skill. Executes the confirmed plan with workflow-mode-aware orchestration, strict scope control, minimal diffs, and structured execution evidence.
 ---
 
 # ec-implementing — execute the confirmed plan
@@ -9,9 +9,10 @@ Use only after ANALYSIS has frozen `task.json.workflow_mode` to `fast`, `standar
 `strict`. Read `dev-spec.md`, the latest `plan` record in `execution.jsonl`, relevant RULES
 and ABSTRACT sections, and `test-strategy.md` for code tasks.
 
-If frozen `task.tdd_enabled` is not `true`, preserve the existing shift-left behavior exactly;
-do not load the Java coverage tool, require RED/GREEN/REFACTOR, inspect CI, or run extra test
-commands. TDD is an independent opt-in mode, not an implicit consequence of strict workflow.
+If frozen `task.tdd_enabled` is not `true`, IMPLEMENT writes production and planned test code but
+does not run lint, typecheck, test, build, or coverage commands. Deterministic execution belongs
+to QUALITY's Verification Gate. TDD is the only exception because RED/GREEN/REFACTOR commands are
+part of the implementation method; current-fingerprint green evidence may be reused by QUALITY.
 
 When frozen TDD is enabled, every feature/bug unit must capture a meaningful failing unit test
 before production code (RED), the smallest passing implementation (GREEN), and a green refactor.
@@ -28,45 +29,49 @@ Communicate with the user in the user's language.
 2. Preserve existing encoding and project comment conventions.
 3. Each unit must carry `acceptance_criteria`, `test_points`, `contracts`, and `risks`.
    Missing unit context is an analysis defect; do not make the implementer rediscover it.
-4. Run the unit's cheapest meaningful test immediately after its implementation. Do not wait
-   until VERIFICATION to discover local contract mistakes.
+4. Do not execute quality commands in non-TDD IMPLEMENT. Preserve exact commands and test points
+   for the Verification Gate instead of duplicating them here.
 5. Append `dispatch` and `result` records for every unit, including main-agent execution.
    Main-agent execution uses `reason:"main-inline:<workflow_mode>"`.
-6. A code task never transitions directly from IMPLEMENT to VERIFICATION. Every new code task
-   enters REVIEW.
-7. Read-only `doc` / `analysis` / `report` tasks remain `single` with `files:[]`, make no writes,
-   return a non-empty `deliverable`, then follow the mode-aware IMPLEMENT -> COMPLETE edge.
-8. When a project template, local convention, or new source header uses author attribution, the
+6. Every Harness task transitions from IMPLEMENT to QUALITY.
+7. When a project template, local convention, or new source header uses author attribution, the
    author value must be `<Current Agent Name> with Easy Coding`, for example
    `Codex with Easy Coding`. `Current Agent Name` means the user-facing host Agent (for example,
    Codex, Claude, or Qoder), never an implementation sub-agent role such as `ec-implementer`.
    This value is display attribution only: never pass it to the workflow state API's `--agent`,
    which accepts only `claude-code`, `codex`, or `qoder`. Never copy a previous human or Agent name
    into newly authored code.
-9. Every newly added field in a data-bearing model must have a meaningful field-level comment.
+8. Every newly added field in a data-bearing model must have a meaningful field-level comment.
    This includes new or extended entity/DO/DTO/VO/BO, request/response, configuration, and similar
-   model types. Every new enum member and every new declared constant requires the same treatment.
+   model types. Document enum members and stable domain constants when the local style or
+   non-obvious semantics require it; do not extract a literal merely to create a documented name.
    Describe the semantic meaning and, when relevant, units, format, allowed values, nullability,
    default behavior, or compatibility constraints. A type-level comment does not replace comments
    on its fields or members; do not add low-value comments to ordinary local variables.
-10. Treat the task card's `Local Baseline` as the default implementation shape. Match the nearest
+9. Treat the task card's `Local Baseline` as the default implementation shape. Match the nearest
     comparable code's naming, control flow, null/empty and error handling, layering, object model,
     and extraction granularity unless correctness, security, an explicit requirement, or a hard
     project rule requires a deviation. Do not add defensive null checks solely because they are a
     generic best practice when the evidenced local contract intentionally omits them.
-11. Implement the smallest coherent design. Do not add speculative abstractions, wrappers,
+10. Implement the smallest coherent design. Do not add speculative abstractions, wrappers,
     factories, layers, or extension points, and do not fragment one readable flow into many
     single-use micro-methods. Extract code only for a clear semantic boundary, real reuse,
     independent testability, or a material reduction in complexity.
-12. Literals and magic values are allowed when they are obvious, local, and consistent with the
+11. Literals and magic values are allowed when they are obvious, local, and consistent with the
     surrounding code. Introduce a constant for repeated use, stable domain/config/protocol
     semantics, or an established project convention—not merely to hold the single return value of
     a getter.
-13. In a newly added core Java class, every method and field requires meaningful Javadoc. In an
+12. In a newly added core Java class, every method and field requires meaningful Javadoc. In an
     existing core Java class, every added or materially modified method and field requires it.
     Add focused inline comments to core or complex logic to explain intent, constraints, or
     non-obvious tradeoffs. Do not mass-retrofit untouched legacy code, and for non-Java code
-    follow the language's doc-comment form plus the evidenced project convention.
+    follow the language's doc-comment form plus the evidenced project convention. Java Javadoc
+    must use a multiline `/** ... */` block; use `//` for an ordinary one-line logic note.
+13. Apply the minimum-change rule to existing files. Do not reformat, rename, comment, reorder
+    imports, or refactor unrelated code. Revert formatter spillover outside the required diff;
+    report unrelated defects instead of fixing them without an approved scope change.
+14. Use one blank line between coherent logic sections. Do not create noisy blank-line gaps or
+    compress unrelated steps into an unreadable block.
 
 ## Choose the execution owner
 
@@ -88,7 +93,7 @@ Communicate with the user in the user's language.
 
 - Dispatch multi-unit or high-risk implementation to sub-agents using {{sub_agent_dispatch}}.
 - For a truly indivisible unit, the main Agent may implement only when dispatch adds no
-  independence; record why and require independent REVIEW later.
+  independence; record why and require independent Review Gate evidence in QUALITY.
 - Process dependency levels in order. Platform spawn rule: {{platform_spawn_instruction}}
 
 The main Agent owns orchestration, conflict resolution, evidence writing, and stage decisions.
@@ -107,7 +112,7 @@ Sub-agents never dispatch other sub-agents or read `.easy-coding` workflow asset
 ## Repository     {repo_id + resolved repository root | current project}
 ## Source Steps   {source_step_ids | NONE}
 ## Symbols        {symbols | confirmed local symbols}
-## Editable Scope {unit.files | NONE — read-only}
+## Editable Scope {unit.files}
 ## Acceptance     {unit.acceptance_criteria}
 ## Test Points    {unit.test_points and exact targeted commands}
 ## Contracts      {inputs, outputs, invariants shared with other units}
@@ -118,7 +123,7 @@ Sub-agents never dispatch other sub-agents or read `.easy-coding` workflow asset
 ## Architecture   {pre-digested ABSTRACT sections}
 ## Output
 status:"completed", repo_id|null, source_task_id|null, changed_files[], summary,
-deliverable|null, checks:[{command,passed,failures:[]}], issues:[], needs_attention:[]
+checks:[], issues:[], needs_attention:[]
 ```
 
 ## Dispatch and result loop
@@ -134,15 +139,17 @@ deliverable|null, checks:[{command,passed,failures:[]}], issues:[], needs_attent
    author value, the field/member/constant rules, and the core Java Javadoc rule above. Populate
    `Local Baseline` from the Unit's analyzed evidence; sub-agents do not read this Skill.
 2. Execute according to dependency order and selected owner.
-3. Run targeted unit tests and self-audit scope, contracts, TODOs, and introduced warnings.
-   Also audit new author attributions and every new model field, enum member, and constant against
+3. For non-TDD work, do not run tests; self-audit scope, contracts, TODOs, and introduced warnings.
+   For TDD, run only the lifecycle commands required by RED/GREEN/REFACTOR. Also audit new author
+   attributions and every new model field against
    the comment requirements above, then check local-style deviations, unnecessary abstractions,
    one-use constant extraction, and affected core Java Javadoc before recording success.
 4. Append one `result` record. Only a successful unit uses `status:"completed"`; include
    unresolved issues rather than hiding them, and do not advance while `issues` or
    `needs_attention` is non-empty.
    For Canonical-backed success, write each owned source Step `completed` through
-   `writeback-spec-step`, with passed evidence for every bound Canonical Test ID and a stable key.
+   `writeback-spec-step`, with implementation evidence and a stable key. Canonical Test evidence
+   is written by QUALITY after deterministic verification, not fabricated during implementation.
    After every source Step for that task is complete, write the task `implemented`. On failure,
    write the affected Step `failed`; the shared writer moves its task to `blocked`. Local evidence
    is appended first, shared projection second, and the returned acknowledgment last.
@@ -161,9 +168,7 @@ conversation overhead while keeping work observable.
 
 ## End state
 
-- Code task: after all units and targeted checks pass, hand control to ec-workflow for
-  IMPLEMENT -> REVIEW.
-- Read-only task: output the full deliverable, then request or auto-apply IMPLEMENT -> COMPLETE.
+- After all units are implemented, hand control to ec-workflow for IMPLEMENT -> QUALITY.
 - New risk above the frozen mode: call `raise-workflow-mode`; modes may rise but never silently
   fall after ANALYSIS.
 
@@ -171,12 +176,12 @@ conversation overhead while keeping work observable.
 
 - [ ] Every changed file is in scope and keeps its encoding.
 - [ ] Every unit has a dispatch/result pair and satisfied its acceptance criteria.
-- [ ] Targeted tests ran or a concrete blocker is recorded.
+- [ ] Non-TDD quality commands were deferred; required TDD lifecycle commands have real evidence.
 - [ ] Cross-unit contracts still match.
 - [ ] The implementation follows the evidenced Local Baseline or records a required deviation.
 - [ ] No speculative layer, fragmented micro-method set, or single-use getter constant was added.
 - [ ] New author attributions use the user-facing host `<Current Agent Name> with Easy Coding`.
-- [ ] Every new model field, enum member, and constant has a meaningful field-level comment.
+- [ ] Every new model field and every non-obvious documented member follows the local comment rule.
 - [ ] Every method/field in a new core Java class, and every added or materially modified one in
       an existing core Java class, has Javadoc.
-- [ ] Code tasks enter REVIEW, regardless of workflow mode.
+- [ ] The task enters QUALITY, regardless of workflow mode.

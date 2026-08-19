@@ -2,9 +2,49 @@
 
 版本号严格使用 `x.y.z`：
 
-- `x`：大的功能迭代；`0.x.x` 表示内测版本
+- `x`：大的功能迭代；带 `-beta.*` 的版本表示预发布版本
 - `y`：常规功能升级
 - `z`：日常 bug 修复
+
+## 1.0.0-beta.0
+
+- 正常修改任务统一使用 `INIT → ANALYSIS → IMPLEMENT → QUALITY → MEMORY → COMPLETE`；
+  QUALITY 在同一候选指纹下编排只读 Review/Verification 双门并汇总一次 Repair Bundle，
+  Fast/Standard/Strict 仅改变证据深度，不再改变状态拓扑。
+- 非 TDD 的 IMPLEMENT 回归纯编码职责，lint/typecheck/test/build 统一由 Verification Gate
+  执行；TDD 的 RED/GREEN/REFACTOR 证据可以在 QUALITY 复用。环境失败留在 QUALITY 重试，
+  用户明确接受检查点后差异时遵从其决策，不自动重跑 Review。
+- 删除新建 `doc` / `analysis` / `report` 只读任务能力：纯对话请求保持 Ready，仓库内文档或
+  配置写入仍走完整状态机。升级会把活动旧只读任务关闭为
+  `legacy-read-only-task-retired`，保留文件和历史。
+- 新增用户显式控制的 `ec-lite`：一次紧凑方案确认后执行最小修改，不生成任务、QUALITY
+  或 MEMORY。活动任务决策由 session 命令锁原子绑定用户看到的 task ID；每次方案生成不可
+  重放 digest，并把当时的 Git 基线一并纳入确认内容；确认时重新校验当前 Git 状态，确认
+  只能执行一次且不能改写基线，完成时校验目标文件的真实变化、范围外改动与 HEAD 漂移。
+  `ec-no-harness` 临时旁路不会清除 Lite 状态或方案。
+- Canonical QUALITY 修复先把当前候选的失败证据写回对应 source task 为 `blocked`，再由
+  IMPLEMENT 仅重开受影响任务；多来源重开先持久化可续跑意图，部分写回失败后可幂等恢复。
+  写回事件必须绑定当前 Harness task、source task、候选指纹、QUALITY attempt 与失败证据，
+  无关 `blocked` 状态不能冒充本轮投影。`execution.jsonl` 的 QUALITY 尝试由状态 API 在两个
+  Gate 结束后一次性 append 并机械校验；repair/replan 按结构化失败类型路由，契约歧义对同轮
+  混合缺陷具有 replan 优先级；候选漂移终结为 cancelled 后强制先回 IMPLEMENT，迟到的旧
+  attempt 证据不会污染新一轮。主动返工与关闭任务同样会终结活动 attempt。
+- Canonical repair 为内容指纹未变化且不依赖变化 source 的仓库追加状态层
+  `quality-carry-forward`，按来源 attempt 和证据索引复用已通过门禁；hard/contract 下游及
+  受影响仓库仍提供当前 attempt 的完整模式级证据。
+- Canonical repair intent 随决策立即持久化，确认边绑定 attempt、双指纹与 affected source；
+  blocked 投影后的候选/配置漂移和部分重开失败都幂等续跑原事务。
+  `add-agent` 遇到项目 Harness 与 CLI 版本不一致时要求先整体 upgrade，避免新旧状态机混装。
+- Adaptive 分级降低误判成本：简单局部修改优先 Fast，普通业务以 Standard 为主，Strict
+  仅在明确高风险与真实复杂度同时存在时触发；未修改仓库、Spec 未选任务和 supermodule
+  子项目不参与抬级。
+- 编码规则强化最近邻风格、最小修改和适度设计：不补无依据防御校验、不为单次 getter
+  return 提取常量、不拆碎方法，不修改无关格式或注释；核心 Java Javadoc 使用多行格式，
+  普通单行说明使用 `//`，逻辑段落使用一个空行分隔。
+- 活动 `REVIEW` / `VERIFICATION` 状态和验收检查点在升级时迁移为 `QUALITY` /
+  `quality_checkpoint`，保留既有审查、验证和历史执行证据。
+- 升级会依据旧安装清单清理已退役的 `ec-reviewing`、`ec-verification` 与三平台
+  `ec-fixer`；仅删除哈希仍与旧版托管内容一致的文件，用户改过的副本会保留且不再写入新清单。
 
 ## 0.10.0-beta.10
 

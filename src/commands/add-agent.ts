@@ -26,6 +26,18 @@ export async function addAgent(opts: PlatformOptions): Promise<void> {
   }
 
   const platforms = await resolvePlatforms(opts, ["claude-code"]);
+
+  for (const target of targets) {
+    if (!(await pathExists(target.configPath))) continue;
+    const config = await readConfigYaml(target.configPath);
+    const installedVersion = String(config.harness_version ?? "");
+    if (installedVersion !== VERSION) {
+      throw new Error(
+        `${target.label}: installed harness ${installedVersion || "unknown"} does not match CLI ${VERSION}. Run easy-coding upgrade before add-agent.`,
+      );
+    }
+  }
+
   const installedLabels: string[] = [];
   const refreshedLabels: string[] = [];
 

@@ -210,7 +210,7 @@ agent must be able to see what was generated and on what evidence.
 - Every claim grounded in observed evidence — file paths and configs you actually read.
   No filler like "follow best practices".
 - SOUL stays short. RULES and ABSTRACT run as long as the evidence supports, in named
-  sections. TEST_STRATEGY must be concrete enough that ec-verification can derive runnable
+  sections. TEST_STRATEGY must be concrete enough that QUALITY's Verification Gate can derive runnable
   commands from it.
 
 ## Boundaries

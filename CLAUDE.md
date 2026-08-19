@@ -15,7 +15,7 @@ src/
 ├── configurators/          # Per-platform installers (claude, codex, qoder, shared)
 ├── constants/              # Paths, version (read from package.json)
 ├── templates/              # Source templates — built to templates/ by copy-templates.mjs
-│   ├── common/skills/      # 11 stage skills + 1 bundled skill (ec-meta)
+│   ├── common/skills/      # Workflow-stage and utility skills
 │   ├── main-constraint/    # CLAUDE.md.tpl / AGENTS.md.tpl
 │   ├── claude/             # settings.json, agents/
 │   ├── codex/              # hooks.json, config.toml, agents/
@@ -36,23 +36,20 @@ src/
 
 ### State Machine (runtime, not CLI)
 
-The 6-stage workflow plus terminal states runs inside the agent, not in the CLI:
+The 5-stage workflow plus terminal states runs inside the agent, not in the CLI:
 
 ```
-INIT ─auto→ ANALYSIS → IMPLEMENT → REVIEW → VERIFICATION → MEMORY ─auto→ COMPLETE
-                            └─read-only auto──────────────────────────→ COMPLETE
+INIT ─auto→ ANALYSIS → IMPLEMENT → QUALITY → MEMORY ─auto→ COMPLETE
           ↑            ↑          │
           └── replan ───┘          └── repair
-user-decision edges require explicit confirmation; every new code task enters REVIEW, while
-validated read-only tasks auto-complete after IMPLEMENT without REVIEW, VERIFICATION, or MEMORY.
-Only migrated pre-0.9 tasks marked `workflow_mode_legacy_direct_edge: true` from old lite
-semantics or a persisted pending edge may retain one direct IMPLEMENT → VERIFICATION edge.
 ```
 
 User-decision edges are confirmation gates; INIT → ANALYSIS and completed MEMORY → COMPLETE
-advance automatically. New code tasks always require REVIEW and fresh VERIFICATION evidence;
-validated read-only deliverables end directly after IMPLEMENT. The CLI deploys the runtime and
-migrates legacy workflow metadata during upgrade.
+advance automatically. Every repository-mutation task enters QUALITY, whose independent Review
+and Verification gates run at the frozen workflow depth. Pure read-only conversation stays Ready
+and creates no task. `ec-lite` is a separate explicit persistent mode that uses proposal
+confirmation and minimum implementation without Harness task artifacts. The CLI deploys the
+runtime and migrates legacy workflow metadata during upgrade.
 
 ## Development Conventions
 
@@ -84,7 +81,7 @@ npm run typecheck   # tsc --noEmit
 - **README.md** must only summarize the versioning policy and link to CHANGELOG.md; do not put full release notes back into README.md.
 - **package.json `files` must include CHANGELOG.md** so the npm package contains the file README.md links to.
 - **Version bump workflow**: update `package.json` / `package-lock.json` version → add CHANGELOG.md entry → ensure README.md install commands and changelog link stay current → implement changes → build & test.
-- Keep README.md's "12 个 skill" table and "三平台支持" table current when adding/removing skills or platforms.
+- Keep README.md's skill table and "三平台支持" table current when adding/removing skills or platforms.
 
 ### Adding a New Skill
 

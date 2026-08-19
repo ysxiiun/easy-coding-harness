@@ -1,4 +1,5 @@
 import { execSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -53,6 +54,27 @@ async function markProjectInitComplete(): Promise<void> {
   const task = JSON.parse(await readFile(taskPath, "utf8"));
   task.status = "COMPLETE";
   await writeFile(taskPath, `${JSON.stringify(task, null, 2)}\n`, "utf8");
+}
+
+async function addManagedFileToManifest(
+  relativePath: string,
+  content: string,
+  kind: "skill" | "agent",
+  platform: "claude-code" | "codex" | "qoder",
+): Promise<void> {
+  const filePath = path.join(tempDir, relativePath);
+  await mkdir(path.dirname(filePath), { recursive: true });
+  await writeFile(filePath, content, "utf8");
+
+  const manifestPath = path.join(tempDir, ".easy-coding", "install-manifest.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  manifest.files.push({
+    path: relativePath,
+    kind,
+    platform,
+    sha256: createHash("sha256").update(content).digest("hex"),
+  });
+  await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
 }
 
 async function rewriteClaudeHooksToLegacyRelativeCommands(): Promise<void> {
@@ -453,6 +475,48 @@ describe("upgrade command", () => {
       await readFile(path.join(tempDir, ".easy-coding", "tasks", "project-init", "task.json"), "utf8"),
     );
     expect(task.pending_init_since).toBe(VERSION);
+  });
+
+  it("removes unchanged retired assets while preserving locally modified copies", async () => {
+    await init({ agent: "claude-code,codex,qoder", yes: true });
+    await markProjectInitComplete();
+    await setHarnessVersion("0.10.0-beta.10");
+
+    const retiredFiles = [
+      [".claude/skills/ec-reviewing/SKILL.md", "old reviewing skill\n", "skill", "claude-code"],
+      [
+        ".claude/skills/ec-verification/SKILL.md",
+        "old verification skill\n",
+        "skill",
+        "claude-code",
+      ],
+      [".claude/agents/ec-fixer.md", "old claude fixer\n", "agent", "claude-code"],
+      [".codex/agents/ec-fixer.toml", "old codex fixer\n", "agent", "codex"],
+      [".qoder/agents/ec-fixer.md", "old qoder fixer\n", "agent", "qoder"],
+    ] as const;
+    for (const [relativePath, content, kind, platform] of retiredFiles) {
+      await addManagedFileToManifest(relativePath, content, kind, platform);
+    }
+
+    const modifiedPath = path.join(tempDir, ".qoder", "agents", "ec-fixer.md");
+    await writeFile(modifiedPath, "user modified fixer\n", "utf8");
+
+    await upgrade({ yes: true });
+
+    for (const [relativePath] of retiredFiles.slice(0, -1)) {
+      await expect(readFile(path.join(tempDir, relativePath), "utf8")).rejects.toThrow();
+    }
+    await expect(readFile(modifiedPath, "utf8")).resolves.toBe("user modified fixer\n");
+
+    const manifest = JSON.parse(
+      await readFile(path.join(tempDir, ".easy-coding", "install-manifest.json"), "utf8"),
+    );
+    expect(manifest.files.map((file: { path: string }) => file.path)).not.toEqual(
+      expect.arrayContaining(retiredFiles.map(([relativePath]) => relativePath)),
+    );
+    expect(console.log).toHaveBeenCalledWith(
+      expect.stringContaining("removed 4 retired managed file(s) and preserved 1 locally modified file(s)"),
+    );
   });
 
   it("migrates active 0.5.x workflow stages without touching memory content", async () => {

@@ -46,7 +46,7 @@ decision_status: [[EC_TODO:仅当所有实质性问题均已解决并回填后�
 - **关联历史任务**：[[EC_TODO:相关短期记忆 ID；无则“无”]]
 
 ### 改动范围
-> 只列真实项目源码/配置文件的改动。禁止把 `.easy-coding/` 下的 harness 产物（dev-spec / execution.jsonl / test-strategy / 记忆 / 报告等）当作改动对象。本表为空仅允许用于"用户明确要求的无代码交付形态"；代码类任务（重构/修复/功能）若此表为空，即为自我降级。
+> 只列真实项目源码/配置文件的改动。禁止把 `.easy-coding/` 下的 harness 产物（dev-spec / execution.jsonl / test-strategy / 记忆 / 报告等）当作改动对象。Harness 只为明确的仓库修改创建任务，因此本表不得为空。
 
 | 改动文件 | 改动类型 | 文件编码 | 改动核心内容 |
 |----------|---------|---------|-------------|
@@ -90,7 +90,7 @@ decision_status: [[EC_TODO:仅当所有实质性问题均已解决并回填后�
 - **机械最低模式**：[[EC_TODO:fast / standard / strict]]
 - **推荐并选择**：[[EC_TODO:fast / standard / strict]]
 - **选择原因**：[[EC_TODO:风险、范围和兼容性依据]]
-- **状态内执行差异**：[[EC_TODO:IMPLEMENT / REVIEW / VERIFICATION / MEMORY 将采用的深度]]
+- **状态内执行差异**：[[EC_TODO:IMPLEMENT / QUALITY / MEMORY 将采用的深度]]
 
 ### 风险与注意事项
 - [[EC_TODO:风险 1]]
