@@ -146,8 +146,14 @@ describe("configureClaude", () => {
     expect(analysisSkill).toContain("mechanical minimum");
     expect(analysisSkill).toContain("acceptance_criteria");
     expect(analysisSkill).toContain("No transition without a valid workflow proposal");
-    expect(analysisSkill).toContain("concise session summary instead of");
+    expect(analysisSkill).toContain("concise proposal receipt instead of");
     expect(analysisSkill).toContain("[View full Dev-Spec](</absolute/path/to/dev-spec.md>)");
+    expect(analysisSkill).toContain("The proposal receipt must survive the client boundary");
+    expect(analysisSkill).toContain("Repeat the compact receipt and full Dev-Spec link/path");
+    expect(analysisSkill).toContain(
+      "native choice returns or a matching transition call completes",
+    );
+    expect(analysisSkill).toContain("For an automatic edge, do not add a pause");
     expect(analysisSkill).toContain("decision_status: closed");
     expect(analysisSkill).toContain("progressive cost budget");
     expect(analysisSkill).toContain("## Local implementation baseline");
@@ -340,6 +346,9 @@ describe("configureClaude", () => {
     expect(main).toContain("IMPLEMENT gate must preserve enter QUALITY");
     expect(main).toContain("explicitly guarantees an indefinite wait");
     expect(main).toContain("pre-render the matching numbered fallback");
+    expect(main).toContain("Text shown before a later tool call is non-durable");
+    expect(main).toContain("Repeat the complete\n  fallback while the edge is pending");
+    expect(main).toContain("Auto adds no pause and carries the Dev-Spec link/path");
     expect(main).toContain("consume a matching\n  numbered reply against the stored edge");
     expect(main).toContain("Pure read-only conversation stays Ready and creates no task");
     expect(main).toContain("set `decision_status: open`");
@@ -356,6 +365,12 @@ describe("configureClaude", () => {
     expect(workflowSkill).toContain("never reconstruct completion from another local Harness task");
     expect(workflowSkill).toContain("select-dev-spec-scope");
     expect(workflowSkill).toContain("create-task-from-spec");
+    expect(workflowSkill).toContain("non-durable process presentation");
+    expect(workflowSkill).toContain("repeat the receipt and full Dev-Spec link/path");
+    expect(workflowSkill).toContain(
+      "native choice returns or a matching transition call completes",
+    );
+    expect(workflowSkill).toContain("An automatic ANALYSIS -> IMPLEMENT edge must not pause");
 
     expect(analysisSkill).toContain("--spec-task <selected-task-id>");
     expect(analysisSkill).toContain("`exact` and `scope-unchanged` use the fast projection path");

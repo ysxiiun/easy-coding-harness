@@ -167,9 +167,18 @@ choice set before invoking the platform's native choice UI:
 Preserve `pending_transition` on cancellation, timeout, or invalid UI output. A later ordinary
 reply may consume it. Use `confirm-transition` only for a matching stored edge.
 
+Text emitted before a later tool call is a non-durable process presentation because the host may
+group or collapse it. For ANALYSIS -> IMPLEMENT, preserve the compact proposal receipt produced by
+`ec-analysis`. After a native choice returns or a matching transition call completes, the last
+assistant response in that turn must repeat the receipt and full Dev-Spec link/path even if they
+were already visible. When the edge remains pending, include the complete numbered fallback;
+when confirmed, name the accepted branch and target stage. An empty, cancelled, timed-out, or
+invalid native result is not grounds to omit this final receipt.
+
 Use `auto-transition` only when the state API says the edge is automatic. Mechanical gates
 (analysis artifacts and proposal, review fingerprint, verification fingerprint, memory
-completion) apply in every approval mode.
+completion) apply in every approval mode. An automatic ANALYSIS -> IMPLEMENT edge must not pause;
+carry its full Dev-Spec link/path into the next durable final response in the same turn.
 
 `[easy-coding:acceptance-drift-confirmation-required]` is a narrow exception to automatic-edge
 handling. Call `inspect-transition-drift`, present every returned patch/binary/mode change and the

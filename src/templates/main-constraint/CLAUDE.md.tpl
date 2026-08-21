@@ -70,10 +70,15 @@ First run `/ec-init`; daily work goes through `/ec-workflow`.
   explicitly guarantees an indefinite wait; disable or omit automatic timeout/resolution in that
   case. Otherwise pre-render the matching numbered fallback before invoking native choice once,
   so timeout cannot remove the user's path forward. Empty, dismissed, timed-out, or unparseable
-  native results preserve the pending edge; show the fallback when control returns only if it is
-  not already visible, and never retry native choice in that turn. On resume, consume a matching
+  native results preserve the pending edge; never retry native choice in that turn. On resume,
+  consume a matching
   numbered reply against the stored edge before re-presenting the gate. Never degrade to only
-  "reply confirm".
+  "reply confirm". Text shown before a later tool call is non-durable because the
+  host may group or collapse it. For ANALYSIS -> IMPLEMENT, the last assistant response after a
+  native choice or transition call must repeat a compact core-solution, acceptance, workflow,
+  and risk receipt plus the full Dev-Spec link/path, even if already visible. Repeat the complete
+  fallback while the edge is pending; after confirmation, identify the accepted branch and target
+  stage. Auto adds no pause and carries the Dev-Spec link/path into the next durable final response.
 - When `[easy-coding:no-harness]` is injected, do not emit an Easy Coding status line and ignore
   only Easy Coding workflow/stage orchestration for this session. Continue honoring every
   non-Easy-Coding skill, hook, and instruction. Do not clear or mutate the suspended task.
@@ -87,9 +92,10 @@ First run `/ec-init`; daily work goes through `/ec-workflow`.
   each confirmed answer and its evidence in `### 决策闭环`. Only after all material decisions are
   resolved may the agent set the single `decision_status: closed`, finalize the artifacts, and
   propose IMPLEMENT. The session presentation is a concise core-solution, acceptance, workflow,
-  and risk summary with an absolute local link/path to the full dev-spec.md; never paste the full
-  artifact by default. The final artifact contains neither `[阶段：ANALYSIS]` nor a
-  `待用户决策` section.
+  and risk receipt with an absolute local link/path to the full dev-spec.md; repeat that durable
+  receipt after a later native choice or transition call instead of relying on collapsible process
+  text; never paste the full artifact by default. The final artifact contains neither
+  `[阶段：ANALYSIS]` nor a `待用户决策` section.
 - QUALITY contains fingerprinted Review and Verification Gates. Review evidence must match the final
   implementation; verification evidence must match final implementation and config. The frozen
   workflow mode selects targeted, impacted, or full commands without weakening the green gate.

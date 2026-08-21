@@ -89,7 +89,8 @@ any stage --[user abort via ec-task-close]--> CLOSED
   execution plan 实际修改的 Git root 计算，用户可在机械风险下限之上调整。
 - ANALYSIS 会先通过问答闭合影响技术路线、接口、模型、状态、范围或验收的实质性问题，
   并在 Dev-Spec 中记录唯一的 `decision_status: closed`。会话只展示核心方案、验收摘要、
-  Workflow Mode 与主要风险；完整 `dev-spec.md` 通过绝对本地链接或路径按需查看。
+  Workflow Mode 与主要风险；完整 `dev-spec.md` 通过绝对本地链接或路径按需查看。原生选择
+  返回或迁移调用结束后的最终消息会重复紧凑方案回执与完整入口，避免前置过程消息折叠后丢失。
 - Java TDD 默认关闭；优先级为 session 覆盖 > 项目配置 > `false/90%`。首次开启前必须运行 `ec-tdd-init`，只建设 JUnit/JaCoCo/GitLab 增量覆盖率基础设施，不补存量业务单测；readiness 通过后才允许显式开启。开启后在 ANALYSIS → IMPLEMENT 冻结开关、baseline 与阈值，只验收本任务新增/修改生产代码行，执行 RED/GREEN/REFACTOR（纯重构使用 characterization GREEN → GREEN），并要求本地单测通过、本地差异覆盖率达到冻结阈值。GitLab TEST-stage job 仍会生成，但远程 pipeline 结果不属于 Harness 验收证据，也不会触发中间提交推送。关闭时普通任务不扫描 CI/JaCoCo、不增加命令或提高原工作流验收深度。
 - 所有修改任务都进入 QUALITY；纯对话分析、解释、报告和只读 review 保持 Ready，不创建任务。文档或配置一旦写入仓库，仍走完整状态机。
 - `QUALITY` 同时编排只读 Review Gate 与 Verification Gate。Fast 使用主 Agent 聚焦自审和最小定向验证，Standard 使用一个独立 reviewer 与受影响检查，Strict 使用至少两个独立维度并只对实际修改仓库运行完整适用检查。两个 Gate 绑定同一候选指纹和 attempt，必须完成或明确取消后才形成一次 Repair Bundle；代码/测试缺陷回 IMPLEMENT，契约歧义优先回 ANALYSIS并保留同轮其他缺陷，环境问题留在 QUALITY 重试；候选漂移会审计为 cancelled 并强制先回 IMPLEMENT。

@@ -214,6 +214,39 @@ afterEach(async () => {
 });
 
 describe("upgrade command", () => {
+  it("refreshes durable ANALYSIS receipts from an older managed installation", async () => {
+    await init({ agent: "codex,qoder", yes: true });
+    await markProjectInitComplete();
+    await setHarnessVersion("1.0.0-beta.0");
+
+    const managedSkills = [
+      ".agents/skills/ec-analysis/SKILL.md",
+      ".agents/skills/ec-workflow/SKILL.md",
+      ".qoder/skills/ec-analysis/SKILL.md",
+      ".qoder/skills/ec-workflow/SKILL.md",
+    ];
+    for (const relativePath of managedSkills) {
+      await writeFile(path.join(tempDir, relativePath), "stale managed skill\n", "utf8");
+    }
+
+    await upgrade({ yes: true });
+
+    for (const relativePath of managedSkills.filter((value) => value.includes("ec-analysis"))) {
+      const content = await readFile(path.join(tempDir, relativePath), "utf8");
+      expect(content).toContain("The proposal receipt must survive the client boundary");
+      expect(content).toContain("Repeat the compact receipt and full Dev-Spec link/path");
+    }
+    for (const relativePath of managedSkills.filter((value) => value.includes("ec-workflow"))) {
+      const content = await readFile(path.join(tempDir, relativePath), "utf8");
+      expect(content).toContain("non-durable process presentation");
+      expect(content).toContain("repeat the receipt and full Dev-Spec link/path");
+    }
+
+    const main = await readFile(path.join(tempDir, "AGENTS.md"), "utf8");
+    expect(main).toContain("Text shown before a later tool call is non-durable");
+    expect(main).toContain("Auto adds no pause and carries the Dev-Spec link/path");
+  });
+
   it("refreshes stale hook commands even when the harness version is current", async () => {
     await init({ agent: "claude-code", yes: true });
     await markProjectInitComplete();

@@ -262,8 +262,8 @@ while still in ANALYSIS.
 
 ## User presentation and transition
 
-After decision closure and before the boundary, present a concise session summary instead of
-pasting the full `dev-spec.md`. The summary must contain:
+After decision closure and before the boundary, prepare a concise proposal receipt instead of
+pasting the full `dev-spec.md`. The receipt must contain:
 
 - the core solution and affected scope/units;
 - acceptance and test-strategy highlights;
@@ -278,9 +278,19 @@ copyable absolute path. Do not dump the full artifact merely because the client 
 If the user asks to inspect the full plan, open or read that stored file on demand using the
 current Agent's supported file capability.
 
-Then request or auto-apply ANALYSIS -> IMPLEMENT according to `effective_approval_mode`.
-The state API atomically freezes the proposal when the transition is applied. `approval_mode`
-controls waiting; it never changes the selected execution depth.
+The proposal receipt must survive the client boundary. Assistant text emitted before a later
+tool call is only a process presentation: a host may group or collapse it, so it does not satisfy
+the durable receipt requirement. For a confirmation-required ANALYSIS -> IMPLEMENT edge, the last
+assistant response after a native choice returns or a matching transition call completes must be
+self-contained. Repeat the compact receipt and full Dev-Spec link/path even when the same content
+was visible before the tool call. If the edge remains pending, also repeat the complete choices;
+if it was confirmed, identify the accepted branch and target stage. Never reduce this response to
+only a confirmation prompt or transition result.
+
+For an automatic edge, do not add a pause or turn it into a confirmation gate. Apply the edge and
+carry the full Dev-Spec link/path into the next durable final response in the same turn. The state
+API atomically freezes the proposal when the transition is applied. `approval_mode` controls
+waiting; it never changes the selected execution depth.
 
 ## Gates
 
