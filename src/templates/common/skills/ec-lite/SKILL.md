@@ -63,8 +63,15 @@ For an explicit repository mutation:
    cannot be a target. Then implement only those files.
 5. If scope expands, stop, replace the proposal, and confirm again.
 6. Apply local style, core Java Javadoc, logical blank lines, and minimum modification exactly as
-   normal Easy Coding. Do not run tests by default; run only a command explicitly requested by
-   the user or mandated by a project/global hard rule.
+   normal Easy Coding. This includes the implementation exception for a documented interface method:
+   omit repeated Javadoc only when the interface method has meaningful, accurate, accessible
+   Javadoc and the implementation adds no implementation-specific contract, constraint, side
+   effect, or other behavior beyond that documented interface method's contract.
+   Document implementation-specific behavior and obey explicit project hard rules. A generic
+   project rule requiring Javadoc on every core Java method does not by itself override the
+   documented interface method exception. Only an explicit project rule requiring implementation
+   methods to repeat interface Javadoc does. Do not run tests by default; run only a command
+   explicitly requested by the user or mandated by a project/global hard rule.
 7. Report changed files and any command actually run, then call
    `complete-lite-proposal --digest <digest>`. Completion fails if no confirmed target changed,
    another file changed after confirmation, or Git HEAD moved. Re-present the proposal rather

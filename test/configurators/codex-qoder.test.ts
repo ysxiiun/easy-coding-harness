@@ -136,12 +136,20 @@ describe("configureCodex", () => {
     );
     expect(tddInitSkill).toContain("historical coverage required: no");
     expect(tddInitSkill).not.toContain("{{");
-    expect(
-      await readFile(path.join(tempDir, ".agents", "skills", "ec-quality", "SKILL.md"), "utf8"),
-    ).toContain("one candidate, two read-only gates");
-    expect(
-      await readFile(path.join(tempDir, ".agents", "skills", "ec-lite", "SKILL.md"), "utf8"),
-    ).toContain("controlled only by the user");
+    const qualitySkill = await readFile(
+      path.join(tempDir, ".agents", "skills", "ec-quality", "SKILL.md"),
+      "utf8",
+    );
+    expect(qualitySkill).toContain("one candidate, two read-only gates");
+    expect(qualitySkill).toContain("documented interface method");
+    expect(qualitySkill).toContain("does not by itself override");
+    const liteSkill = await readFile(
+      path.join(tempDir, ".agents", "skills", "ec-lite", "SKILL.md"),
+      "utf8",
+    );
+    expect(liteSkill).toContain("controlled only by the user");
+    expect(liteSkill).toContain("documented interface method");
+    expect(liteSkill).toContain("does not by itself override");
     expect(await pathExists(path.join(tempDir, ".codex", "hooks", "session-start.py"))).toBe(true);
     expect(await pathExists(path.join(tempDir, ".codex", "hooks", "easy_coding_status.py"))).toBe(
       true,
@@ -190,12 +198,17 @@ describe("configureCodex", () => {
     expect(agent).toContain('task card\'s "Local Baseline"');
     expect(agent).toContain("fragmented one-use");
     expect(agent).toContain("new core Java class");
+    expect(agent).toContain("documented interface method");
+    expect(agent).toContain("does not by itself override");
     const reviewer = await readFile(
       path.join(tempDir, ".codex", "agents", "ec-reviewer.toml"),
       "utf8",
     );
     expect(reviewer).toContain("evidenced Local Baseline");
     expect(reviewer).toContain("missing multiline Javadoc");
+    expect(reviewer).toContain("documented interface method");
+    expect(reviewer).toContain("interface method it implements has");
+    expect(reviewer).toContain("does not by itself override");
 
     const main = await readFile(path.join(tempDir, "AGENTS.md"), "utf8");
     expect(main).toContain("Codex: `$ec-*`");
@@ -550,12 +563,20 @@ describe("configureQoder", () => {
     );
     expect(tddInitSkill).toContain("historical coverage required: no");
     expect(tddInitSkill).not.toContain("{{");
-    expect(
-      await readFile(path.join(tempDir, ".qoder", "skills", "ec-quality", "SKILL.md"), "utf8"),
-    ).toContain("one candidate, two read-only gates");
-    expect(
-      await readFile(path.join(tempDir, ".qoder", "skills", "ec-lite", "SKILL.md"), "utf8"),
-    ).toContain("controlled only by the user");
+    const qualitySkill = await readFile(
+      path.join(tempDir, ".qoder", "skills", "ec-quality", "SKILL.md"),
+      "utf8",
+    );
+    expect(qualitySkill).toContain("one candidate, two read-only gates");
+    expect(qualitySkill).toContain("documented interface method");
+    expect(qualitySkill).toContain("does not by itself override");
+    const liteSkill = await readFile(
+      path.join(tempDir, ".qoder", "skills", "ec-lite", "SKILL.md"),
+      "utf8",
+    );
+    expect(liteSkill).toContain("controlled only by the user");
+    expect(liteSkill).toContain("documented interface method");
+    expect(liteSkill).toContain("does not by itself override");
     const gitSkill = await readFile(
       path.join(tempDir, ".qoder", "skills", "ec-git", "SKILL.md"),
       "utf8",
@@ -619,12 +640,17 @@ describe("configureQoder", () => {
     expect(implementer).toContain("`Local Baseline`");
     expect(implementer).toContain("fragmented one-use");
     expect(implementer).toContain("new core Java class");
+    expect(implementer).toContain("documented interface method");
+    expect(implementer).toContain("does not by itself override");
     const reviewer = await readFile(
       path.join(tempDir, ".qoder", "agents", "ec-reviewer.md"),
       "utf8",
     );
     expect(reviewer).toContain("evidenced Local Baseline");
     expect(reviewer).toContain("missing multiline Javadoc");
+    expect(reviewer).toContain("documented interface method");
+    expect(reviewer).toContain("interface method it implements has");
+    expect(reviewer).toContain("does not by itself override");
   });
 
   it("keeps Qoder in its own namespace when Claude compatibility variables are also present", async () => {

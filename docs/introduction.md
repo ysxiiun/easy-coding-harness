@@ -135,7 +135,7 @@ agent 会读项目，生成 `SOUL.md`、`RULES.md`、`ABSTRACT.md`、`TEST_STRAT
 /ec-workflow 实现 xxx 功能
 ```
 
-`ec-workflow` 负责创建或恢复修改任务。项目和当前 session 可分别覆盖审批模式、工作流模式与 Java TDD；ANALYSIS 先闭合会影响技术路线、接口、模型、状态、范围和验收的问题，只有 Dev-Spec 写入唯一的 `decision_status: closed` 后才允许进入 IMPLEMENT。分析按实际修改闭包渐进加载上下文，Canonical Spec 使用 normalized remote 绑定当前 worktree，只消费 selected task 与直接依赖，不因未修改仓库或 supermodule 子项目抬级。非 TDD 的 IMPLEMENT 只编码，不运行质量命令；QUALITY 对同一候选并行执行 Review/Verification，汇总后只回修一次。TDD 的 RED/GREEN/REFACTOR 是实现职责内的唯一测试例外，绿色证据可以复用。编码贴合最近邻风格，避免投机抽象、碎片方法、冗余校验和无意义常量，并坚持最小修改；核心 Java 新增或实质修改的方法与字段使用多行 Javadoc，普通单行说明使用 `//`，逻辑段之间保留一个空行。纯只读请求保持 Ready，不创建任务。
+`ec-workflow` 负责创建或恢复修改任务。项目和当前 session 可分别覆盖审批模式、工作流模式与 Java TDD；ANALYSIS 先闭合会影响技术路线、接口、模型、状态、范围和验收的问题，只有 Dev-Spec 写入唯一的 `decision_status: closed` 后才允许进入 IMPLEMENT。分析按实际修改闭包渐进加载上下文，Canonical Spec 使用 normalized remote 绑定当前 worktree，只消费 selected task 与直接依赖，不因未修改仓库或 supermodule 子项目抬级。非 TDD 的 IMPLEMENT 只编码，不运行质量命令；QUALITY 对同一候选并行执行 Review/Verification，汇总后只回修一次。TDD 的 RED/GREEN/REFACTOR 是实现职责内的唯一测试例外，绿色证据可以复用。编码贴合最近邻风格，避免投机抽象、碎片方法、冗余校验和无意义常量，并坚持最小修改；核心 Java 新增或实质修改的方法与字段使用多行 Javadoc，但接口已有完整 Javadoc 且实现无额外语义时不重复编写，特殊实现行为和项目硬规则仍须说明。普通单行说明使用 `//`，逻辑段之间保留一个空行。纯只读请求保持 Ready，不创建任务。
 
 明确的极简修改可由用户显式调用 `/ec-lite`（Codex 使用 `$ec-lite`）。Lite 只执行“紧凑方案 → 用户确认 → 最小实现”，不创建任务、QUALITY 或 MEMORY，并持续到用户再次调用退出；存在活动任务时，用户自行选择取消启动、关闭任务后启动，或只清除当前任务指针后启动。
 

@@ -22,7 +22,13 @@ dimension named in your task card. Your reply IS the return value.
   cleanup solely as generic best practice. Flag unjustified local-style deviations, speculative
   layers, fragmented one-use micro-methods, constants created only for a getter return, and
   missing multiline Javadoc on any method/field in a new core Java class or any added/materially
-  modified method/field in an existing core Java class.
+  modified method/field in an existing core Java class. Do not flag an implementation method when
+  the interface method it implements has meaningful, accurate, accessible Javadoc and it adds no
+  implementation-specific contract, constraint, side effect, or other behavior beyond that
+  documented interface method's contract; require Javadoc for implementation-specific behavior
+  or an explicit project hard rule. A generic project rule requiring Javadoc on every core Java
+  method does not by itself override the documented interface method exception. Only an explicit
+  project rule requiring implementation methods to repeat interface Javadoc does.
 - Treat unrelated comment, formatting, import, naming, or refactor changes as minimum-diff
   violations. Do not ask to clean up untouched legacy code.
 - On the first pass, report the complete in-scope finding set. On a repair pass, review only the

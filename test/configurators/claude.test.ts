@@ -176,6 +176,8 @@ describe("configureClaude", () => {
     expect(implementingSkill).toContain("generic best practice");
     expect(implementingSkill).toContain("single return value of\n    a getter");
     expect(implementingSkill).toContain("existing core Java class");
+    expect(implementingSkill).toContain("documented interface method");
+    expect(implementingSkill).toContain("does not by itself override");
 
     const implementerAgent = await readFile(
       path.join(tempDir, ".claude", "agents", "ec-implementer.md"),
@@ -187,6 +189,8 @@ describe("configureClaude", () => {
     expect(implementerAgent).toContain("`Local Baseline`");
     expect(implementerAgent).toContain("fragmented one-use");
     expect(implementerAgent).toContain("new core Java class");
+    expect(implementerAgent).toContain("documented interface method");
+    expect(implementerAgent).toContain("does not by itself override");
 
     const qualitySkill = await readFile(
       path.join(tempDir, ".claude", "skills", "ec-quality", "SKILL.md"),
@@ -197,7 +201,16 @@ describe("configureClaude", () => {
     expect(qualitySkill).toContain("The first review must report the complete in-scope finding set");
     expect(qualitySkill).toContain("Do not demand defensive null checks");
     expect(qualitySkill).toContain("constant extraction");
+    expect(qualitySkill).toContain("documented interface method");
+    expect(qualitySkill).toContain("does not by itself override");
     expect(qualitySkill).toContain("One repair bundle");
+
+    const javadocLiteSkill = await readFile(
+      path.join(tempDir, ".claude", "skills", "ec-lite", "SKILL.md"),
+      "utf8",
+    );
+    expect(javadocLiteSkill).toContain("documented interface method");
+    expect(javadocLiteSkill).toContain("does not by itself override");
 
     const reviewerAgent = await readFile(
       path.join(tempDir, ".claude", "agents", "ec-reviewer.md"),
@@ -205,6 +218,9 @@ describe("configureClaude", () => {
     );
     expect(reviewerAgent).toContain("evidenced Local Baseline");
     expect(reviewerAgent).toContain("missing multiline Javadoc");
+    expect(reviewerAgent).toContain("documented interface method");
+    expect(reviewerAgent).toContain("interface method it implements has");
+    expect(reviewerAgent).toContain("does not by itself override");
     const verifierAgent = await readFile(
       path.join(tempDir, ".claude", "agents", "ec-verifier.md"),
       "utf8",
@@ -421,6 +437,7 @@ describe("configureClaude", () => {
     expect(initSkill).toContain("snapshot --agent <agent-id>");
     expect(initSkill).toContain("Never execute a command with\n   the literal placeholder `<P>`");
     expect(initSkill).toContain("explicit `missing-abstract` assessment");
+    expect(initSkill).toMatch(/does not by itself\s+override/);
     const preflightIndex = initSkill.indexOf("## Project-init preflight (run first — read-only)");
     const sessionResolutionIndex = initSkill.indexOf(
       "## Session path resolution (run after preflight — before any project write)",

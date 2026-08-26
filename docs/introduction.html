@@ -448,7 +448,7 @@
         </div>
         <div class="meta">
           <span>来源：<code>docs/introduction.md</code></span>
-          <span>版本：<code>1.0.0-beta.1</code></span>
+          <span>版本：<code>1.0.0-beta.2</code></span>
           <span>适配：Claude Code · Codex · Qoder</span>
         </div>
       </header>
@@ -499,7 +499,7 @@
             <div class="idea-card">
               <div class="num">2</div>
               <h3>人机共创，关键节点设硬门控</h3>
-              <p><code>approval_mode</code> 控制状态边是否等待，<code>workflow_mode</code> 控制状态内执行深度。ANALYSIS 闭合影响技术路线、接口、模型、状态、范围和验收的问题；Canonical Spec 只消费 selected task 与直接依赖，未修改仓库和 supermodule 子项目不参与定级。普通业务默认 Standard，单仓、最多三个内聚 Unit、最多 8 个文件的低风险局部修改优先 Fast，只有明确高风险与真实复杂度同时存在才进入 Strict。非 TDD 的 IMPLEMENT 只负责编码；QUALITY 将 Review Gate 与 Verification Gate 绑定同一候选并尽量并行，汇总后只回修一次。TDD 的 RED/GREEN/REFACTOR 是唯一测试例外。编码贴合最近邻风格，坚持最小修改，避免冗余校验、投机抽象、碎片方法和无意义常量；核心 Java 新增或实质修改的方法与字段使用多行 Javadoc，普通单行说明使用 <code>//</code>。纯只读请求保持 Ready。用户还可显式启用 <code>ec-lite</code>，以一次紧凑方案确认直接完成极简修改，不创建任务、QUALITY 或 MEMORY。</p>
+              <p><code>approval_mode</code> 控制状态边是否等待，<code>workflow_mode</code> 控制状态内执行深度。ANALYSIS 闭合影响技术路线、接口、模型、状态、范围和验收的问题；Canonical Spec 只消费 selected task 与直接依赖，未修改仓库和 supermodule 子项目不参与定级。普通业务默认 Standard，单仓、最多三个内聚 Unit、最多 8 个文件的低风险局部修改优先 Fast，只有明确高风险与真实复杂度同时存在才进入 Strict。非 TDD 的 IMPLEMENT 只负责编码；QUALITY 将 Review Gate 与 Verification Gate 绑定同一候选并尽量并行，汇总后只回修一次。TDD 的 RED/GREEN/REFACTOR 是唯一测试例外。编码贴合最近邻风格，坚持最小修改，避免冗余校验、投机抽象、碎片方法和无意义常量；核心 Java 新增或实质修改的方法与字段使用多行 Javadoc，但接口已有完整 Javadoc 且实现无额外语义时不重复编写，特殊实现行为和项目硬规则仍须说明。普通单行说明使用 <code>//</code>。纯只读请求保持 Ready。用户还可显式启用 <code>ec-lite</code>，以一次紧凑方案确认直接完成极简修改，不创建任务、QUALITY 或 MEMORY。</p>
             </div>
             <div class="idea-card">
               <div class="num">3</div>

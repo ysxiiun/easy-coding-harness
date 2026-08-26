@@ -59,6 +59,16 @@ Review only the confirmed diff and its direct interactions. Check acceptance beh
 compatibility, security/correctness, test design, nearest local style, required core Java
 Javadoc, logical blank-line grouping, and minimum modification.
 
+Do not report missing Javadoc on an implementation method when its interface method has
+meaningful, accurate, accessible Javadoc and the implementation adds no implementation-specific
+contract, constraint, side effect, or other behavior beyond that documented interface method's
+contract. Require implementation Javadoc for implementation-specific behavior or when an explicit
+project hard rule requires it.
+
+A generic project rule requiring Javadoc on every core Java method does not by itself override the
+documented interface method exception. Only an explicit project rule requiring implementation
+methods to repeat interface Javadoc does.
+
 Do not demand defensive null checks, constant extraction, abstractions, method splitting,
 comments, formatting, or cleanup solely as generic best practice. Do not report unrelated legacy
 issues as task findings. The first review must report the complete in-scope finding set; after a

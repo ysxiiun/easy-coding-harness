@@ -153,7 +153,10 @@ agent must be able to see what was generated and on what evidence.
      preference for single responsibility into a generic demand for many one-use helpers
    - Literal and constant conventions, including when local magic values are accepted and when
      a stable domain/config/protocol value is promoted to a named constant
-   - Javadoc/doc-comment coverage for core code and the inline-comment style used for complex logic
+   - Javadoc/doc-comment coverage for core code and the inline-comment style used for complex
+     logic. A generic project rule requiring Javadoc on every core Java method does not by itself
+     override the documented interface method exception. Only project evidence explicitly
+     requiring implementation methods to repeat interface Javadoc does
    - Import ordering and formatter/linter in use (read their configs)
    Structure as one section per language plus a General section. Every rule must be
    mechanically checkable — "be clean" is not a rule; "exported functions carry explicit

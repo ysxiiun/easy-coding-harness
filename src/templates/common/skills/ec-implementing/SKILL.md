@@ -63,6 +63,15 @@ Communicate with the user in the user's language.
     a getter.
 12. In a newly added core Java class, every method and field requires meaningful Javadoc. In an
     existing core Java class, every added or materially modified method and field requires it.
+    An implementation method may omit its own Javadoc when the interface method it implements has
+    meaningful, accurate, accessible Javadoc and the implementation adds no implementation-specific
+    contract, constraint, side effect, or other behavior beyond that documented interface method's
+    contract. Do not add an empty `{@inheritDoc}` block solely to satisfy this normal rule. Add
+    implementation Javadoc for any implementation-specific behavior or when an explicit project
+    hard rule requires it. A generic project rule requiring Javadoc on every core Java method
+    does not by itself override the
+    documented interface method exception. Only an explicit project rule requiring implementation
+    methods to repeat interface Javadoc does.
     Add focused inline comments to core or complex logic to explain intent, constraints, or
     non-obvious tradeoffs. Do not mass-retrofit untouched legacy code, and for non-Java code
     follow the language's doc-comment form plus the evidenced project convention. Java Javadoc
@@ -136,8 +145,9 @@ checks:[], issues:[], needs_attention:[]
    hard/contract dependencies are ready; do not batch-start dependent tasks at the initial
    IMPLEMENT boundary.
    Populate `Code Comments` on every code task card with the resolved user-facing host Agent
-   author value, the field/member/constant rules, and the core Java Javadoc rule above. Populate
-   `Local Baseline` from the Unit's analyzed evidence; sub-agents do not read this Skill.
+   author value, the field/member/constant rules, and the core Java Javadoc rule above, including
+   its documented-interface exception. Populate `Local Baseline` from the Unit's analyzed
+   evidence; sub-agents do not read this Skill.
 2. Execute according to dependency order and selected owner.
 3. For non-TDD work, do not run tests; self-audit scope, contracts, TODOs, and introduced warnings.
    For TDD, run only the lifecycle commands required by RED/GREEN/REFACTOR. Also audit new author
@@ -183,5 +193,6 @@ conversation overhead while keeping work observable.
 - [ ] New author attributions use the user-facing host `<Current Agent Name> with Easy Coding`.
 - [ ] Every new model field and every non-obvious documented member follows the local comment rule.
 - [ ] Every method/field in a new core Java class, and every added or materially modified one in
-      an existing core Java class, has Javadoc.
+      an existing core Java class, has Javadoc unless it qualifies for the documented-interface
+      implementation exception.
 - [ ] The task enters QUALITY, regardless of workflow mode.

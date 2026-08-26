@@ -247,6 +247,32 @@ describe("upgrade command", () => {
     expect(main).toContain("Auto adds no pause and carries the Dev-Spec link/path");
   });
 
+  it("refreshes interface Javadoc inheritance rules from beta.1", async () => {
+    await init({ agent: "codex", yes: true });
+    await markProjectInitComplete();
+    await setHarnessVersion("1.0.0-beta.1");
+
+    const managedFiles = [
+      ".agents/skills/ec-init/SKILL.md",
+      ".agents/skills/ec-implementing/SKILL.md",
+      ".agents/skills/ec-quality/SKILL.md",
+      ".agents/skills/ec-lite/SKILL.md",
+      ".codex/agents/ec-implementer.toml",
+      ".codex/agents/ec-reviewer.toml",
+    ];
+    for (const relativePath of managedFiles) {
+      await writeFile(path.join(tempDir, relativePath), "stale managed rule\n", "utf8");
+    }
+
+    await upgrade({ yes: true });
+
+    for (const relativePath of managedFiles) {
+      const content = await readFile(path.join(tempDir, relativePath), "utf8");
+      expect(content).toContain("documented interface method");
+      expect(content).toMatch(/does not by itself\s+override/);
+    }
+  });
+
   it("refreshes stale hook commands even when the harness version is current", async () => {
     await init({ agent: "claude-code", yes: true });
     await markProjectInitComplete();

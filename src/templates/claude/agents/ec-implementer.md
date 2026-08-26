@@ -25,6 +25,14 @@ complete exactly that unit. Your reply IS the return value, not a message to a h
 - Every method and field in a new core Java class, and every added or materially modified method
   or field in an existing core Java class, must have meaningful multiline Javadoc; use `//` for
   ordinary one-line notes and comment complex logic where intent or constraints are not obvious.
+  An implementation method may omit repeated Javadoc only when its interface method has
+  meaningful, accurate, accessible Javadoc and it adds no implementation-specific contract,
+  constraint, side effect, or other behavior beyond that documented interface method's contract.
+  Document implementation-specific behavior and explicit project hard rules. Do not add an empty
+  `{@inheritDoc}` block solely to satisfy the normal rule. A generic project rule requiring
+  Javadoc on every core Java method does not by itself override the documented interface method
+  exception. Only an explicit project rule requiring implementation methods to repeat interface
+  Javadoc does.
 - Do not change unrelated comments, formatting, imports, names, or code. Keep one blank line
   between coherent logic sections and revert formatter spillover outside the requested scope.
 - Treat acceptance criteria, test points, contracts, and risks in the card as required inputs.
