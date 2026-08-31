@@ -6,6 +6,17 @@
 - `y`：常规功能升级
 - `z`：日常 bug 修复
 
+## 1.0.0
+
+- 首个正式版本，固化统一的 `INIT → ANALYSIS → IMPLEMENT → QUALITY → MEMORY → COMPLETE`
+  状态机；Fast、Standard、Strict 共享状态图，仅按任务复杂度和风险调整执行深度。
+- 正式提供 Canonical Spec 精确消费、持久分析方案回执、双门 QUALITY、`ec-lite` 极简模式、
+  会话清理与用户验收后差异接受等完整能力，并保持 Claude Code、Codex、Qoder 三端一致。
+- 稳定编码约束：遵循最近邻代码风格和最小修改，避免过度设计、冗余校验、碎片方法与无意义
+  常量；接口方法已有完整文档且实现无额外语义时，不重复编写实现方法 Javadoc。
+- 正式版由 `1.0.0-beta.2` 晋升，不新增破坏性变更；默认安装命令将通过 npm `latest` 获取
+  `1.0.0`，预发布用户可直接升级。
+
 ## 1.0.0-beta.2
 
 - 核心 Java Javadoc 规则新增接口文档继承例外：接口方法已有完整、准确且可访问的
