@@ -9,6 +9,12 @@ Use only after ANALYSIS has frozen `task.json.workflow_mode` to `fast`, `standar
 `strict`. Read `dev-spec.md`, the latest `plan` record in `execution.jsonl`, relevant RULES
 and ABSTRACT sections, and `test-strategy.md` for code tasks.
 
+For a Canonical-backed task, consume the ready `spec_context.consumption` returned on creation
+or claim. On session resume or after design sync, call `resume-spec-context --agent <agent-id>
+--session-file <P>`. The bound source and selected changes/steps/tests govern the implementation;
+handoff summaries and derived plans cannot substitute for this context. A blocked context or
+pending `spec_change` stops implementation until the original source is repaired/synchronized.
+
 If frozen `task.tdd_enabled` is not `true`, IMPLEMENT writes production and planned test code but
 does not run lint, typecheck, test, build, or coverage commands. Deterministic execution belongs
 to QUALITY's Verification Gate. TDD is the only exception because RED/GREEN/REFACTOR commands are
@@ -167,8 +173,11 @@ checks:[], issues:[], needs_attention:[]
 6. For parallel units, detect overlapping writes before advancing.
 7. If implementation needs a file, symbol, repository, or source step outside the mapped
    Canonical change set, stop and return to ANALYSIS instead of expanding scope implicitly.
-8. If a static Canonical change is confirmed, revise the original design by exactly one revision
-   and use `sync-spec-design`; never edit the machine-owned execution block. If a writeback was
+8. If a static Canonical change is confirmed, first persist it with `begin-spec-change
+   --affected-task <id> --summary <confirmed-change> --agent <agent-id> --session-file <P>`.
+   Revise the original design by exactly one revision, validate READY and use `sync-spec-design`;
+   then `resume-spec-context` and rebuild the local plan in ANALYSIS. Never edit the
+   machine-owned execution block. If a writeback was
    interrupted, run `reconcile-spec-execution` with the stored idempotent pending action.
    Reconciliation only consumes dispatch/result evidence created after the current `in_progress`
    acknowledgment; it never opens a new repair attempt or reuses an earlier attempt's result.

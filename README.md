@@ -213,16 +213,27 @@ easy-coding upgrade
 `behavior.approval_mode` 与 `behavior.workflow_mode`；旧 `lite` 映射为 `guard + fast`。
 项目级模式用 `easy-coding config` 修改（要求
 项目 Harness 与 CLI 版本完全一致，否则先执行 `easy-coding upgrade` 或更新 CLI）；当前
-session 临时覆盖统一通过 `ec-config` 对话修改。升级到 0.10.0-beta.2 时配置 schema 升至
-5；未完成 `ec-tdd-init` readiness 的项目/session TDD 请求迁移为关闭并保留阈值，同时
-部署共享 Java 差异覆盖率与 readiness 工具。0.10.0-beta.3 起，TDD 业务任务只依赖本地
+session 临时覆盖统一通过 `ec-config` 对话修改。当前配置 schema 为 5；升级保留项目和
+session 的 TDD 开关、阈值及继承关系，也保留任务已经冻结的基线。支持 TDD 的 schema 4
+迁移保留用户配置；readiness 缺失或损坏只报告问题，不自动关闭 TDD。TDD 业务任务只依赖本地
 单测与本地差异覆盖率，历史远程 CI 证据保留但不再参与验收。已经冻结的活动任务合同
 不会被静默改写。0.10.0-beta.4 起，仍停在 ANALYSIS 的旧任务必须补齐决策闭环后才能
 进入 IMPLEMENT；已经进入后续阶段的任务不受影响。
 
 session GC 只在创建新逻辑会话前和实际升级时触发：无任务绑定的会话保留 7 天、仍绑定
 任务的会话保留 30 天，并按最近活动时间将根目录 JSON 控制在 100 个以内。活动任务仍在
-引用的 acceptance 验收快照会被保留；任务、记忆、Spec 和项目知识不参与清理。
+引用的 acceptance 验收快照会被保留；升级时带有显式 TDD 配置的 session 不参与清理。
+任务、记忆、Spec 和项目知识不参与清理。
+
+TDD 凭据中的文件摘要是初始化历史。POM 版本、依赖、插件、CI 或托管工具变化无需重新
+初始化；本轮构建与工具变化会使旧验收证据失效。日常 readiness 只检查必要本地入口和
+参数契约；缺少凭据为 `needs_init`，已有凭据或入口损坏为 `needs_repair`。实际单测与
+增量覆盖率仍须通过。`ec-tdd-init` 的完整校验包含 GitLab CI。
+
+正式绑定的外部 Canonical Spec 在创建和接手时返回选中内容，恢复会话使用
+`resume-spec-context`。需求确认后先用 `begin-spec-change` 登记，再更新绑定原稿、递增
+revision、验证 READY 并执行 `sync-spec-design`；随后恢复上下文并更新派生计划。待同步
+变更会跨 Agent 保留并阻止实施和验收，交接摘要不能代替原稿。
 
 若当前会话不希望 Harness 接管，显式调用 `/ec-no-harness`（Codex 使用
 `$ec-no-harness`）。它只旁路 Easy Coding，不关闭其他 hooks，也不忽略其他 skills；

@@ -219,8 +219,11 @@ Dev-Spec 入口会保留到同轮下一条最终消息。
 有效性门禁，`document_sha256` 和 `execution_revision` 可随着共享执行状态前进。Harness
 在实施、验证、完成或取消形成可验证结论后，通过 CAS 与幂等键写回 Task/Step/dependency
 投影；异常中断后运行 `reconcile-spec-execution`。项目外显式 Spec 使用绝对 locator，移动后
-只能用身份一致的 `rebind-spec-source` 修复。需要改变静态任务/契约/范围时回到 ANALYSIS，
+只能用身份一致的 `rebind-spec-source` 修复。确认改变静态任务/契约/范围后，先运行
+`begin-spec-change --affected-task <id> --summary <确认说明> --agent <agent-id>` 登记，再
 将原 Spec revision 恰好加一、恢复 READY 并执行 `sync-spec-design`，禁止手工编辑执行区。
+创建和接手会返回绑定原稿的选中内容；恢复会话或同步完成后运行 `resume-spec-context`
+重新加载，再更新派生计划。待同步需求跨 Agent 保留，未完成同步时不能继续实施或验收。
 共享写回只有一个 pending 动作槽，不能用新动作覆盖未对账动作；并发 CAS 可重试冲突保留
 现场，而旧设计动作、幂等键载荷冲突和确定性状态错误会终止并释放写槽。repair 仅重开
 blocked 来源任务，且只接受本次共享 `in_progress` 事件之后产生的本地 result 证据。
@@ -387,8 +390,12 @@ $ec-tdd-init     （Codex）
 
 该 skill 创建专用 `tdd-init` 代码任务，任务自身始终以 TDD 关闭态运行，因此可以安全修改
 构建和 GitLab CI 配置。它只让未来任务能够按各自 baseline 计算增量覆盖率，不生成历史
-业务单测；完成后 TDD 仍保持关闭，需用户再通过 `ec-config` 显式开启。生成的远程 job
+业务单测；完成后保留原 TDD 配置，尚未开启时通过 `ec-config` 显式开启。生成的远程 job
 属于项目 CI 自动化能力，不是 Harness 业务任务的验收依赖。
+
+普通 POM 版本、依赖、插件和 CI 变更无需重新初始化。readiness 缺少凭据时提示
+`needs_init`，已有凭据或必要入口损坏时提示 `needs_repair`。修复具体问题即可保留配置
+继续验证；构建或覆盖率工具变化后，旧测试/覆盖率证据不可复用。
 
 ### 当前会话不使用 Harness
 
@@ -510,10 +517,10 @@ easy-coding upgrade
 - **覆盖**：Skills、Hooks、子代理定义、平台配置、主约束文件生成区域
 - **原位迁移**：config.yaml 更新 `harness_version`；旧确认设置迁移为
   `behavior.approval_mode` 与 `behavior.workflow_mode`，其中 lite 映射为 guard + fast；
-  schema 5 会把没有 readiness 的 beta.1 项目/session TDD 请求迁移为关闭并保留阈值；
+  schema 4→5 保留项目/session TDD 开关、阈值和继承关系，readiness 异常不重置配置；
   旧 task/session 状态元数据继续幂等迁移，已冻结活动任务合同不被静默改写
 - **有界清理**：实际升级会清理过期 session 和确定性孤儿 acceptance 快照；`--dry-run`
-  不删除，活动验收证据与任务资产保持不变
+  不删除，活动验收证据与任务资产保持不变，带有显式 TDD 配置的 session 不参与升级清理
 - **内容保留**：任务 dev-spec / execution / test-strategy、memory 内容、SOUL.md、RULES.md、ABSTRACT.md 等用户资产不被覆盖
 
 ### easy-coding config
@@ -551,7 +558,7 @@ easy-coding status
 | `ec-memory` | 记忆归档 | ec-workflow 自动派发 |
 | `ec-task-management` | 任务面板 | 查看/创建/选择/恢复/交接任务 |
 | `ec-config` | 模式配置面板 | 查看或修改 Approval、Workflow、TDD 与阈值 |
-| `ec-tdd-init` | Java TDD 基础设施初始化 | 首次开启 TDD 前或 readiness 漂移后 |
+| `ec-tdd-init` | Java TDD 基础设施初始化或修复 | 首次开启 TDD 前或必要入口损坏时 |
 | `ec-task-close` | 中断任务 | 取消当前任务 |
 | `ec-no-harness` | 当前 session 旁路 Harness | 临时使用原生 Agent 能力 |
 | `ec-lite` | 用户显式启停的极简直达模式 | 明确的极简修改 |

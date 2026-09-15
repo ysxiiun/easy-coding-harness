@@ -205,6 +205,26 @@ export interface SpecWritebackProgress {
   updated_at: string;
 }
 
+export interface SpecContextReceipt {
+  session_file: string;
+  agent: string;
+  spec_id: string;
+  revision: number;
+  design_sha256: string;
+  selected_spec_tasks: string[];
+  loaded_at: string;
+}
+
+export interface SpecChange {
+  summary: string;
+  affected_task_ids: string[];
+  spec_id: string;
+  revision: number;
+  design_sha256: string;
+  confirmed_by: string;
+  confirmed_at: string;
+}
+
 export interface SpecRepositoryBinding {
   repo_id: string;
   name: string;
@@ -330,6 +350,10 @@ export interface TaskJson {
   spec_dependency_evidence?: SpecDependencyEvidence[];
   /** 当前任务的共享 Spec 写回、冲突与恢复进度。 */
   spec_writeback_progress?: SpecWritebackProgress;
+  /** 当前 session 已加载的选中设计范围；完整原稿不复制到任务状态中。 */
+  spec_context?: SpecContextReceipt;
+  /** 已确认但尚未同步到 Canonical 原稿的需求变更。 */
+  spec_change?: SpecChange;
   init_log?: unknown[];
 }
 

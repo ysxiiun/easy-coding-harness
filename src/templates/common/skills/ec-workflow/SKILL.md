@@ -82,8 +82,8 @@ or `qoder`. Never use a display or source-author attribution such as `Codex with
    failure: never copy, mirror, or rewrite the source Spec because of it.
 
    Then call `create-task-from-spec` once for the complete selection. Do not call
-   `select-dev-spec-scope` during routing; `ec-analysis` owns the single consumption-closure read
-   after task creation. A document without a Canonical manifest remains a legacy ANALYSIS input
+   `select-dev-spec-scope` during discovery; creation returns the selected consumption closure
+   for `ec-analysis` to use directly. A document without a Canonical manifest remains a legacy ANALYSIS input
    for an ordinary task. A malformed, DRAFT, or otherwise non-READY Canonical Spec stays blocked
    and must never be downgraded to the legacy route. A READY Canonical Spec without shared
    execution remains readable, but run `initialize-spec-execution` before selection can become an
@@ -118,7 +118,9 @@ or `qoder`. Never use a display or source-author attribution such as `Codex with
    `<source-task-id>-><dependency-task-id>=<evidence>`.
    Explicit project-external Spec files are supported and stored as absolute locators. If that
    locator moves, use `rebind-spec-source`; never guess by basename. Shared execution progress is
-   written only through state API writer commands. Static design edits require revision + READY +
+   written only through state API writer commands. Confirmed static design edits first require
+   `begin-spec-change --affected-task <id> --summary <confirmed-change> --agent <agent-id>
+   --session-file <P>`, then revision + READY +
    `sync-spec-design`; never hand-edit the `EDS:EXECUTION` region.
 4. When the user explicitly invokes `ec-tdd-init`, let that skill own preflight and create a
    `type=tdd-init` code task only after scope confirmation. Do not reinterpret it as an ordinary
@@ -154,6 +156,13 @@ For a Canonical-backed task whose snapshot reports pending writeback, call
 writeback remains pending or conflicted. A deterministic writer rejection reports `error` and
 clears the pending action so the corrected action can proceed; never overwrite a different
 pending action.
+
+Creation and claim return `spec_context.consumption` for the stored selection. Consume it before
+dispatching a stage. After session resume or design sync, call `resume-spec-context --agent
+<agent-id> --session-file <P>` and consume its returned closure. A blocked context requires
+source repair or design sync; never continue from a handoff summary alone. If `spec_change` is
+pending, resume that confirmed change on the bound original file before implementation/QUALITY.
+Recovery preserves the original event author/idempotency key and the current task owner separately.
 
 ## Boundary handling
 

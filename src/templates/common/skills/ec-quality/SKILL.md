@@ -10,6 +10,11 @@ does not modify source, tests, configuration, plans, or task scope.
 
 ## Candidate freeze
 
+For Canonical-backed tasks, load the current session's bound selection through `resume-spec-context`
+when resuming. Pass that original consumption closure to both gates and compare selected contracts,
+changes, Steps and Tests against the candidate. Pending `spec_change` blocks QUALITY acceptance
+until source revision synchronization and ANALYSIS replanning have completed.
+
 Call `evidence-fingerprints` once and use the returned implementation/config fingerprints for
 the whole attempt. It also returns the runtime-owned `quality_attempt` number, start time, evidence
 boundary, and repair count. Every Review and Verification record in this attempt must carry that

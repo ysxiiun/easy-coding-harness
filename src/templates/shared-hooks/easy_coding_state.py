@@ -539,11 +539,7 @@ def read_project_behavior(root: Path) -> tuple[str, str, bool, int]:
             "expected adaptive, fast, standard, or strict."
         )
     if schema_version >= 4:
-        tdd_enabled = (
-            parse_yaml_bool(behavior.get("tdd_enabled"), "behavior.tdd_enabled")
-            if schema_version >= 5
-            else DEFAULT_TDD_ENABLED
-        )
+        tdd_enabled = parse_yaml_bool(behavior.get("tdd_enabled"), "behavior.tdd_enabled")
         tdd_threshold = parse_tdd_threshold(
             behavior.get("tdd_coverage_threshold", DEFAULT_TDD_COVERAGE_THRESHOLD),
             "behavior.tdd_coverage_threshold",
@@ -610,17 +606,17 @@ def tdd_ci_contract_reasons(contents: list[str]) -> list[str]:
     return reasons
 
 
-def tdd_readiness(root: Path) -> dict[str, object]:
+def tdd_readiness(root: Path, include_ci: bool = False) -> dict[str, object]:
     receipt = root / TDD_READINESS_PATH
     if not receipt.is_file():
         return {"status": "needs_init", "reasons": ["TDD readiness receipt is missing"]}
     try:
         manifest = json.loads(receipt.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError):
-        return {"status": "needs_init", "reasons": ["TDD readiness receipt is invalid"]}
+        return {"status": "needs_repair", "reasons": ["TDD readiness receipt is invalid"]}
     if not isinstance(manifest, dict):
         return {
-            "status": "needs_init",
+            "status": "needs_repair",
             "reasons": ["TDD readiness receipt must be a JSON object"],
         }
 
@@ -650,9 +646,10 @@ def tdd_readiness(root: Path) -> dict[str, object]:
 
     contents: dict[str, list[str]] = {
         "build_files": [],
-        "ci_files": [],
         "tool_files": [],
     }
+    if include_ci:
+        contents["ci_files"] = []
     for field in contents:
         records = manifest.get(field)
         if not isinstance(records, list) or not records:
@@ -663,11 +660,8 @@ def tdd_readiness(root: Path) -> dict[str, object]:
                 reasons.append(f"{field} contains an invalid record")
                 continue
             file_name = record.get("path")
-            expected = record.get("sha256")
-            if not is_non_empty_string(file_name) or not re.fullmatch(
-                r"[a-f0-9]{64}", str(expected or "")
-            ):
-                reasons.append(f"{field} contains an invalid path or SHA-256")
+            if not is_non_empty_string(file_name):
+                reasons.append(f"{field} contains an invalid path")
                 continue
             candidate = Path(str(file_name))
             if candidate.is_absolute():
@@ -678,8 +672,6 @@ def tdd_readiness(root: Path) -> dict[str, object]:
                 resolved.relative_to(root.resolve())
                 payload = resolved.read_bytes()
                 contents[field].append(payload.decode("utf-8"))
-                if hashlib.sha256(payload).hexdigest() != expected:
-                    reasons.append(f"readiness file changed: {file_name}")
             except (OSError, UnicodeError, ValueError):
                 reasons.append(f"readiness file is missing or unreadable: {file_name}")
 
@@ -698,8 +690,6 @@ def tdd_readiness(root: Path) -> dict[str, object]:
     } if isinstance(manifest_ci_files, list) else set()
     if not build_paths.intersection(JAVA_BUILD_FILE_NAMES):
         reasons.append("build_files must include a Maven or Gradle Java build file")
-    if not ci_paths.intersection(GITLAB_CI_ENTRY_FILES):
-        reasons.append("ci_files must include the project-root GitLab CI entry file")
     tool_paths = {
         str(item.get("path", "")).replace("\\", "/")
         for item in manifest_tool_files
@@ -707,11 +697,14 @@ def tdd_readiness(root: Path) -> dict[str, object]:
     } if isinstance(manifest_tool_files, list) else set()
     if COVERAGE_TOOL_PATH not in tool_paths:
         reasons.append(f"tool_files must include {COVERAGE_TOOL_PATH}")
-    if not any("jacoco" in content.lower() for content in contents["build_files"]):
-        reasons.append("build files do not configure JaCoCo")
-    reasons.extend(tdd_ci_contract_reasons(contents["ci_files"]))
+    if include_ci:
+        if not ci_paths.intersection(GITLAB_CI_ENTRY_FILES):
+            reasons.append("ci_files must include the project-root GitLab CI entry file")
+        if not any("jacoco" in content.lower() for content in contents["build_files"]):
+            reasons.append("build files do not configure JaCoCo")
+        reasons.extend(tdd_ci_contract_reasons(contents["ci_files"]))
     return {
-        "status": "ready" if not reasons else "needs_init",
+        "status": "ready" if not reasons else "needs_repair",
         "reasons": list(dict.fromkeys(reasons)),
     }
 
@@ -720,7 +713,8 @@ def require_tdd_readiness(root: Path) -> None:
     readiness = tdd_readiness(root)
     if readiness["status"] != "ready":
         reasons = "; ".join(str(reason) for reason in readiness["reasons"])
-        raise StateError(f"TDD cannot be enabled before ec-tdd-init succeeds: {reasons}")
+        action = "Run ec-tdd-init first" if readiness["status"] == "needs_init" else "Repair TDD readiness"
+        raise StateError(f"{action}: {reasons}. TDD settings are unchanged.")
 
 
 def resolve_behavior(
@@ -1121,6 +1115,7 @@ def record_architecture_assessment(
     if action not in ARCHITECTURE_ACTIONS:
         raise StateError(f"Unknown architecture assessment action: {action}")
     session, resolved_task_id, task = resolve_current_task(root, task_id, session_file)
+    require_spec_context(root, task, agent, session_file)
     if task.get("status") != "MEMORY":
         raise StateError("Architecture assessment is only available during MEMORY.")
     progress = task.get("memory_progress")
@@ -2050,7 +2045,9 @@ def legacy_source_digest_matches(
     return legacy_sha256 == design_document_sha256
 
 
-def inspect_task_spec(root: Path, task: dict) -> tuple[dict, dict]:
+def inspect_task_spec(
+    root: Path, task: dict, *, allow_pending_hard_dependencies: bool = False,
+) -> tuple[dict, dict]:
     source = task.get("spec_source")
     selected = task.get("selected_spec_tasks")
     repo_paths = task.get("repo_paths")
@@ -2072,7 +2069,10 @@ def inspect_task_spec(root: Path, task: dict) -> tuple[dict, dict]:
             and is_non_empty_string(record.get("task_id"))
             and is_non_empty_string(record.get("evidence"))
         }
-        selection = select_tasks(inspection, selected, satisfied)
+        selection = select_tasks(
+            inspection, selected, satisfied,
+            allow_pending_hard_dependencies=allow_pending_hard_dependencies,
+        )
     except EasyDevSpecError as exc:
         raise StateError(f"Canonical Spec validation failed: {exc}") from exc
     if not isinstance(inspection.get("execution"), dict):
@@ -2177,6 +2177,117 @@ def inspect_task_spec(root: Path, task: dict) -> tuple[dict, dict]:
     task["spec_source"] = source
     task["spec_dependency_evidence"] = refreshed_dependencies
     return inspection, selection
+
+
+def restore_spec_context(
+    root: Path, task_id: str, task: dict, agent: str,
+    session_file: str | Path | None = None,
+) -> dict | None:
+    if not isinstance(task.get("spec_source"), dict):
+        return None
+    task.pop("spec_context", None)
+    try:
+        inspection, _ = inspect_task_spec(root, task, allow_pending_hard_dependencies=True)
+        context = select_consumption_scopes(
+            stored_spec_path(root, task), root, task["selected_spec_tasks"]
+        )
+        if context.get("design_sha256") != inspection.get("design_sha256"):
+            raise StateError("Canonical Spec changed while restoring context; retry resume-spec-context.")
+        if isinstance(task.get("spec_change"), dict):
+            raise StateError("Confirmed Spec change is pending; update the bound source and run sync-spec-design.")
+        task["spec_context"] = {
+            "session_file": resolve_session_path(root, session_file).relative_to(root.resolve()).as_posix(),
+            "agent": normalize_session_agent(agent),
+            "spec_id": inspection["spec_id"],
+            "revision": inspection["revision"],
+            "design_sha256": inspection["design_sha256"],
+            "selected_spec_tasks": task["selected_spec_tasks"],
+            "loaded_at": now_iso(),
+        }
+        result = {"status": "ready", "consumption": context}
+    except (StateError, EasyDevSpecError, OSError, UnicodeError) as exc:
+        # 接手仍可成功，修复来源与同步状态后必须重新加载，不能沿用旧会话的消费记录。
+        result = {"status": "blocked", "reason": str(exc), "source": task["spec_source"]}
+    write_task(root, task_id, task)
+    return result
+
+
+def resume_spec_context(
+    root: Path, agent: str, task_id: str | None = None,
+    session_file: str | Path | None = None,
+) -> dict:
+    session, resolved_task_id, task = resolve_current_task(root, task_id, session_file)
+    if not isinstance(task.get("spec_source"), dict):
+        raise StateError("Current task is not backed by a Canonical Spec.")
+    context = restore_spec_context(root, resolved_task_id, task, agent, session_file)
+    snapshot = snapshot_state(root, session_file, session)
+    snapshot.update({"action": "resume-spec-context", "spec_context": context})
+    return snapshot
+
+
+def require_spec_context(
+    root: Path, task: dict, agent: str, session_file: str | Path | None = None,
+    *, allow_pending_hard_dependencies: bool = False,
+) -> None:
+    if not isinstance(task.get("spec_source"), dict):
+        return
+    if isinstance(task.get("spec_change"), dict):
+        raise StateError("Confirmed Spec change is pending; update the bound source and run sync-spec-design.")
+    inspection, _ = inspect_task_spec(
+        root, task, allow_pending_hard_dependencies=allow_pending_hard_dependencies,
+    )
+    receipt = task.get("spec_context")
+    expected = {
+        "session_file": resolve_session_path(root, session_file).relative_to(root.resolve()).as_posix(),
+        "agent": normalize_session_agent(agent),
+        "spec_id": inspection["spec_id"],
+        "revision": inspection["revision"],
+        "design_sha256": inspection["design_sha256"],
+        "selected_spec_tasks": task["selected_spec_tasks"],
+    }
+    if not isinstance(receipt, dict) or any(receipt.get(key) != value for key, value in expected.items()):
+        raise StateError("Current session must consume the bound Canonical Spec via resume-spec-context before advancing.")
+
+
+def begin_spec_change(
+    root: Path, affected_task_ids: list[str], summary: str, agent: str,
+    task_id: str | None = None, session_file: str | Path | None = None,
+) -> dict:
+    session, resolved_task_id, task = resolve_current_task(root, task_id, session_file)
+    if task.get("status") in TERMINAL_STATUSES:
+        raise StateError("Cannot change the design of a terminal task.")
+    selected = task.get("selected_spec_tasks") or []
+    affected = sorted(set(affected_task_ids))
+    if not affected or not set(affected).issubset(selected) or not is_non_empty_string(summary):
+        raise StateError("Spec change requires selected affected task IDs and a confirmed summary.")
+    existing = task.get("spec_change")
+    if isinstance(existing, dict):
+        if existing.get("affected_task_ids") != affected or existing.get("summary") != summary.strip():
+            raise StateError("A different confirmed Spec change is pending; finish its synchronization first.")
+    else:
+        inspect_task_spec(root, task, allow_pending_hard_dependencies=True)
+        if _writeback_progress(task).get("pending_action"):
+            raise StateError("Reconcile pending Spec writeback before beginning a design change.")
+        cancel_active_quality_attempt(root, resolved_task_id, task, agent, summary, "manual-return")
+        task = load_task(root, resolved_task_id) or task
+        cleanup_verification_checkpoint(root, resolved_task_id, task)
+        task["spec_change"] = {
+            "summary": summary.strip(), "affected_task_ids": affected,
+            "spec_id": task["spec_source"]["spec_id"],
+            "revision": task["spec_source"]["revision"],
+            "design_sha256": task["spec_source"]["design_sha256"],
+            "confirmed_by": agent, "confirmed_at": now_iso(),
+        }
+        task.pop("spec_context", None)
+        task.pop("pending_transition", None)
+        if task.get("status") != "ANALYSIS":
+            task["status"] = "ANALYSIS"
+            append_stage_history(task, "ANALYSIS", agent)
+        task["last_agent"] = agent
+        write_task(root, resolved_task_id, task)
+    snapshot = snapshot_state(root, session_file, session)
+    snapshot["action"] = "begin-spec-change"
+    return snapshot
 
 
 def is_valid_spec_execution_plan(root: Path, task: dict, plan: object) -> bool:
@@ -2931,6 +3042,40 @@ def update_git_worktree_fingerprint(
         )
 
 
+def tdd_infrastructure_fingerprint(repositories: set[Path]) -> str:
+    # 初始化快照不参与就绪判断；当前输入同时约束验收和跨仓证据继承。
+    digest = hashlib.sha256()
+    for repository in sorted(repositories, key=str):
+        receipt = repository / TDD_READINESS_PATH
+        digest.update(str(repository).encode("utf-8") + b"\0")
+        try:
+            receipt_payload = receipt.read_bytes()
+            manifest = json.loads(receipt_payload)
+            digest.update(receipt_payload)
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            digest.update(b"<missing-or-invalid-readiness>")
+            continue
+        if not isinstance(manifest, dict):
+            continue
+        for field in ("build_files", "tool_files"):
+            records = manifest.get(field)
+            for record in records if isinstance(records, list) else []:
+                if not isinstance(record, dict) or not is_non_empty_string(record.get("path")):
+                    continue
+                candidate = (repository / str(record["path"])).resolve()
+                try:
+                    candidate.relative_to(repository.resolve())
+                except ValueError as error:
+                    raise StateError("TDD evidence file escapes repository.") from error
+                digest.update(f"{field}:{record['path']}".encode("utf-8") + b"\0")
+                try:
+                    digest.update(candidate.read_bytes())
+                except OSError:
+                    digest.update(b"<missing>")
+                digest.update(b"\0")
+    return digest.hexdigest()
+
+
 def implementation_fingerprint(root: Path, task_id: str) -> str:
     plan = latest_execution_plan(root, task_id)
     if not plan:
@@ -2953,6 +3098,9 @@ def implementation_fingerprint(root: Path, task_id: str) -> str:
             ).encode("utf-8")
         )
         digest.update(b"\0")
+        digest.update(tdd_infrastructure_fingerprint(
+            {root.resolve(), *task_repository_roots(root, task, plan)}
+        ).encode("ascii"))
     digest.update(b"execution-plan\0")
     digest.update(
         json.dumps(
@@ -3046,6 +3194,8 @@ def canonical_repository_fingerprints(
             base = root / base
         base = base.resolve()
         digest = hashlib.sha256()
+        if task.get("tdd_enabled") is True:
+            digest.update(tdd_infrastructure_fingerprint({root.resolve(), base}).encode("ascii"))
         units = [
             unit
             for unit in plan.get("units", [])
@@ -3911,6 +4061,7 @@ def finalize_quality_decision(
     session_file: str | Path | None = None,
 ) -> dict:
     session, resolved_task_id, task = resolve_current_task(root, task_id, session_file)
+    require_spec_context(root, task, agent, session_file)
     if task.get("status") != "QUALITY":
         raise StateError("A QUALITY decision can only be finalized during QUALITY.")
     record = finalize_quality_attempt(
@@ -4064,6 +4215,9 @@ def verification_contract_fingerprint(root: Path, task_id: str, task: dict) -> s
         "tdd_enabled": task.get("tdd_enabled"),
         "tdd_coverage_threshold": task.get("tdd_coverage_threshold"),
         "tdd_baselines": task.get("tdd_baselines"),
+        **({"tdd_infrastructure": tdd_infrastructure_fingerprint(
+            {root.resolve(), *task_repository_roots(root, task, plan)}
+        )} if task.get("tdd_enabled") is True else {}),
         "plan": plan,
         "canonical": {
             "schema": source.get("schema"),
@@ -4471,6 +4625,7 @@ def record_verification_checkpoint(
     session_file: str | Path | None = None,
 ) -> dict:
     session, resolved_task_id, task = resolve_current_task(root, task_id, session_file)
+    require_spec_context(root, task, agent, session_file)
     if task.get("status") != "QUALITY":
         raise StateError("Quality checkpoint can only be recorded during QUALITY.")
     if isinstance(task.get("quality_checkpoint"), dict):
@@ -4567,6 +4722,7 @@ def inspect_transition_drift(
     session_file: str | Path | None = None,
 ) -> dict:
     session, resolved_task_id, task = resolve_current_task(root, task_id, session_file)
+    require_spec_context(root, task, agent, session_file)
     if task.get("status") != "QUALITY":
         raise StateError("Transition drift can only be inspected during QUALITY.")
     task = ensure_verification_checkpoint(root, resolved_task_id, task, agent, session_file)
@@ -5152,7 +5308,7 @@ def validate_verification_readiness(
                     + ", ".join(missing_source_tasks)
                 )
     if str(task.get("type") or "").strip().lower() == TDD_INIT_TASK_TYPE:
-        readiness = tdd_readiness(root)
+        readiness = tdd_readiness(root, include_ci=True)
         if readiness["status"] != "ready":
             raise StateError(
                 "TDD initialization cannot advance to MEMORY until readiness passes: "
@@ -6376,7 +6532,8 @@ def validate_analysis_readiness(
         readiness = tdd_readiness(root)
         if readiness["status"] != "ready":
             reasons.append(
-                "TDD infrastructure is not ready; run ec-tdd-init first: "
+                ("TDD infrastructure is not ready; run ec-tdd-init first: "
+                 if readiness["status"] == "needs_init" else "Repair TDD readiness: ")
                 + "; ".join(str(reason) for reason in readiness["reasons"])
             )
         plan = latest_execution_plan(root, task_id) or {}
@@ -6695,6 +6852,8 @@ def spec_task_summary(task: dict | None) -> dict | None:
         "repositories": task.get("spec_repositories", []),
         "pending_dependencies": pending_dependencies,
         "writeback": task.get("spec_writeback_progress"),
+        "context": task.get("spec_context"),
+        "pending_change": task.get("spec_change"),
     }
 
 
@@ -6939,6 +7098,14 @@ def build_machine_breadcrumbs(
 
     if task_id:
         lines.append(f"[current-task:{task_id}]")
+        if task and isinstance(task.get("spec_source"), dict):
+            source = task["spec_source"]
+            lines.append(f"[easy-coding:spec:{source.get('spec_id')}:revision:{source.get('revision')}]")
+            lines.append("[easy-coding:spec-context:resume-spec-context-on-session-resume]")
+            if task.get("spec_change"):
+                lines.append("[easy-coding:spec-change:pending-sync-spec-design]")
+            if (task.get("spec_writeback_progress") or {}).get("pending_action"):
+                lines.append("[easy-coding:spec-writeback:reconcile-spec-execution-required]")
         if state["task_missing"]:
             lines.append(f"[easy-coding:current-task-missing:{task_id}]")
         handoff = pending_handoff_record(root, str(task_id))
@@ -7116,7 +7283,11 @@ def set_current_task(root: Path, task_id: str, agent: str, session_file: str | P
     session["last_seen_stage"] = str(task.get("status") or "PENDING")
     session["last_agent"] = agent
     write_session(root, session, session_file)
-    return snapshot_state(root, session_file, session)
+    context = restore_spec_context(root, task_id, task, agent, session_file)
+    snapshot = snapshot_state(root, session_file, session)
+    if context is not None:
+        snapshot["spec_context"] = context
+    return snapshot
 
 
 def clear_current_task(root: Path, agent: str, session_file: str | Path | None = None) -> dict:
@@ -7721,7 +7892,10 @@ def claim_task(root: Path, task_id: str, agent: str, session_file: str | Path | 
     }
     append_execution_record(root, task_id, claim)
 
+    context = restore_spec_context(root, task_id, task, agent, session_file)
     snapshot = snapshot_state(root, session_file, session)
+    if context is not None:
+        snapshot["spec_context"] = context
     snapshot["task_id"] = task_id
     snapshot["action"] = action
     snapshot["previous_agent"] = previous_agent
@@ -7771,7 +7945,8 @@ def create_task(
     write_task(root, task_id, task)
     if set_current:
         return set_current_task(root, task_id, agent, session_file)
-    return {"task_id": task_id, "task": task}
+    context = restore_spec_context(root, task_id, task, agent, session_file)
+    return {"task_id": task_id, "task": task, **({"spec_context": context} if context else {})}
 
 
 def create_task_from_spec(
@@ -7927,8 +8102,13 @@ def _execute_spec_writeback(
     action: dict,
     idempotency_key: str,
     invoke,
+    *, allow_pending_hard_dependencies: bool = False,
 ) -> dict:
-    inspection, _ = inspect_task_spec(root, task)
+    inspection, _ = inspect_task_spec(
+        root, task, allow_pending_hard_dependencies=(
+            allow_pending_hard_dependencies or action.get("kind") == "dependency"
+        ),
+    )
     source = task["spec_source"]
     progress = _writeback_progress(task)
     serialized_action = json.dumps(action, ensure_ascii=False, sort_keys=True)
@@ -8018,7 +8198,11 @@ def _execute_spec_writeback(
             "execution_revision": execution["execution_revision"],
         }
     )
-    inspect_task_spec(root, task)
+    inspect_task_spec(
+        root, task, allow_pending_hard_dependencies=(
+            allow_pending_hard_dependencies or action.get("kind") == "dependency"
+        ),
+    )
     progress.update(
         {
             "last_execution_revision": execution["execution_revision"],
@@ -8058,8 +8242,11 @@ def writeback_spec_task(
     agent: str,
     task_id: str | None = None,
     session_file: str | Path | None = None,
+    *, event_agent: str | None = None,
 ) -> dict:
     session, resolved_task_id, task = resolve_current_task(root, task_id, session_file)
+    require_spec_context(root, task, agent, session_file)
+    writer_agent = event_agent or agent
     if source_task_id not in set(task.get("selected_spec_tasks") or []):
         raise StateError("Canonical source task is outside the Harness task selection.")
     action = {
@@ -8069,7 +8256,7 @@ def writeback_spec_task(
         "summary": summary,
         "evidence": evidence,
         "idempotency_key": idempotency_key,
-        "agent": agent,
+        "agent": writer_agent,
     }
     acknowledgment = _execute_spec_writeback(
         root,
@@ -8083,7 +8270,7 @@ def writeback_spec_task(
             status_value,
             summary,
             SPEC_WRITEBACK_APP,
-            spec_writeback_agent(agent),
+            spec_writeback_agent(writer_agent),
             design_digest,
             execution_revision,
             evidence=evidence,
@@ -8108,8 +8295,11 @@ def writeback_spec_step(
     agent: str,
     task_id: str | None = None,
     session_file: str | Path | None = None,
+    *, event_agent: str | None = None,
 ) -> dict:
     session, resolved_task_id, task = resolve_current_task(root, task_id, session_file)
+    require_spec_context(root, task, agent, session_file)
+    writer_agent = event_agent or agent
     if source_task_id not in set(task.get("selected_spec_tasks") or []):
         raise StateError("Canonical source task is outside the Harness task selection.")
     action = {
@@ -8120,7 +8310,7 @@ def writeback_spec_step(
         "summary": summary,
         "evidence": evidence,
         "idempotency_key": idempotency_key,
-        "agent": agent,
+        "agent": writer_agent,
     }
     acknowledgment = _execute_spec_writeback(
         root,
@@ -8135,7 +8325,7 @@ def writeback_spec_step(
             status_value,
             summary,
             SPEC_WRITEBACK_APP,
-            spec_writeback_agent(agent),
+            spec_writeback_agent(writer_agent),
             design_digest,
             execution_revision,
             evidence=evidence,
@@ -8160,8 +8350,11 @@ def writeback_spec_dependency(
     agent: str,
     task_id: str | None = None,
     session_file: str | Path | None = None,
+    *, event_agent: str | None = None,
 ) -> dict:
     session, resolved_task_id, task = resolve_current_task(root, task_id, session_file)
+    require_spec_context(root, task, agent, session_file, allow_pending_hard_dependencies=True)
+    writer_agent = event_agent or agent
     if source_task_id not in set(task.get("selected_spec_tasks") or []):
         raise StateError("Canonical source task is outside the Harness task selection.")
     action = {
@@ -8172,7 +8365,7 @@ def writeback_spec_dependency(
         "summary": summary,
         "evidence": evidence,
         "idempotency_key": idempotency_key,
-        "agent": agent,
+        "agent": writer_agent,
     }
     acknowledgment = _execute_spec_writeback(
         root,
@@ -8187,7 +8380,7 @@ def writeback_spec_dependency(
             status_value,
             summary,
             SPEC_WRITEBACK_APP,
-            spec_writeback_agent(agent),
+            spec_writeback_agent(writer_agent),
             design_digest,
             execution_revision,
             evidence=evidence,
@@ -8239,7 +8432,7 @@ def rebind_spec_source(
         source_path = str(resolved)
         path_mode = "absolute"
     source.update({"path": source_path, "path_mode": path_mode})
-    inspect_task_spec(root, task)
+    inspect_task_spec(root, task, allow_pending_hard_dependencies=True)
     task["last_agent"] = agent
     write_task(root, resolved_task_id, task)
     snapshot = snapshot_state(root, session_file, session)
@@ -8254,6 +8447,7 @@ def reconcile_local_result_evidence(
     agent: str,
     session_file: str | Path | None,
 ) -> tuple[int, list[str]]:
+    require_spec_context(root, task, agent, session_file)
     plan = latest_execution_plan(root, resolved_task_id)
     if not isinstance(plan, dict):
         return 0, []
@@ -8554,9 +8748,10 @@ def reconcile_spec_execution(
             affected_task_ids,
             str(action.get("summary") or "Reconciled Canonical Spec design sync"),
             str(action.get("idempotency_key") or ""),
-            str(action.get("agent") or agent),
+            agent,
             resolved_task_id,
             session_file,
+            event_agent=str(action.get("agent") or agent),
         )
         result["action"] = "reconcile-spec-execution"
         result["reconciled"] = True
@@ -8586,12 +8781,34 @@ def reconcile_spec_execution(
         "summary": str(action.get("summary") or "Reconciled shared Spec writeback"),
         "evidence": action.get("evidence") if isinstance(action.get("evidence"), list) else [],
         "idempotency_key": str(action.get("idempotency_key") or ""),
-        "agent": str(action.get("agent") or agent),
+        "agent": agent,
+        "event_agent": str(action.get("agent") or agent),
         "task_id": resolved_task_id,
         "session_file": session_file,
     }
     if not common["idempotency_key"]:
         raise StateError("Pending Canonical Spec writeback has no idempotency key.")
+    cancellation_suffix = {"blocked": "close-blocked", "cancelled": "cancel"}.get(action.get("status"))
+    source_task_id = str(action.get("source_task_id") or "")
+    if (
+        kind == "task" and cancellation_suffix
+        and source_task_id in (task.get("selected_spec_tasks") or [])
+        and common["idempotency_key"] == f"{resolved_task_id}:{source_task_id}:{cancellation_suffix}"
+    ):
+        # 只恢复已经登记的取消链；沿用原动作，不能借恢复入口新增实施进度。
+        acknowledgment = _execute_spec_writeback(
+            root, resolved_task_id, task, action, common["idempotency_key"],
+            lambda design_digest, execution_revision: record_task_status(
+                stored_spec_path(root, task), source_task_id, str(action["status"]),
+                common["summary"], SPEC_WRITEBACK_APP, spec_writeback_agent(common["event_agent"]),
+                design_digest, execution_revision, evidence=common["evidence"],
+                run_id=resolved_task_id, idempotency_key=common["idempotency_key"],
+            ),
+            allow_pending_hard_dependencies=True,
+        )
+        result = snapshot_state(root, session_file, session)
+        result.update({"action": "reconcile-spec-execution", "reconciled": True, "spec_writeback": acknowledgment})
+        return result
     if kind == "task":
         result = writeback_spec_task(
             source_task_id=str(action.get("source_task_id") or ""),
@@ -8627,6 +8844,7 @@ def sync_spec_design_state(
     agent: str,
     task_id: str | None = None,
     session_file: str | Path | None = None,
+    event_agent: str | None = None,
 ) -> dict:
     session, resolved_task_id, task = resolve_current_task(root, task_id, session_file)
     source = task.get("spec_source")
@@ -8634,6 +8852,21 @@ def sync_spec_design_state(
         raise StateError("Current task is not backed by a Canonical Spec.")
     spec_path = stored_spec_path(root, task)
     requested_task_ids = sorted(set(affected_task_ids))
+    writer_agent = event_agent or agent
+    change = task.get("spec_change")
+    if isinstance(change, dict) and change.get("affected_task_ids") != requested_task_ids:
+        raise StateError("Design sync must include exactly the confirmed affected tasks.")
+    if isinstance(change, dict) and any(
+        change.get(field) != source.get(field) for field in ("spec_id", "revision", "design_sha256")
+    ):
+        raise StateError("Confirmed Spec change baseline no longer matches the bound design.")
+
+    def validate_change_event(event: dict) -> None:
+        if isinstance(change, dict) and (
+            event.get("from_design_revision") != change.get("revision")
+            or event.get("to_design_revision") != int(change["revision"]) + 1
+        ):
+            raise StateError("Old design sync cannot resolve the current confirmed Spec change.")
 
     def current_execution_envelope() -> dict:
         try:
@@ -8644,6 +8877,9 @@ def sync_spec_design_state(
             raise StateError(f"Cannot inspect pre-sync Canonical execution state: {exc}") from exc
         if not isinstance(execution, dict):
             raise StateError("Canonical Spec shared execution is missing before sync-design.")
+        for event in execution.get("events", []):
+            if isinstance(event, dict) and event.get("idempotency_key") == idempotency_key:
+                validate_change_event(event)
         if execution.get("design_sha256") != source.get("design_sha256"):
             matching_events = [
                 event
@@ -8667,7 +8903,7 @@ def sync_spec_design_state(
         "affected_task_ids": requested_task_ids,
         "summary": summary,
         "idempotency_key": idempotency_key,
-        "agent": agent,
+        "agent": writer_agent,
     }
     serialized_pending_action = json.dumps(
         pending_action, ensure_ascii=False, sort_keys=True
@@ -8699,7 +8935,7 @@ def sync_spec_design_state(
             requested_task_ids,
             summary,
             SPEC_WRITEBACK_APP,
-            spec_writeback_agent(agent),
+            spec_writeback_agent(writer_agent),
             str(source.get("design_sha256")),
             execution_revision,
             run_id=resolved_task_id,
@@ -8745,6 +8981,10 @@ def sync_spec_design_state(
         raise StateError(f"Cannot synchronize Canonical Spec design: {exc}") from exc
     if inspection.get("spec_id") != source.get("spec_id"):
         raise StateError("Synchronized Canonical Spec identity changed unexpectedly.")
+    event = _spec_event(execution, idempotency_key)
+    validate_change_event(event)
+    if isinstance(change, dict) and inspection.get("revision") != int(change["revision"]) + 1:
+        raise StateError("Synchronized design does not match the confirmed Spec change revision.")
     binding_was_synchronized = (
         source.get("revision") == inspection.get("revision")
         and source.get("design_sha256") == inspection.get("design_sha256")
@@ -8757,22 +8997,32 @@ def sync_spec_design_state(
             "execution_revision": execution["execution_revision"],
         }
     )
-    event = _spec_event(execution, idempotency_key)
     if not binding_was_synchronized:
         reset_task_ids = set(event.get("task_ids", []))
-        refreshed_dependencies: list[dict] = []
+        new_dependencies = {
+            (item["source_task_id"], item["task_id"]): item
+            for item in inspection["dependency_edges"]
+        }
+        preserved_evidence: dict[str, str] = {}
         for dependency in task.get("spec_dependency_evidence", []):
             if not isinstance(dependency, dict):
                 continue
-            refreshed = dict(dependency)
-            if refreshed.get("source_task_id") in reset_task_ids:
-                refreshed["status"] = "pending"
-                refreshed["shared_status"] = "pending"
-                for field in ("evidence", "satisfied_at", "satisfied_by"):
-                    refreshed.pop(field, None)
-            refreshed_dependencies.append(refreshed)
-        task["spec_dependency_evidence"] = refreshed_dependencies
-        inspect_task_spec(root, task)
+            edge = (dependency.get("source_task_id"), dependency.get("task_id"))
+            current = new_dependencies.get(edge)
+            if (
+                edge[0] not in reset_task_ids and edge[1] not in reset_task_ids
+                and current is not None
+                and dependency.get("dependency_type") == current.get("dependency_type")
+                and dependency.get("required_evidence") == current.get("required_evidence")
+                and dependency.get("status") == "satisfied"
+                and is_non_empty_string(dependency.get("evidence"))
+            ):
+                preserved_evidence[f"{edge[0]}->{edge[1]}"] = str(dependency["evidence"])
+        task["spec_dependency_evidence"] = select_tasks(
+            inspection, task["selected_spec_tasks"], preserved_evidence,
+            allow_pending_hard_dependencies=True,
+        )["dependency_records"]
+        inspect_task_spec(root, task, allow_pending_hard_dependencies=True)
     progress.update(
         {
             "last_execution_revision": execution["execution_revision"],
@@ -8783,6 +9033,8 @@ def sync_spec_design_state(
         }
     )
     progress.pop("pending_action", None)
+    task.pop("spec_change", None)
+    task.pop("spec_context", None)
     if task.get("status") not in {"INIT", "ANALYSIS"}:
         cleanup_verification_checkpoint(root, resolved_task_id, task)
         task["status"] = "ANALYSIS"
@@ -9147,7 +9399,7 @@ def cancel_shared_tasks(
     reason: str,
     agent: str,
 ) -> None:
-    inspection, _ = inspect_task_spec(root, task)
+    inspection, _ = inspect_task_spec(root, task, allow_pending_hard_dependencies=True)
     snapshots = _selected_execution_snapshots(inspection, task)
     for source_task_id in task.get("selected_spec_tasks") or []:
         current = snapshots.get(str(source_task_id), {}).get("status")
@@ -9182,6 +9434,7 @@ def cancel_shared_tasks(
                     run_id=harness_task_id,
                     idempotency_key=blocked_key,
                 ),
+                allow_pending_hard_dependencies=True,
             )
         cancel_key = f"{harness_task_id}:{source_task_id}:cancel"
         cancel_action = {
@@ -9211,6 +9464,7 @@ def cancel_shared_tasks(
                 run_id=harness_task_id,
                 idempotency_key=cancel_key,
             ),
+            allow_pending_hard_dependencies=True,
         )
 
 
@@ -9228,7 +9482,7 @@ def satisfy_spec_dependency(
         raise StateError("Spec dependency evidence cannot change after MEMORY begins.")
     if not is_non_empty_string(evidence):
         raise StateError("Spec dependency evidence must be non-empty.")
-    inspect_task_spec(root, task)
+    require_spec_context(root, task, agent, session_file, allow_pending_hard_dependencies=True)
     records = task.get("spec_dependency_evidence")
     if not isinstance(records, list):
         raise StateError("Current task is not backed by Canonical Spec dependency metadata.")
@@ -9563,6 +9817,8 @@ def request_transition(
     if stage not in VALID_TRANSITIONS:
         raise StateError(f"Unknown stage: {stage}")
     session, resolved_task_id, task = resolve_current_task(root, task_id, session_file)
+    if stage in {"IMPLEMENT", "QUALITY", "MEMORY", "COMPLETE"}:
+        require_spec_context(root, task, agent, session_file)
     previous = str(task.get("status") or "idle")
     task_type = str(task.get("type") or "")
     approval_mode = resolve_approval_mode(root, session)[2]
@@ -9663,6 +9919,8 @@ def apply_transition(
     if stage not in VALID_TRANSITIONS:
         raise StateError(f"Unknown stage: {stage}")
     session, resolved_task_id, task = resolve_current_task(root, task_id, session_file)
+    if stage in {"IMPLEMENT", "QUALITY", "MEMORY", "COMPLETE"}:
+        require_spec_context(root, task, agent, session_file)
 
     previous = str(task.get("status") or "idle")
     task_type = str(task.get("type") or "")
@@ -9779,6 +10037,8 @@ def auto_transition(
     session_file: str | Path | None = None,
 ) -> dict:
     session, resolved_task_id, task = resolve_current_task(root, task_id, session_file)
+    if stage in {"IMPLEMENT", "QUALITY", "MEMORY", "COMPLETE"}:
+        require_spec_context(root, task, agent, session_file)
     previous = str(task.get("status") or "idle")
     task_type = str(task.get("type") or "")
     approval_mode = resolve_approval_mode(root, session)[2]
@@ -9857,6 +10117,8 @@ def confirm_transition(
     approval_mode = resolve_approval_mode(root, session)[2]
     source = str(pending.get("from") or "")
     target = str(pending.get("to") or "")
+    if target in {"IMPLEMENT", "QUALITY", "MEMORY", "COMPLETE"}:
+        require_spec_context(root, task, agent, session_file)
     if source != previous:
         raise StateError(
             f"Pending transition source {source or 'missing'} does not match current stage {previous}."
@@ -9930,6 +10192,7 @@ def memory_short_complete(
     session_file: str | Path | None = None,
 ) -> dict:
     session, resolved_task_id, task = resolve_current_task(root, task_id, session_file)
+    require_spec_context(root, task, agent, session_file)
     if task.get("status") != "MEMORY":
         raise StateError("Short-memory progress can only be recorded during MEMORY.")
     if not memory_file.strip():
@@ -10057,6 +10320,7 @@ def memory_complete(
     if action not in {"no-op", "distill"}:
         raise StateError(f"Unknown memory action: {action}")
     session, resolved_task_id, task = resolve_current_task(root, task_id, session_file)
+    require_spec_context(root, task, agent, session_file)
     if task.get("status") != "MEMORY":
         raise StateError("Memory completion can only be recorded during MEMORY.")
     progress = task.get("memory_progress")
@@ -10285,6 +10549,16 @@ def main() -> int:
     rebind_spec.add_argument("--spec", required=True)
     rebind_spec.add_argument("--agent", required=True)
     rebind_spec.add_argument("--task-id")
+
+    resume_spec = subcommands.add_parser("resume-spec-context", parents=[common])
+    resume_spec.add_argument("--agent", required=True)
+    resume_spec.add_argument("--task-id")
+
+    begin_change = subcommands.add_parser("begin-spec-change", parents=[common])
+    begin_change.add_argument("--affected-task", action="append", required=True)
+    begin_change.add_argument("--summary", required=True)
+    begin_change.add_argument("--agent", required=True)
+    begin_change.add_argument("--task-id")
 
     writeback_task = subcommands.add_parser("writeback-spec-task", parents=[common])
     writeback_task.add_argument("--spec-task", required=True)
@@ -10614,6 +10888,9 @@ def main() -> int:
             command_lock = acquire_session_command_lock(
                 root, resolve_session_path(root, session_file)
             )
+        if command == "evidence-fingerprints":
+            _, _, current = resolve_current_task(root, getattr(args, "task_id", None), session_file)
+            require_spec_context(root, current, agent, session_file)
         if command == "snapshot":
             emit(snapshot_state(root, session_file))
         elif command == "inspect-dev-spec":
@@ -10696,6 +10973,15 @@ def main() -> int:
                     session_file,
                 )
             )
+        elif command == "resume-spec-context":
+            emit(attach_status_context(
+                root, resume_spec_context(root, agent, args.task_id, session_file), agent, session_file
+            ))
+        elif command == "begin-spec-change":
+            emit(attach_status_context(
+                root, begin_spec_change(root, args.affected_task, args.summary, agent, args.task_id, session_file),
+                agent, session_file,
+            ))
         elif command == "writeback-spec-task":
             emit(
                 attach_status_context(

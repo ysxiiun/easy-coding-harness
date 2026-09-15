@@ -54,6 +54,8 @@ First run `ec-init`; daily work goes through `ec-workflow`.
 - TDD is session override > project `behavior.tdd_enabled` > `false`; its changed-line threshold
   is session override > project `behavior.tdd_coverage_threshold` > `90`. ANALYSIS -> IMPLEMENT
   freezes both. TDD may be enabled only after `ec-tdd-init` records valid infrastructure readiness;
+  build version/content changes require fresh task evidence, not reinitialization. Repair missing
+  local entries without resetting TDD; CLI upgrades preserve project/session/frozen task settings;
   there is no enable-now/init-later state. The dedicated `tdd-init` task always freezes TDD off and
   initializes only changed-line coverage infrastructure, never historical business-test coverage.
   Disabled TDD adds no CI scan, JaCoCo work, commands, artifacts, or stronger gates. Enabled TDD
@@ -108,7 +110,11 @@ First run `ec-init`; daily work goes through `ec-workflow`.
   `document_sha256` and `execution_revision` may advance through shared writer commands. Project-
   external explicit Spec paths are allowed and may be repaired only with identity-checked rebind.
   Runtime progress must use the shared writer with CAS/idempotency and reconciliation; static
-  design changes require revision + READY + `sync-spec-design`. Never hand-edit `EDS:EXECUTION`.
+  confirmed design changes first use `begin-spec-change`, then revision + READY + `sync-spec-design`.
+  Creation/claim returns selected source context; session resume and design sync require
+  `resume-spec-context` before work. Pending changes block implementation/acceptance across agents.
+  Preserve the original writer actor while retaining the current owner during reconciliation.
+  Never hand-edit `EDS:EXECUTION`.
   Selected source tasks remain `implemented` through local QUALITY and become `verified`
   only when the accepted QUALITY -> MEMORY boundary is actually applied.
 - Canonical routing is two-pass: first use manifest-only discovery for the current worktree, then

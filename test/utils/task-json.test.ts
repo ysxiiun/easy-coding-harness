@@ -556,7 +556,7 @@ describe("task-json", () => {
     expect(task.workflow_mode).toBe("strict");
     expect(task.workflow_mode_confirmed_by).toBe("codex");
     expect(task).not.toHaveProperty("workflow_mode_legacy");
-    expect(task).not.toHaveProperty("tdd_baselines");
+    expect(task.tdd_baselines).toEqual({ project: "stale-custom-value" });
     expect(task).toMatchObject({
       tdd_enabled: false,
       tdd_coverage_threshold: 90,

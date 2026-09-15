@@ -30,7 +30,6 @@ import {
   setPendingInitSince,
   stripInitTaskProjectPath,
 } from "../utils/task-json.js";
-import { disableUnreadySessionTddOverrides } from "../utils/tdd-readiness.js";
 import { configurePlatformsForDir, refreshSupermoduleParent } from "./install-harness.js";
 import { type CommandTarget, resolveUpgradeTargets } from "./supermodule-targets.js";
 
@@ -138,8 +137,8 @@ export async function upgrade(opts: UpgradeOptions): Promise<void> {
     "Will overwrite managed skills, hooks, agents, templates, and generated main-constraint regions.",
     "Will remove retired files that still match the previous install manifest and preserve locally modified copies.",
     "Will update project-init task to recommend ec-init re-run for version adaptation.",
-    "Will migrate behavior config to schema 5 and disable unready project/session TDD settings.",
-    "Will prune expired session bindings and orphan acceptance snapshots in each upgraded target while preserving tasks, memory, spec, and project knowledge.",
+    "Will migrate behavior config to schema 5 while preserving project/session TDD settings and frozen task baselines.",
+    "Will prune expired session bindings without explicit TDD settings and orphan acceptance snapshots in each upgraded target while preserving tasks, memory, spec, and project knowledge.",
     "Will migrate active REVIEW/VERIFICATION tasks to QUALITY, retire active read-only task types as CLOSED, and preserve their artifacts and history.",
     "Will migrate legacy workflow/TDD task metadata; memory content, spec, and project knowledge files remain untouched.",
   ].join("\n");
@@ -162,7 +161,7 @@ export async function upgrade(opts: UpgradeOptions): Promise<void> {
 
   for (const { target, config } of pending) {
     const previousManifest = await readInstallManifest(target.dir);
-    const sessionCleanup = await cleanSessionRuntime(target.dir);
+    const sessionCleanup = await cleanSessionRuntime(target.dir, { preserveTddSettings: true });
     if (sessionCleanup.sessionsRemoved > 0 || sessionCleanup.acceptanceSnapshotsRemoved > 0) {
       console.log(
         chalk.yellow(
@@ -171,8 +170,6 @@ export async function upgrade(opts: UpgradeOptions): Promise<void> {
         ),
       );
     }
-    const beta1ProjectTddRequested =
-      Number(config.version) === 4 && config.behavior?.tdd_enabled === true;
     const projectId = await writeRuntimeScaffold(target.dir, config.agents, {
       supermodule: target.supermodule,
     });
@@ -198,16 +195,6 @@ export async function upgrade(opts: UpgradeOptions): Promise<void> {
     await ensureHookBytecodeIgnored(target.dir);
     await migrateLegacyWorkflowState(target.dir);
     await migrateBehaviorConfig(target.configPath);
-    const disabledSessionTddOverrides = await disableUnreadySessionTddOverrides(target.dir);
-    if (beta1ProjectTddRequested || disabledSessionTddOverrides > 0) {
-      console.log(
-        chalk.yellow(
-          `${target.label}: TDD remains off until ec-tdd-init succeeds` +
-            ` (project=${beta1ProjectTddRequested ? "disabled" : "unchanged"},` +
-            ` sessions_disabled=${disabledSessionTddOverrides}).`,
-        ),
-      );
-    }
     await updateHarnessVersion(target.configPath, VERSION);
     await updateSupermoduleConfig(target.configPath, target.supermodule);
     await setPendingInitSince(target.dir, VERSION);

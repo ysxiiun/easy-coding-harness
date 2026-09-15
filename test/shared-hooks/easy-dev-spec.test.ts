@@ -4,6 +4,9 @@ import { appendFile, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "n
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { configureClaude } from "../../src/configurators/claude.js";
+import { configureCodex } from "../../src/configurators/codex.js";
+import { configureQoder } from "../../src/configurators/qoder.js";
 
 const pythonCmd = process.platform === "win32" ? "python" : "python3";
 let tempDir: string;
@@ -102,6 +105,87 @@ async function writeCanonicalFixture(): Promise<{
 }
 
 describe("Canonical Spec v1 runtime integration", () => {
+  it.each([
+    ["codex", ".codex"], ["claude-code", ".claude"], ["qoder", ".qoder"],
+  ])("restores external selected Spec context and pending changes after takeover by %s", async (agent, directory) => {
+    const fixture = await writeCanonicalFixture();
+    initializeSpecExecution(fixture.specPath);
+    const harnessRoot = path.join(tempDir, "harness");
+    await mkdir(path.join(harnessRoot, ".easy-coding"), { recursive: true });
+    await configureCodex(harnessRoot);
+    await configureClaude(harnessRoot);
+    await configureQoder(harnessRoot);
+    const installed = (owner: string, platformDir: string, session: string, args: string[]) =>
+      spawnSync(pythonCmd, ["-B", path.join(harnessRoot, platformDir, "hooks", "easy_coding_state.py"),
+        ...args, "--agent", owner, "--session-file", `.easy-coding/sessions/${session}.json`,
+        "--cwd", harnessRoot,
+      ], { cwd: harnessRoot, encoding: "utf8" });
+    const call = (args: string[]) => installed(agent, directory, `${agent}-new`, args);
+    const created = installed("codex", ".codex", "codex-old", [
+      "create-task-from-spec", "--spec", fixture.specPath, "--spec-task", "R1-T1",
+      "--task-id", "handoff-spec", "--type", "feature", "--title", "External Spec handoff",
+      "--repo-path", `R1=${fixture.repoA}`,
+    ]);
+    expect(created.status, created.stderr).toBe(0);
+    const initial = JSON.parse(created.stdout);
+    expect(initial.task.spec_source.path_mode).toBe("absolute");
+    expect(initial.spec_context).toMatchObject({ status: "ready", consumption: {
+      selected_task_ids: ["R1-T1"], revision: 1,
+    } });
+    const withoutContext = call(["request-transition", "--task-id", "handoff-spec", "--stage", "IMPLEMENT"]);
+    expect(withoutContext.stderr).toContain("resume-spec-context");
+    const claimed = call(["claim-task", "--task-id", "handoff-spec"]);
+    expect(claimed.status, claimed.stderr).toBe(0);
+    const claim = JSON.parse(claimed.stdout);
+    expect(claim.task.last_agent).toBe(agent);
+    expect(claim.spec_context.consumption.design_sha256).toBe(initial.task.spec_source.design_sha256);
+    expect(claim.spec_context.consumption.selected_task_ids).toEqual(["R1-T1"]);
+    expect(claim.spec_context.consumption.scopes).toHaveLength(1);
+    expect(JSON.stringify(claim.spec_context.consumption)).toContain("OrderEventPublisher");
+    const begun = call(["begin-spec-change", "--affected-task", "R1-T1", "--summary", "Confirmed reliability change"]);
+    expect(begun.status, begun.stderr).toBe(0);
+    expect(JSON.parse(begun.stdout).task.spec_change).toMatchObject({ revision: 1, affected_task_ids: ["R1-T1"] });
+    const pendingClaim = installed("codex", ".codex", "codex-resumed", ["claim-task", "--task-id", "handoff-spec"]);
+    expect(JSON.parse(pendingClaim.stdout).spec_context.status).toBe("blocked");
+    for (const stage of ["IMPLEMENT", "QUALITY", "MEMORY"]) {
+      const blocked = call(["request-transition", "--task-id", "handoff-spec", "--stage", stage]);
+      expect(blocked.status).toBe(1);
+      expect(blocked.stderr).toContain("Confirmed Spec change is pending");
+    }
+    const revised = (await readFile(fixture.specPath, "utf8"))
+      .replace('"revision": 1', '"revision": 2')
+      .replace("总目标：订单成功提交后发布事件，通知服务消费同一冻结契约。", "总目标：订单成功提交后可靠发布事件，通知服务消费同一冻结契约。");
+    await writeFile(fixture.specPath, revised);
+    const sync = call(["sync-spec-design", "--task-id", "handoff-spec", "--affected-task", "R1-T1",
+      "--summary", "Confirmed reliability change", "--idempotency-key", "handoff-spec:revision:2"]);
+    expect(sync.status, sync.stderr).toBe(0);
+    expect(JSON.parse(sync.stdout).task).not.toHaveProperty("spec_change");
+    expect(JSON.parse(sync.stdout).task.status).toBe("ANALYSIS");
+    const missingReload = call(["request-transition", "--task-id", "handoff-spec", "--stage", "IMPLEMENT"]);
+    expect(missingReload.stderr).toContain("resume-spec-context");
+    const resumed = call(["resume-spec-context", "--task-id", "handoff-spec"]);
+    expect(JSON.parse(resumed.stdout).spec_context).toMatchObject({ status: "ready", consumption: { revision: 2 } });
+    const preservedContext = JSON.parse(resumed.stdout).task.spec_context;
+    const progress = call(["writeback-spec-task", "--task-id", "handoff-spec", "--spec-task", "R1-T1",
+      "--status", "in_progress", "--summary", "Implement revised design", "--idempotency-key", "handoff-spec:start:2"]);
+    expect(progress.status, progress.stderr).toBe(0);
+    expect(JSON.parse(progress.stdout).task.spec_context).toEqual(preservedContext);
+    const nextChange = call(["begin-spec-change", "--affected-task", "R1-T1", "--summary", "Next confirmed requirement"]);
+    expect(nextChange.status, nextChange.stderr).toBe(0);
+    const oldSync = call(["sync-spec-design", "--task-id", "handoff-spec", "--affected-task", "R1-T1",
+      "--summary", "Confirmed reliability change", "--idempotency-key", "handoff-spec:revision:2"]);
+    expect(oldSync.status).toBe(1);
+    expect(oldSync.stderr).toContain("Old design sync cannot resolve");
+    const afterReplay = JSON.parse(call(["snapshot"]).stdout);
+    expect(afterReplay.task.spec_change).toMatchObject({ revision: 2, summary: "Next confirmed requirement" });
+    expect(afterReplay.task.spec_writeback_progress).not.toHaveProperty("pending_action");
+    await rm(fixture.specPath);
+    const unavailable = call(["claim-task", "--task-id", "handoff-spec"]);
+    expect(unavailable.status).toBe(0);
+    expect(JSON.parse(unavailable.stdout).spec_context).toMatchObject({ status: "blocked" });
+    expect(JSON.parse(unavailable.stdout).task).not.toHaveProperty("spec_context");
+  }, 30_000);
+
   it("pins the final easy-dev-spec protocol implementation and READY fixture", async () => {
     const protocol = await readFile(
       path.join(process.cwd(), "src", "templates", "shared-hooks", "easy_dev_spec_protocol.py"),
@@ -1023,6 +1107,48 @@ describe("Canonical Spec v1 runtime integration", () => {
     expect(JSON.parse(result)).toEqual(["R4-T1"]);
   });
 
+  it("invalidates per-repository carry-forward when local or shared TDD tools change", async () => {
+    const fixture = await writeCanonicalFixture();
+    for (const repository of [tempDir, fixture.repoA]) {
+      await mkdir(path.join(repository, ".easy-coding", "tools"), { recursive: true });
+      await mkdir(path.join(repository, ".easy-coding", "tdd"), { recursive: true });
+      await writeFile(path.join(repository, "pom.xml"), "<project/>\n");
+      await writeFile(path.join(repository, ".easy-coding", "tools", "easy_coding_java_coverage.py"), "# coverage v1\n");
+      await writeFile(path.join(repository, ".easy-coding", "tdd", "readiness.json"), JSON.stringify({
+        build_files: [{ path: "pom.xml" }],
+        tool_files: [{ path: ".easy-coding/tools/easy_coding_java_coverage.py" }],
+      }));
+    }
+    const plan = { units: [
+      { id: "U1", repo_id: "R1", files: ["order-domain/src/main/java/com/example/order/OrderEventPublisher.java"] },
+      { id: "U2", repo_id: "R2", files: ["notification-app/src/main/java/com/example/notification/OrderEventConsumer.java"] },
+    ] };
+    const task = { spec_source: {}, tdd_enabled: true, repo_paths: { R1: fixture.repoA, R2: fixture.repoB } };
+    const script = [
+      "import json,pathlib,sys",
+      `sys.path.insert(0, ${JSON.stringify(path.dirname(stateApiPath()))})`,
+      "import easy_coding_state as state",
+      "state.latest_execution_plan = lambda root, task_id: json.loads(sys.argv[1])",
+      "print(json.dumps(state.canonical_repository_fingerprints(pathlib.Path.cwd(), 'task', json.loads(sys.argv[2]))))",
+    ].join("\n");
+    const fingerprints = () => JSON.parse(execFileSync(pythonCmd, ["-B", "-c", script, JSON.stringify(plan), JSON.stringify(task)], {
+      cwd: tempDir, encoding: "utf8",
+    }));
+    const initial = fingerprints();
+    await appendFile(path.join(fixture.repoB, plan.units[1].files[0]), "// repair R2\n");
+    const repaired = fingerprints();
+    expect(repaired.R1).toBe(initial.R1);
+    expect(repaired.R2).not.toBe(initial.R2);
+    await appendFile(path.join(fixture.repoA, ".easy-coding", "tools", "easy_coding_java_coverage.py"), "# local upgrade\n");
+    const localToolChanged = fingerprints();
+    expect(localToolChanged.R1).not.toBe(repaired.R1);
+    expect(localToolChanged.R2).toBe(repaired.R2);
+    await appendFile(path.join(tempDir, ".easy-coding", "tools", "easy_coding_java_coverage.py"), "# shared upgrade\n");
+    const sharedToolChanged = fingerprints();
+    expect(sharedToolChanged.R1).not.toBe(localToolChanged.R1);
+    expect(sharedToolChanged.R2).not.toBe(localToolChanged.R2);
+  });
+
   it("requires source-traceable units and blocks MEMORY while integration evidence is pending", async () => {
     const fixture = await writeCanonicalFixture();
     initializeSpecExecution(fixture.specPath);
@@ -1830,7 +1956,7 @@ describe("Canonical Spec v1 runtime integration", () => {
     }
   });
 
-  it("keeps Canonical tasks implemented until the accepted MEMORY boundary is applied", async () => {
+  it.each(["auto", "guard"])("requires loaded context before recording MEMORY acceptance in %s mode", async (approvalMode) => {
     const fixture = await writeCanonicalFixture();
     initializeSpecExecution(fixture.specPath);
     runState([
@@ -1852,7 +1978,7 @@ describe("Canonical Spec v1 runtime integration", () => {
     ]);
     await writeFile(
       path.join(tempDir, ".easy-coding", "config.yaml"),
-      "version: 3\nbehavior:\n  approval_mode: auto\n  workflow_mode: adaptive\n",
+      `version: 3\nbehavior:\n  approval_mode: ${approvalMode}\n  workflow_mode: adaptive\n`,
       "utf8",
     );
     const taskDir = path.join(
@@ -2011,9 +2137,49 @@ describe("Canonical Spec v1 runtime integration", () => {
       "utf8",
     );
 
-    const transitioned = JSON.parse(
-      runState(["auto-transition", "--stage", "MEMORY", "--agent", "codex"]),
-    );
+    if (approvalMode === "guard") {
+      runState(["request-transition", "--stage", "MEMORY", "--agent", "codex"]);
+    }
+    const transitionCommand = approvalMode === "auto" ? "auto-transition" : "confirm-transition";
+    const unloaded = JSON.parse(await readFile(taskPath, "utf8"));
+    const sessionFile = unloaded.spec_context.session_file;
+    delete unloaded.spec_context;
+    await writeFile(taskPath, JSON.stringify(unloaded, null, 2));
+    const protectedFiles = [taskPath, executionPath, fixture.specPath];
+    const beforeRejected = await Promise.all(protectedFiles.map((file) => readFile(file, "utf8")));
+    const rejected = spawnSync(pythonCmd, ["-B", stateApiPath(), transitionCommand,
+      "--stage", "MEMORY", "--agent", "codex", "--cwd", tempDir],
+    { cwd: tempDir, encoding: "utf8" });
+    expect(rejected.status).toBe(1);
+    expect(rejected.stderr).toContain("resume-spec-context");
+    const directCall = approvalMode === "auto"
+      ? "state.auto_transition(root, 'MEMORY', 'codex', task_id, session_file)"
+      : "state.confirm_transition(root, 'codex', 'MEMORY', task_id, session_file)";
+    const direct = spawnSync(pythonCmd, ["-B", "-c", [
+      "import sys",
+      "from pathlib import Path",
+      `sys.path.insert(0, ${JSON.stringify(path.dirname(stateApiPath()))})`,
+      "import easy_coding_state as state",
+      `root = Path(${JSON.stringify(tempDir)})`,
+      "task_id = 'accepted-memory-boundary'",
+      `session_file = ${JSON.stringify(sessionFile)}`,
+      "calls = [",
+      ` lambda: ${directCall},`,
+      " lambda: state.record_verification_checkpoint(root, 'codex', task_id, session_file),",
+      " lambda: state.finalize_quality_decision(root, 'passed', 'passed', 'passed', [], 'QUALITY passed', 'codex', task_id, session_file),",
+      "]",
+      "for call in calls:",
+      " try:",
+      "  call()",
+      " except state.StateError as error:",
+      "  assert 'resume-spec-context' in str(error), str(error)",
+      " else:",
+      "  raise AssertionError('Unloaded context allowed acceptance side effects')",
+    ].join("\n")], { cwd: tempDir, encoding: "utf8" });
+    expect(direct.status, direct.stderr).toBe(0);
+    expect(await Promise.all(protectedFiles.map((file) => readFile(file, "utf8")))).toEqual(beforeRejected);
+    runState(["resume-spec-context", "--agent", "codex"]);
+    const transitioned = JSON.parse(runState([transitionCommand, "--stage", "MEMORY", "--agent", "codex"]));
     expect(transitioned.status).toBe("MEMORY");
     const afterBoundary = JSON.parse(
       runState(["inspect-dev-spec", "--spec", fixture.specPath]),
@@ -3584,7 +3750,8 @@ describe("Canonical Spec v1 runtime integration", () => {
           "    return original(root, harness_task_id, task, action, key, invoke)",
           "state._execute_spec_writeback = flaky",
           "try:",
-          `    state.apply_transition(root, 'IMPLEMENT', 'codex', ${JSON.stringify(taskId)})`,
+          `    session_file = state.load_task(root, ${JSON.stringify(taskId)})['spec_context']['session_file']`,
+          `    state.apply_transition(root, 'IMPLEMENT', 'codex', ${JSON.stringify(taskId)}, session_file)`,
           "except state.StateError as error:",
           "    print(str(error))",
           "else:",
@@ -3646,7 +3813,7 @@ describe("Canonical Spec v1 runtime integration", () => {
     }
   }, 40_000);
 
-  it("reconciles a local completed result even when no pending writer action was recorded", async () => {
+  it.each(["normal", "pending-change", "unloaded-context"])("checks context before reconciling local results: %s", async (mode) => {
     const fixture = await writeCanonicalFixture();
     initializeSpecExecution(fixture.specPath);
     runState([
@@ -3720,6 +3887,48 @@ describe("Canonical Spec v1 runtime integration", () => {
       ].join("\n"),
       "utf8",
     );
+    if (mode !== "normal") {
+      const taskPath = path.join(taskDir, "task.json");
+      const before = JSON.parse(await readFile(taskPath, "utf8"));
+      const sessionFile = before.spec_context.session_file;
+      if (mode === "pending-change") {
+        runState(["begin-spec-change", "--task-id", "result-reconcile", "--affected-task", "R1-T1",
+          "--summary", "Confirmed change before result writeback", "--agent", "codex"]);
+      } else {
+        delete before.spec_context;
+        await writeFile(taskPath, JSON.stringify(before, null, 2));
+      }
+      const paths = [taskPath, path.join(taskDir, "execution.jsonl"), fixture.specPath];
+      const expectedFiles = await Promise.all(paths.map((file) => readFile(file, "utf8")));
+      const expectedError = mode === "pending-change" ? "Confirmed Spec change is pending" : "resume-spec-context";
+      const blocked = spawnSync(pythonCmd, ["-B", stateApiPath(), "reconcile-spec-execution",
+        "--task-id", "result-reconcile", "--agent", "codex", "--cwd", tempDir],
+      { cwd: tempDir, encoding: "utf8" });
+      expect(blocked.status).toBe(1);
+      expect(blocked.stderr).toContain(expectedError);
+      const direct = spawnSync(pythonCmd, ["-B", "-c", [
+        "import sys",
+        "from pathlib import Path",
+        `sys.path.insert(0, ${JSON.stringify(path.dirname(stateApiPath()))})`,
+        "import easy_coding_state as state",
+        `root = Path(${JSON.stringify(tempDir)})`,
+        `session_file = ${JSON.stringify(sessionFile)}`,
+        "calls = [",
+        " lambda: state.writeback_spec_task(root, 'R1-T1', 'in_progress', 'Premature progress', [], 'blocked:task', 'codex', 'result-reconcile', session_file),",
+        " lambda: state.writeback_spec_step(root, 'R1-T1', 'S1', 'completed', 'Premature result', [{'kind':'test','status':'passed','ref':'report','test_id':'T1'}], 'blocked:step', 'codex', 'result-reconcile', session_file),",
+        "]",
+        "for call in calls:",
+        " try:",
+        "  call()",
+        " except state.StateError as error:",
+        `  assert ${JSON.stringify(expectedError)} in str(error), str(error)`,
+        " else:",
+        "  raise AssertionError('Pending or unloaded context allowed shared progress')",
+      ].join("\n")], { cwd: tempDir, encoding: "utf8" });
+      expect(direct.status, direct.stderr).toBe(0);
+      expect(await Promise.all(paths.map((file) => readFile(file, "utf8")))).toEqual(expectedFiles);
+      return;
+    }
     const reconciled = JSON.parse(
       runState([
         "reconcile-spec-execution",
@@ -4214,6 +4423,7 @@ describe("Canonical Spec v1 runtime integration", () => {
     expect(
       inspection.execution.tasks.find((task: { task_id: string }) => task.task_id === "R1-T1"),
     ).toMatchObject({ status: "not_started", completed_step_ids: [] });
+    runState(["resume-spec-context", "--task-id", "design-sync", "--agent", "codex"]);
     const staleFingerprint = spawnSync(
       pythonCmd,
       [
@@ -4313,6 +4523,7 @@ describe("Canonical Spec v1 runtime integration", () => {
       ),
     ).toBeUndefined();
 
+    runState(["resume-spec-context", "--agent", "codex"]);
     const freshlySatisfied = JSON.parse(runState(evidenceArgs));
     expect(
       freshlySatisfied.task.spec_dependency_evidence.find(
@@ -4322,7 +4533,192 @@ describe("Canonical Spec v1 runtime integration", () => {
     ).toMatchObject({ status: "satisfied", evidence: "integration report 42" });
   }, 30_000);
 
-  it("reconciles a design sync that committed before the local acknowledgment", async () => {
+  it("preserves unaffected manual hard dependency evidence across design synchronization", async () => {
+    const fixture = await writeCanonicalFixture();
+    const independent = (await readFile(fixture.specPath, "utf8")).replace(
+      ',\n        {"task_id": "R2-T1", "type": "integration", "required_evidence": "Consumer contract test passes before end-to-end verification"}',
+      "",
+    );
+    await writeFile(fixture.specPath, independent);
+    initializeSpecExecution(fixture.specPath);
+    runState(["create-task-from-spec", "--spec", fixture.specPath, "--spec-task", "R1-T2", "--spec-task", "R2-T1",
+      "--task-id", "manual-dependency-sync", "--type", "feature", "--title", "Preserve dependency evidence",
+      "--repo-path", `R1=${fixture.repoA}`, "--repo-path", `R2=${fixture.repoB}`,
+      "--dependency-evidence", "R1-T2->R1-T1=publisher test report 42", "--agent", "codex"]);
+    runState(["begin-spec-change", "--affected-task", "R2-T1", "--summary", "Revise independent consumer", "--agent", "codex"]);
+    await writeFile(fixture.specPath, (await readFile(fixture.specPath, "utf8"))
+      .replace('"revision": 1', '"revision": 2')
+      .replace("总目标：订单成功提交后发布事件，通知服务消费同一冻结契约。", "总目标：订单成功提交后发布事件，通知服务可靠消费同一冻结契约。"));
+    const synchronized = JSON.parse(runState(["sync-spec-design", "--affected-task", "R2-T1",
+      "--summary", "Revise independent consumer", "--idempotency-key", "manual-dependency-sync:2", "--agent", "codex"]));
+    expect(synchronized.task).not.toHaveProperty("spec_change");
+    expect(synchronized.task.spec_dependency_evidence.find((item: { source_task_id: string }) => item.source_task_id === "R1-T2"))
+      .toMatchObject({ task_id: "R1-T1", status: "satisfied", evidence: "publisher test report 42" });
+  });
+
+  it.each([
+    ["claude-code", "revise"], ["claude-code", "cancel"],
+    ["claude-code", "cancel-before-write"], ["claude-code", "cancel-after-write"],
+    ["qoder", "revise"], ["qoder", "cancel"],
+    ["qoder", "cancel-before-write"], ["qoder", "cancel-after-write"],
+  ])("recovers a revised hard dependency under %s before %s", async (newOwner, resolution) => {
+    const fixture = await writeCanonicalFixture();
+    initializeSpecExecution(fixture.specPath);
+    runState(["create-task-from-spec", "--spec", fixture.specPath, "--spec-task", "R1-T2",
+      "--task-id", "hard-dependency-sync", "--type", "feature", "--title", "Revise hard dependency",
+      "--repo-path", `R1=${fixture.repoA}`, "--dependency-evidence", "R1-T2->R1-T1=old publisher report",
+      "--agent", "codex"]);
+    runState(["begin-spec-change", "--affected-task", "R1-T2", "--summary", "Revise query requirement", "--agent", "codex"]);
+    const taskPath = path.join(tempDir, ".easy-coding", "tasks", "hard-dependency-sync", "task.json");
+    const logPath = path.join(path.dirname(taskPath), "execution.jsonl");
+    const staleTask = JSON.parse(await readFile(taskPath, "utf8"));
+    const staleLog = await readFile(logPath, "utf8").catch(() => "");
+    await writeFile(fixture.specPath, (await readFile(fixture.specPath, "utf8"))
+      .replace('"revision": 1', '"revision": 2')
+      .replace("总目标：订单成功提交后发布事件，通知服务消费同一冻结契约。", "总目标：订单成功提交后可靠发布事件，并提供投递状态查询。"));
+    const synchronized = JSON.parse(runState(["sync-spec-design", "--affected-task", "R1-T2",
+      "--summary", "Revise query requirement", "--idempotency-key", "hard-dependency-sync:2", "--agent", "codex"]));
+    const pendingEdge = synchronized.task.spec_dependency_evidence.find((item: { task_id: string }) => item.task_id === "R1-T1");
+    expect(synchronized.task.spec_source.revision).toBe(2);
+    expect(synchronized.task).not.toHaveProperty("spec_change");
+    expect(pendingEdge).toMatchObject({ status: "pending", shared_status: "pending" });
+    expect(pendingEdge).not.toHaveProperty("evidence");
+
+    // 模拟原稿已提交新设计、本地尚未收到同步回执时移交。
+    staleTask.spec_writeback_progress = {
+      ...staleTask.spec_writeback_progress,
+      status: "pending",
+      pending_action: JSON.stringify({ kind: "sync-design", affected_task_ids: ["R1-T2"],
+        summary: "Revise query requirement", idempotency_key: "hard-dependency-sync:2", agent: "codex" }),
+    };
+    await writeFile(taskPath, JSON.stringify(staleTask, null, 2));
+    await writeFile(logPath, staleLog);
+    const claimed = JSON.parse(runState(["claim-task", "--task-id", "hard-dependency-sync", "--agent", newOwner]));
+    expect(claimed.spec_context.status).toBe("blocked");
+    const recovered = JSON.parse(runState(["reconcile-spec-execution", "--agent", newOwner]));
+    expect(recovered.task.spec_source.revision).toBe(2);
+    expect(recovered.task.last_agent).toBe(newOwner);
+    expect(recovered.task).not.toHaveProperty("spec_change");
+    expect(recovered.task.spec_writeback_progress).not.toHaveProperty("pending_action");
+    const resumed = JSON.parse(runState(["resume-spec-context", "--agent", newOwner]));
+    expect(resumed.spec_context).toMatchObject({ status: "ready", consumption: { revision: 2 } });
+    for (const stage of ["IMPLEMENT", "QUALITY", "MEMORY", "COMPLETE"]) {
+      const blocked = spawnSync(pythonCmd, ["-B", stateApiPath(), "request-transition", "--stage", stage,
+        "--agent", newOwner, "--cwd", tempDir], { cwd: tempDir, encoding: "utf8" });
+      expect(blocked.status).toBe(1);
+      expect(blocked.stderr).toContain("omit hard dependencies without evidence");
+    }
+    if (resolution.startsWith("cancel")) {
+      if (resolution !== "cancel") {
+        const originalOwner = JSON.parse(runState(["claim-task", "--task-id", "hard-dependency-sync", "--agent", "codex"]));
+        const interrupted = spawnSync(pythonCmd, ["-B", "-c", [
+          "import sys",
+          "from pathlib import Path",
+          `sys.path.insert(0, ${JSON.stringify(path.dirname(stateApiPath()))})`,
+          "import easy_coding_state as state",
+          `root = Path(${JSON.stringify(tempDir)})`,
+          `session_file = ${JSON.stringify(originalOwner.task.spec_context.session_file)}`,
+          "original_writer = state.record_task_status",
+          "def interrupt_writer(*args, **kwargs):",
+          " if args[2] == 'cancelled':",
+          ...(resolution === "cancel-after-write" ? ["  original_writer(*args, **kwargs)"] : []),
+          "  raise OSError('Simulated cancellation interruption')",
+          " return original_writer(*args, **kwargs)",
+          "state.record_task_status = interrupt_writer",
+          "try:",
+          " state.close_current_task(root, 'User cancelled pending dependency', 'codex', session_file)",
+          "except OSError as error:",
+          " assert 'Simulated cancellation interruption' in str(error), str(error)",
+          "else:",
+          " raise AssertionError('Cancellation interruption was not reached')",
+        ].join("\n")], { cwd: tempDir, encoding: "utf8" });
+        expect(interrupted.status, interrupted.stderr).toBe(0);
+        const pending = JSON.parse(await readFile(taskPath, "utf8"));
+        expect(JSON.parse(pending.spec_writeback_progress.pending_action)).toMatchObject({
+          kind: "task", status: "cancelled", agent: "codex", idempotency_key: "hard-dependency-sync:R1-T2:cancel",
+        });
+        runState(["claim-task", "--task-id", "hard-dependency-sync", "--agent", newOwner]);
+        const recoveredCancel = JSON.parse(runState(["reconcile-spec-execution", "--agent", newOwner]));
+        expect(recoveredCancel.task.last_agent).toBe(newOwner);
+        expect(recoveredCancel.task.spec_writeback_progress).not.toHaveProperty("pending_action");
+        const rawExecution = (await readFile(fixture.specPath, "utf8"))
+          .split("<!-- EDS:EXECUTION:BEGIN -->")[1].split("```json")[1].split("```")[0];
+        expect(JSON.parse(rawExecution).events.filter((event: { idempotency_key: string }) =>
+          event.idempotency_key === "hard-dependency-sync:R1-T2:cancel"))
+          .toEqual([expect.objectContaining({ agent: "Codex with Easy Coding", to_status: "cancelled" })]);
+      }
+      runState(["close-current", "--reason", "User cancelled while dependency evidence is pending", "--agent", newOwner]);
+      expect(JSON.parse(await readFile(taskPath, "utf8"))).toMatchObject({ status: "CLOSED", last_agent: newOwner });
+      const cancelled = JSON.parse(runState(["inspect-dev-spec", "--spec", fixture.specPath]));
+      expect(cancelled.execution.tasks.find((item: { task_id: string }) => item.task_id === "R1-T2"))
+        .toMatchObject({ status: "cancelled" });
+      return;
+    }
+    runState(["begin-spec-change", "--affected-task", "R1-T2", "--summary", "Refine query retry requirement", "--agent", newOwner]);
+    await writeFile(fixture.specPath, (await readFile(fixture.specPath, "utf8"))
+      .replace('"revision": 2', '"revision": 3').replace("并提供投递状态查询。", "并提供可重试的投递状态查询。"));
+    const revisedAgain = JSON.parse(runState(["sync-spec-design", "--affected-task", "R1-T2",
+      "--summary", "Refine query retry requirement", "--idempotency-key", "hard-dependency-sync:3", "--agent", newOwner]));
+    expect(revisedAgain.task.spec_source.revision).toBe(3);
+    expect(revisedAgain.task.spec_dependency_evidence.find((item: { task_id: string }) => item.task_id === "R1-T1"))
+      .toMatchObject({ status: "pending", shared_status: "pending" });
+    runState(["resume-spec-context", "--agent", newOwner]);
+    const satisfied = JSON.parse(runState(["satisfy-spec-dependency", "--source-task", "R1-T2", "--spec-task", "R1-T1",
+      "--evidence", "new publisher report for revision 3", "--agent", newOwner]));
+    expect(satisfied.task.spec_dependency_evidence.find((item: { task_id: string }) => item.task_id === "R1-T1"))
+      .toMatchObject({ status: "satisfied", shared_status: "satisfied", evidence: "new publisher report for revision 3" });
+    const started = JSON.parse(runState(["writeback-spec-task", "--spec-task", "R1-T2", "--status", "in_progress",
+      "--summary", "Implement revised query", "--idempotency-key", "hard-dependency-sync:start:3", "--agent", newOwner]));
+    expect(started.task.last_agent).toBe(newOwner);
+  }, 30_000);
+
+  it.each(["task", "step", "dependency"])("replays pending %s writeback with the original actor and current owner", async (kind) => {
+    const fixture = await writeCanonicalFixture();
+    initializeSpecExecution(fixture.specPath);
+    runState(["create-task-from-spec", "--spec", fixture.specPath, "--spec-task", "R1-T1", "--spec-task", "R1-T2",
+      "--task-id", "pending-owner", "--type", "feature", "--title", "Pending writeback owner",
+      "--repo-path", `R1=${fixture.repoA}`, "--agent", "codex"]);
+    if (kind === "step") {
+      runState(["writeback-spec-task", "--spec-task", "R1-T1", "--status", "in_progress",
+        "--summary", "Start source task", "--idempotency-key", "pending-owner:start", "--agent", "codex"]);
+    }
+    const taskPath = path.join(tempDir, ".easy-coding", "tasks", "pending-owner", "task.json");
+    const logPath = path.join(path.dirname(taskPath), "execution.jsonl");
+    const staleTask = JSON.parse(await readFile(taskPath, "utf8"));
+    const staleLog = await readFile(logPath, "utf8").catch(() => "");
+    const evidence = kind === "step"
+      ? [{ kind: "test", status: "passed", ref: "publisher report", test_id: "T1" }]
+      : kind === "dependency" ? [{ kind: "dependency", status: "passed", ref: "publisher report" }] : [];
+    const status = kind === "task" ? "in_progress" : kind === "step" ? "completed" : "satisfied";
+    const sourceTask = kind === "dependency" ? "R1-T2" : "R1-T1";
+    const sourceOption = kind === "dependency" ? "--source-task" : "--spec-task";
+    const options = kind === "step" ? ["--step", "S1"] : kind === "dependency" ? ["--dependency-task", "R1-T1"] : [];
+    const key = `pending-owner:${kind}:result`;
+    runState([`writeback-spec-${kind}`, sourceOption, sourceTask, ...options, "--status", status,
+      "--summary", "Original writer action", ...evidence.flatMap((item) => ["--evidence", JSON.stringify(item)]),
+      "--idempotency-key", key, "--agent", "codex"]);
+    staleTask.spec_writeback_progress = {
+      ...staleTask.spec_writeback_progress,
+      status: "pending",
+      pending_action: JSON.stringify({ kind, source_task_id: sourceTask, status,
+        summary: "Original writer action", evidence, idempotency_key: key, agent: "codex",
+        ...(kind === "step" ? { step_id: "S1" } : {}),
+        ...(kind === "dependency" ? { dependency_task_id: "R1-T1" } : {}),
+      }),
+    };
+    await writeFile(taskPath, JSON.stringify(staleTask, null, 2));
+    await writeFile(logPath, staleLog);
+    runState(["claim-task", "--task-id", "pending-owner", "--agent", "claude-code"]);
+    const recovered = JSON.parse(runState(["reconcile-spec-execution", "--agent", "claude-code"]));
+    expect(recovered.task.last_agent).toBe("claude-code");
+    expect(recovered.task.spec_writeback_progress).not.toHaveProperty("pending_action");
+    const rawExecution = (await readFile(fixture.specPath, "utf8"))
+      .split("<!-- EDS:EXECUTION:BEGIN -->")[1].split("```json")[1].split("```")[0];
+    expect(JSON.parse(rawExecution).events.filter((event: { idempotency_key: string }) => event.idempotency_key === key))
+      .toEqual([expect.objectContaining({ agent: "Codex with Easy Coding" })]);
+  }, 30_000);
+
+  it.each(["claude-code", "qoder"])("reconciles an acknowledged-lost design sync under new owner %s", async (newOwner) => {
     const fixture = await writeCanonicalFixture();
     initializeSpecExecution(fixture.specPath);
     runState([
@@ -4330,7 +4726,7 @@ describe("Canonical Spec v1 runtime integration", () => {
       "--spec",
       fixture.specPath,
       "--spec-task",
-      "R1-T1",
+      "R2-T1",
       "--task-id",
       "design-sync-recovery",
       "--type",
@@ -4338,7 +4734,7 @@ describe("Canonical Spec v1 runtime integration", () => {
       "--title",
       "Design sync recovery",
       "--repo-path",
-      `R1=${fixture.repoA}`,
+      `R2=${fixture.repoB}`,
       "--agent",
       "codex",
     ]);
@@ -4346,10 +4742,12 @@ describe("Canonical Spec v1 runtime integration", () => {
     const taskDir = path.join(tempDir, ".easy-coding", "tasks", "design-sync-recovery");
     const taskPath = path.join(taskDir, "task.json");
     const logPath = path.join(taskDir, "execution.jsonl");
+    runState(["begin-spec-change", "--affected-task", "R2-T1", "--summary", "Revised dependency contract", "--agent", "codex"]);
     const staleTask = JSON.parse(await readFile(taskPath, "utf8"));
     const staleLog = await readFile(logPath, "utf8").catch(() => "");
     const revised = (await readFile(fixture.specPath, "utf8"))
       .replace('"revision": 1', '"revision": 2')
+      .replace("C1 signature is frozen in revision 1", "C1 signature and schema are frozen in revision 2")
       .replace(
         "总目标：订单成功提交后发布事件，通知服务消费同一冻结契约。",
         "总目标：订单成功提交后支持可恢复的可靠事件发布。",
@@ -4358,7 +4756,7 @@ describe("Canonical Spec v1 runtime integration", () => {
     const syncArgs = [
       "sync-spec-design",
       "--affected-task",
-      "R1-T1",
+      "R2-T1",
       "--summary",
       "Recoverable design sync",
       "--idempotency-key",
@@ -4370,7 +4768,7 @@ describe("Canonical Spec v1 runtime integration", () => {
 
     staleTask.spec_writeback_progress.pending_action = JSON.stringify({
       kind: "sync-design",
-      affected_task_ids: ["R1-T1"],
+      affected_task_ids: ["R2-T1"],
       summary: "Recoverable design sync",
       idempotency_key: "design-sync-recovery:revision:2",
       agent: "codex",
@@ -4379,16 +4777,23 @@ describe("Canonical Spec v1 runtime integration", () => {
     await writeFile(taskPath, JSON.stringify(staleTask, null, 2), "utf8");
     await writeFile(logPath, staleLog, "utf8");
 
+    const takeover = JSON.parse(runState(["claim-task", "--task-id", "design-sync-recovery", "--agent", newOwner]));
+    expect(takeover.task.last_agent).toBe(newOwner);
+    expect(takeover.spec_context.status).toBe("blocked");
+
     const reconciled = JSON.parse(
       runState([
         "reconcile-spec-execution",
         "--task-id",
         "design-sync-recovery",
         "--agent",
-        "codex",
+        newOwner,
       ]),
     );
     expect(reconciled).toMatchObject({ reconciled: true });
+    expect(reconciled.task.last_agent).toBe(newOwner);
+    expect(reconciled.task).not.toHaveProperty("spec_change");
+    expect(reconciled.task.spec_dependency_evidence[0].required_evidence).toBe("C1 signature and schema are frozen in revision 2");
     expect(reconciled.task.spec_source).toMatchObject({ revision: 2, execution_revision: 1 });
     const records = (await readFile(logPath, "utf8"))
       .trim()
@@ -4396,5 +4801,10 @@ describe("Canonical Spec v1 runtime integration", () => {
       .filter(Boolean)
       .map((line) => JSON.parse(line));
     expect(records.filter((record) => record.type === "spec-design-sync")).toHaveLength(1);
+    const executionBlock = (await readFile(fixture.specPath, "utf8"))
+      .split("<!-- EDS:EXECUTION:BEGIN -->")[1].split("```json")[1].split("```")[0];
+    const events = JSON.parse(executionBlock).events.filter((event: { type: string }) => event.type === "spec_revised");
+    expect(events).toHaveLength(1);
+    expect(events[0].agent).toBe("Codex with Easy Coding");
   }, 20_000);
 });

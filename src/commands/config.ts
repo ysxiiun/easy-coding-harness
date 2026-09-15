@@ -122,7 +122,7 @@ export async function config(): Promise<void> {
     const readiness = await inspectTddReadiness(process.cwd());
     if (readiness.status !== "ready") {
       cancel(
-        `TDD was not enabled. Run ec-tdd-init first: ${readiness.reasons.join("; ")}. No project modes were changed.`,
+        `TDD was not enabled. ${readiness.status === "needs_init" ? "Run ec-tdd-init first" : "Repair TDD readiness"}: ${readiness.reasons.join("; ")}. No project modes were changed.`,
       );
       return;
     }

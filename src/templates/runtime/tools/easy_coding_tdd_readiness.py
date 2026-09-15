@@ -118,21 +118,18 @@ def parse_records(root: Path, value: object, field: str, reasons: list[str]) -> 
             reasons.append(f"{field} contains an invalid record")
             continue
         file_name = item.get("path")
-        expected = item.get("sha256")
-        if not isinstance(file_name, str) or not isinstance(expected, str):
-            reasons.append(f"{field} contains an invalid path or SHA-256")
+        if not isinstance(file_name, str) or not file_name.strip() or Path(file_name).is_absolute():
+            reasons.append(f"{field} contains an invalid path")
             continue
         try:
             _, resolved = project_file(root, file_name)
-            if sha256(resolved) != expected:
-                reasons.append(f"readiness file changed: {file_name}")
             contents.append(resolved.read_text(encoding="utf-8"))
         except (OSError, UnicodeError, ReadinessError) as error:
             reasons.append(str(error))
     return contents
 
 
-def inspect(root: Path) -> dict[str, object]:
+def inspect(root: Path, include_ci: bool = False) -> dict[str, object]:
     receipt = root / RECEIPT
     if not receipt.is_file():
         return {
@@ -145,7 +142,7 @@ def inspect(root: Path) -> dict[str, object]:
         manifest = json.loads(receipt.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError):
         return {
-            "status": "needs_init",
+            "status": "needs_repair",
             "coverage_scope": COVERAGE_SCOPE,
             "reasons": ["TDD readiness receipt is invalid"],
             "receipt": RECEIPT.as_posix(),
@@ -182,7 +179,6 @@ def inspect(root: Path) -> dict[str, object]:
     manifest_ci_files = manifest.get("ci_files")
     manifest_tool_files = manifest.get("tool_files")
     build_contents = parse_records(root, manifest_build_files, "build_files", reasons)
-    ci_contents = parse_records(root, manifest_ci_files, "ci_files", reasons)
     parse_records(root, manifest_tool_files, "tool_files", reasons)
     build_paths = {
         Path(item.get("path", "")).name
@@ -196,8 +192,6 @@ def inspect(root: Path) -> dict[str, object]:
     } if isinstance(manifest_ci_files, list) else set()
     if not build_paths.intersection(JAVA_BUILD_FILE_NAMES):
         reasons.append("build_files must include a Maven or Gradle Java build file")
-    if not ci_paths.intersection(GITLAB_CI_ENTRY_FILES):
-        reasons.append("ci_files must include the project-root GitLab CI entry file")
     tool_paths = {
         item.get("path", "").replace("\\", "/")
         for item in manifest_tool_files
@@ -205,12 +199,16 @@ def inspect(root: Path) -> dict[str, object]:
     } if isinstance(manifest_tool_files, list) else set()
     if COVERAGE_TOOL_PATH not in tool_paths:
         reasons.append(f"tool_files must include {COVERAGE_TOOL_PATH}")
-    if not any("jacoco" in content.lower() for content in build_contents):
-        reasons.append("build files do not configure JaCoCo")
-    reasons.extend(ci_contract_reasons(ci_contents))
+    if include_ci:
+        ci_contents = parse_records(root, manifest_ci_files, "ci_files", reasons)
+        if not ci_paths.intersection(GITLAB_CI_ENTRY_FILES):
+            reasons.append("ci_files must include the project-root GitLab CI entry file")
+        if not any("jacoco" in content.lower() for content in build_contents):
+            reasons.append("build files do not configure JaCoCo")
+        reasons.extend(ci_contract_reasons(ci_contents))
 
     return {
-        "status": "ready" if not reasons else "needs_init",
+        "status": "ready" if not reasons else "needs_repair",
         "coverage_scope": COVERAGE_SCOPE,
         "reasons": list(dict.fromkeys(reasons)),
         "receipt": RECEIPT.as_posix(),
@@ -274,7 +272,7 @@ def record(args: argparse.Namespace, root: Path) -> dict[str, object]:
     temporary = receipt.with_suffix(f".tmp-{os.getpid()}")
     temporary.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     temporary.replace(receipt)
-    result = inspect(root)
+    result = inspect(root, include_ci=True)
     if result["status"] != "ready":
         raise ReadinessError("Recorded readiness receipt did not pass validation.")
     return result
@@ -284,7 +282,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Easy Coding Java TDD readiness tool")
     parser.add_argument("--cwd", default=".")
     subcommands = parser.add_subparsers(dest="command", required=True)
-    subcommands.add_parser("check")
+    check_parser = subcommands.add_parser("check")
+    check_parser.add_argument("--include-ci", action="store_true")
     record_parser = subcommands.add_parser("record")
     record_parser.add_argument("--build-file", action="append", default=[])
     record_parser.add_argument("--ci-file", action="append", default=[])
@@ -294,9 +293,10 @@ def main() -> int:
     args = parser.parse_args()
     root = Path(args.cwd).resolve()
     try:
-        result = inspect(root) if args.command == "check" else record(args, root)
+        result = inspect(root, args.include_ci) if args.command == "check" else record(args, root)
     except (OSError, UnicodeError, ReadinessError) as error:
-        print(json.dumps({"status": "needs_init", "reasons": [str(error)]}, ensure_ascii=False))
+        status = "needs_repair" if (root / RECEIPT).exists() else "needs_init"
+        print(json.dumps({"status": status, "reasons": [str(error)]}, ensure_ascii=False))
         return 2
     print(json.dumps(result, ensure_ascii=False))
     return 0 if result["status"] == "ready" else 1

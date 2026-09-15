@@ -614,6 +614,8 @@ def select_tasks(
     inspection: dict[str, Any],
     selected_task_ids: Iterable[str],
     dependency_evidence: dict[str, str] | None = None,
+    *,
+    allow_pending_hard_dependencies: bool = False,
 ) -> dict[str, Any]:
     selected_ids = list(dict.fromkeys(selected_task_ids))
     if not selected_ids:
@@ -694,7 +696,7 @@ def select_tasks(
                     **({"evidence": evidence} if evidence else {}),
                 }
             )
-    if missing_hard:
+    if missing_hard and not allow_pending_hard_dependencies:
         raise EasyDevSpecError(
             "Selected tasks omit hard dependencies without evidence: " + ", ".join(missing_hard)
         )

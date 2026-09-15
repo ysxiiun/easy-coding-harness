@@ -100,7 +100,8 @@ describe("configureCodex", () => {
       "native choice returns or a matching transition call completes",
     );
     expect(analysisSkill).toContain("For an automatic edge, do not add a pause");
-    expect(analysisSkill).toContain("--spec-task <selected-task-id>");
+    expect(analysisSkill).toContain("resume-spec-context");
+    expect(analysisSkill).toContain("`selected_spec_tasks`");
     expect(analysisSkill).toContain("`exact` and `scope-unchanged` use the fast projection path");
     expect(analysisSkill).toContain("at least five units");
     expect(analysisSkill).toContain("unused `repo_paths`");
@@ -541,7 +542,8 @@ describe("configureQoder", () => {
       "native choice returns or a matching transition call completes",
     );
     expect(analysisSkill).toContain("For an automatic edge, do not add a pause");
-    expect(analysisSkill).toContain("--spec-task <selected-task-id>");
+    expect(analysisSkill).toContain("resume-spec-context");
+    expect(analysisSkill).toContain("`selected_spec_tasks`");
     expect(analysisSkill).toContain("`exact` and `scope-unchanged` use the fast projection path");
     expect(analysisSkill).toContain("at least five units");
     expect(analysisSkill).toContain("unused `repo_paths`");

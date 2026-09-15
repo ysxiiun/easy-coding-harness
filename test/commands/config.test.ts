@@ -158,7 +158,7 @@ describe("config command", () => {
       .mockResolvedValueOnce(true);
     promptMocks.text.mockResolvedValueOnce("95");
     promptMocks.confirm.mockImplementationOnce(async () => {
-      await writeFile(path.join(tempDir, ".gitlab-ci.yml"), "drifted\n", "utf8");
+      await rm(path.join(tempDir, "pom.xml"));
       return true;
     });
 

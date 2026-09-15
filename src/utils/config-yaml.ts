@@ -174,8 +174,7 @@ export function resolveLegacyBehavior(config: EasyCodingConfig): {
       ? "fast"
       : "adaptive";
   const supportsTddThreshold = Number(config.version) >= 4;
-  const supportsReadyTdd = Number(config.version) >= CONFIG_SCHEMA_VERSION;
-  const tddEnabled = supportsReadyTdd && behavior.tdd_enabled === true;
+  const tddEnabled = supportsTddThreshold && behavior.tdd_enabled === true;
   const tddCoverageThreshold =
     supportsTddThreshold && isTddCoverageThreshold(behavior.tdd_coverage_threshold)
       ? behavior.tdd_coverage_threshold

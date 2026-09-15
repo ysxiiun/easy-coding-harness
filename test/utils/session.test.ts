@@ -25,6 +25,25 @@ afterEach(async () => {
 });
 
 describe("session", () => {
+  it("preserves explicit TDD overrides during upgrade despite age and session count", async () => {
+    const sessions = [
+      { tdd_enabled: true, tdd_coverage_threshold: 96 },
+      { tdd_enabled: false },
+      { tdd_coverage_threshold: 87 },
+      {},
+    ];
+    for (const [index, settings] of sessions.entries()) {
+      await writeFile(getSessionFilePath(tempDir, `tdd-${index}`), JSON.stringify({
+        current_task: null, created_at: "2020-01-01T00:00:00Z", ...settings,
+      }));
+    }
+    const cleaned = await cleanSessionRuntime(tempDir, { preserveTddSettings: true, maxSessions: 0 });
+    expect(cleaned.sessionsRemoved).toBe(1);
+    for (const [index, settings] of sessions.slice(0, 3).entries()) {
+      expect(JSON.parse(await readFile(getSessionFilePath(tempDir, `tdd-${index}`), "utf8")))
+        .toMatchObject(settings);
+    }
+  });
   it("creates and reads a session file", async () => {
     const session = createSessionFile("06-09-demo");
     await writeSessionFile(tempDir, session, "codex-1200");

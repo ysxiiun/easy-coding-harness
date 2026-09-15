@@ -34,6 +34,7 @@ export interface SessionCleanupOptions {
   attachedRetentionMs?: number;
   maxSessions?: number;
   reserveSlots?: number;
+  preserveTddSettings?: boolean;
 }
 
 export interface SessionCleanupResult {
@@ -158,7 +159,11 @@ export async function cleanSessionRuntime(
   const attachedRetentionMs = options.attachedRetentionMs ?? ATTACHED_SESSION_RETENTION_MS;
   const maxSessions = options.maxSessions ?? MAX_SESSION_FILES;
   const reserveSlots = options.reserveSlots ?? 0;
-  const candidates = await listSessionCleanupCandidates(cwd);
+  const candidates = (await listSessionCleanupCandidates(cwd)).filter((candidate) => {
+    if (!options.preserveTddSettings) return true;
+    const session = parseSessionFile(candidate.content);
+    return !session || !("tdd_enabled" in session || "tdd_coverage_threshold" in session);
+  });
   const removed = new Set<string>();
 
   for (const candidate of candidates) {

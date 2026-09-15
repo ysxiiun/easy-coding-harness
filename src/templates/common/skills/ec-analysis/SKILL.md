@@ -28,21 +28,16 @@ shows the compound high-risk and complexity signals required for Strict. Do not 
 repositories, the full Spec, broad Git history, or every architecture section merely to prove
 that a bounded task might be complicated.
 
-For a task with `task.json.spec_source`, re-run `inspect-dev-spec` against the stored source, exact
+For a task with `task.json.spec_source`, use `resume-spec-context` against the stored source, exact
 `selected_spec_tasks`, and only their stored `task.repo_paths` bindings. Schema, Spec ID, design
 revision, and `design_sha256` must still match. A changed `document_sha256` with the same design is
 normal shared progress; refresh `execution_revision` without invalidating plan/QUALITY
-evidence. An execution revision rollback is blocking. Then call the selector once for the exact
-selection:
+evidence. An execution revision rollback is blocking. Reuse the ready consumption returned by
+creation/claim in this session; otherwise load it once with:
 
 ```bash
-{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py inspect-dev-spec \
-  --spec <stored-source> \
-  --spec-task <selected-task-id> [--spec-task <selected-task-id>]... \
-  [--repo-path <repo-id>=<stored-path>]...
-
-{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py select-dev-spec-scope \
-  --spec <stored-source> --spec-task <selected-task-id> [--spec-task <selected-task-id>]...
+{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py resume-spec-context \
+  --task-id <task-id> --agent <agent-id> --session-file <P>
 ```
 
 Load only the returned per-repository consumption closures: manifest/global context, selected
@@ -186,8 +181,9 @@ When TDD is enabled for a Java code task, make `test-strategy.md` record:
   status are non-blocking and never require an intermediate commit or push. Include these exact,
   language-independent contract markers: `local_test_gate: required` and
   `remote_ci_acceptance: non-blocking`.
-- current `tdd_readiness_status=ready`; if missing or drifted, stop before IMPLEMENT and route to
-  `ec-tdd-init`. Never plan to initialize CI inside an already-enabled TDD feature task.
+- current `tdd_readiness_status=ready`; a missing receipt requires `ec-tdd-init`, while
+  `needs_repair` requires fixing the reported entry without resetting TDD configuration.
+  Build-file content changes use current task tests and coverage; they do not require reinit.
 
 The state API mechanically freezes current Git `HEAD` per repository into `task.tdd_baselines`
 when ANALYSIS advances to IMPLEMENT. Plan the local command with that exact SHA and the frozen
@@ -306,6 +302,9 @@ waiting; it never changes the selected execution depth.
   incomplete selected-task coverage, or an open Unit/Step/File/Symbol/Test traceability gap.
 
 If evidence requires changing Canonical task boundaries, contracts, files, symbols, Steps, Tests,
-or dependencies, remain/return to ANALYSIS, update the original static design with revision +1,
+or dependencies, obtain confirmation and run `begin-spec-change --affected-task <id> --summary
+<confirmed-change> --agent <agent-id> --session-file <P>` before editing. This persists the
+intent across handoffs and blocks implementation/acceptance until synchronization. Update the original static design with revision +1,
 restore READY, and call `sync-spec-design --affected-task ...`. This invalidates the old local
-plan. Never substitute edits to the derived `dev-spec.md`, and never edit `EDS:EXECUTION` by hand.
+plan. Run `resume-spec-context` after synchronization, then refresh derived artifacts. Never
+substitute edits to the derived `dev-spec.md`, and never edit `EDS:EXECUTION` by hand.

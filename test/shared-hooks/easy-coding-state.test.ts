@@ -2404,6 +2404,16 @@ describe("easy_coding_state.py ANALYSIS template gate", () => {
       tdd_confirmed_by: "codex",
       tdd_baselines: { project: baseline },
     });
+    const fingerprint = () => JSON.parse(execFileSync("python3", [
+      "-B", stateApiPath(), "evidence-fingerprints", "--session-file",
+      ".easy-coding/sessions/test.json", "--agent", "codex",
+    ], { cwd: tempDir, encoding: "utf8" })).implementation_fingerprint;
+    const initialFingerprint = fingerprint();
+    await appendFile(path.join(tempDir, "pom.xml"), "<!-- version bump -->\n");
+    const buildFingerprint = fingerprint();
+    expect(buildFingerprint).not.toBe(initialFingerprint);
+    await appendFile(path.join(tempDir, ".easy-coding", "tools", "easy_coding_java_coverage.py"), "# upgrade\n");
+    expect(fingerprint()).not.toBe(buildFingerprint);
   });
 
   it("rejects TDD-only analysis artifacts when the effective TDD mode is off", async () => {
@@ -3956,7 +3966,7 @@ describe("easy_coding_state.py automatic and optional transitions", () => {
     );
 
     expect(result.status).toBe(1);
-    expect(result.stderr).toContain("before ec-tdd-init succeeds");
+    expect(result.stderr).toContain("Run ec-tdd-init first");
     const session = JSON.parse(
       await readFile(path.join(tempDir, ".easy-coding", "sessions", "test.json"), "utf8"),
     ) as Record<string, unknown>;
@@ -9401,7 +9411,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
       })}\n`,
       "utf8",
     );
-    await writeFile(path.join(tempDir, ".gitlab-ci.yml"), "drifted\n", "utf8");
+    await writeFile(path.join(tempDir, ".gitlab-ci.yml"), "updated CI does not affect local acceptance\n", "utf8");
     const driftedReadiness = spawnSync(
       "python3",
       [
@@ -9416,9 +9426,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
       ],
       { cwd: tempDir, encoding: "utf8" },
     );
-    expect(driftedReadiness.status).toBe(1);
-    expect(driftedReadiness.stderr).toContain("before ec-tdd-init succeeds");
-    await writeTddReadinessFixture();
+    expect(driftedReadiness.status).toBe(0);
     const requested = JSON.parse(
       execFileSync(
         "python3",
@@ -9436,6 +9444,17 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
       ),
     ) as { pending_transition: { from: string; to: string } };
     expect(requested.pending_transition).toMatchObject({ from: "QUALITY", to: "MEMORY" });
+    await appendFile(path.join(tempDir, "src", "Example.java"), "// business change\n");
+    for (const entry of ["pom.xml", ".easy-coding/tools/easy_coding_java_coverage.py"]) {
+      const original = await readFile(path.join(tempDir, entry), "utf8");
+      await appendFile(path.join(tempDir, entry), "\nchanged TDD input\n");
+      const blocked = spawnSync("python3", ["-B", stateApiPath(), "request-transition",
+        "--session-file", ".easy-coding/sessions/test.json", "--stage", "MEMORY", "--agent", "codex",
+      ], { cwd: tempDir, encoding: "utf8" });
+      expect(blocked.status).toBe(1);
+      expect(blocked.stderr).toContain("Quality metadata changed");
+      await writeFile(path.join(tempDir, entry), original);
+    }
   });
 
   it("requires every latest review dimension to pass and preserves two-dimensional strict review", async () => {

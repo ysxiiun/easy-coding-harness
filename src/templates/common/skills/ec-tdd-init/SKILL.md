@@ -27,13 +27,14 @@ initialization.
 First run:
 
 ```bash
-python3 .easy-coding/tools/easy_coding_tdd_readiness.py --cwd . check
+python3 .easy-coding/tools/easy_coding_tdd_readiness.py --cwd . check --include-ci
 ```
 
 If it returns `ready`, report the recorded build/CI contract and stop without creating a task.
 The user may then use `ec-config` or `easy-coding config` to enable TDD.
 
-If it returns `needs_init`, inspect only the infrastructure needed to form a confirmed plan:
+If it returns `needs_init` or `needs_repair`, inspect only the reported infrastructure needed
+to form a confirmed initialization or repair plan:
 
 - Maven/Gradle files and the existing JUnit runner;
 - JaCoCo XML generation configuration;
@@ -90,13 +91,16 @@ frozen Workflow Mode's applicable build/test/CI syntax checks, then performs onl
 readiness check:
 
 ```bash
-python3 .easy-coding/tools/easy_coding_tdd_readiness.py --cwd . check
+python3 .easy-coding/tools/easy_coding_tdd_readiness.py --cwd . check --include-ci
 ```
 
-The `QUALITY -> MEMORY` gate requires the final check to return `ready`. If any recorded
-build or CI file changes after the receipt was created, readiness becomes `needs_init`; return to
-IMPLEMENT, refresh the receipt, and repeat QUALITY. Rerun this skill when
-the same drift occurs after task completion.
+The `QUALITY -> MEMORY` gate requires the full initialization check to return `ready`.
+Recorded SHA-256 values are historical snapshots, not freshness gates. Ordinary POM versions,
+dependencies, build plugins, formatting, CI changes, and managed tool upgrades do not require
+reinitialization. Daily `check` validates local entry points and task-variable contracts;
+`--include-ci` additionally validates the initialization build/CI contract. Missing receipts
+return `needs_init`; damaged receipts or required entries return `needs_repair`. Repair the
+reported entry, repeat applicable tests, and preserve the user's TDD settings.
 
-After completion, tell the user that TDD remains off and provide the explicit project/session
-enable route. Do not treat readiness as consent to enable it.
+After completion, report the unchanged TDD setting and provide the explicit project/session
+enable route when it is off. Do not treat readiness as consent to change it.

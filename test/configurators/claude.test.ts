@@ -245,7 +245,7 @@ describe("configureClaude", () => {
     expect(taskManagementSkill).toContain("Mode inspection and configuration belongs to `ec-config`");
     expect(taskManagementSkill).toContain("inspect-dev-spec --manifest-only");
     expect(taskManagementSkill).toContain(
-      "Do not call\n`select-dev-spec-scope` during routing",
+      "Do not call\n`select-dev-spec-scope` during discovery",
     );
     expect(taskManagementSkill).not.toContain("set-approval-mode");
     expect(taskManagementSkill).not.toContain("{{");
@@ -388,7 +388,8 @@ describe("configureClaude", () => {
     );
     expect(workflowSkill).toContain("An automatic ANALYSIS -> IMPLEMENT edge must not pause");
 
-    expect(analysisSkill).toContain("--spec-task <selected-task-id>");
+    expect(analysisSkill).toContain("resume-spec-context");
+    expect(analysisSkill).toContain("`selected_spec_tasks`");
     expect(analysisSkill).toContain("`exact` and `scope-unchanged` use the fast projection path");
     expect(analysisSkill).toContain("second round of Spec");
 

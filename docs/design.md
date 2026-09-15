@@ -213,17 +213,25 @@ INIT ─自动→ ANALYSIS → IMPLEMENT → QUALITY → MEMORY ─自动→ COM
   最多 8 个文件且没有明确高风险/宽契约；Strict 则必须同时命中明确高风险与真实复杂度。
   Canonical/supermodule 的未修改仓库元数据不参与定级。
 - **Java TDD 模式**：session 覆盖优先于项目 `behavior.tdd_enabled`，默认关闭；覆盖率阈值默认 90，可配置 1..100。开启入口必须先验证 `ec-tdd-init` readiness，不存在“先开启、稍后初始化”。专用 `tdd-init` 代码任务始终冻结 TDD 关闭，只建设 JUnit/JaCoCo/GitLab changed-line coverage 基础设施，不补存量业务单测或要求全量覆盖。后续业务任务进入 IMPLEMENT 时原子冻结 baseline 与阈值，以 100% 为测试设计目标、以配置阈值作为新增/修改生产代码行最低门禁；QUALITY 对每个实际修改仓库（Canonical 下每个 source task）同时要求通过的本地单测证据与本地 changed-line coverage 证据。GitLab TEST stage 继续复用同一脚本，但远程 pipeline URL、job identity 与成功状态不进入 Harness 验收；beta.1/beta.2 的历史 GitLab coverage 记录保留并在新门禁中忽略。
+- **TDD 就绪与配置保护**：readiness 的 SHA-256 是初始化历史，不要求当前 POM、CI 或工具
+  与快照一致。缺少凭据为 `needs_init`，必要本地入口或参数损坏为 `needs_repair`；初始化
+  另检查完整 CI 契约。当前构建和工具内容同时绑定实施、验收契约及各仓库指纹，变化后
+  必须重新验证，不能继承旧测试/覆盖率。升级保留项目/session 开关、阈值和任务冻结基线，
+  升级清理也保留带有显式 TDD 配置的 session。
 - **共享 Canonical 执行投影**：Canonical Spec 的静态设计和机器执行区分层管理。Harness
   用 design revision + `design_sha256` 绑定本地计划，只把跨应用必须消费的 Task、Step、
   dependency 状态投影到 `EDS:EXECUTION`；详细 result/review/verify 仍保留在本地
   `execution.jsonl`。写回采用 `execution_revision` CAS、稳定幂等键、相邻锁与原子替换，
   冲突时仅在设计未变的前提下刷新并重试一次。项目外显式路径使用 absolute locator，
-  迁移后必须按 schema/spec_id/design revision/design digest 精确 rebind。静态方案变化只能
-  revision +1、重新 READY 并 `sync-spec-design`，执行区禁止人工修改；共享回写与 Git
+  迁移后必须按 schema/spec_id/design revision/design digest 精确 rebind。确认静态方案变化后
+  先通过 `begin-spec-change` 持久化说明、受影响任务和原设计版本，再 revision +1、重新 READY
+  并 `sync-spec-design`。对应同步完成前阻止实施和验收，旧幂等事件不能清除新的变更。
+  同步恢复沿用原事件作者，保留当前接手负责人；执行区禁止人工修改。共享回写与 Git
   提交/推送是两个独立事实。
 - **Canonical 两段式分析**：路由阶段使用 manifest-only 目录，只以 normalized remote
   确认当前 worktree，`path_hint` 仅报告生成路径是否不同；用户选定 task 后才解析所选
-  仓库和 change/test baseline。ANALYSIS 负责唯一一次消费闭包读取，exact/scope-unchanged
+  仓库和 change/test baseline。创建/接手返回选中的消费闭包，恢复会话与设计同步后使用
+  `resume-spec-context` 重载原稿并记录当前 session 消费版本。ANALYSIS 复用这些内容，exact/scope-unchanged
   直接投影运行时产物，scope-drifted 只分析所选任务漂移。未选仓库路径、旧本地 Harness
   task 和 Git 提交考古都不能成为当前分析门禁。
 - **pending_transition**：仅审批模式要求人工确认时记录；自动边走受限 `auto-transition`。所有修改任务从 IMPLEMENT 进入 QUALITY。

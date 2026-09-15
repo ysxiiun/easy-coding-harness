@@ -71,6 +71,8 @@ still generates the GitLab TEST-stage job, but Harness does not wait for or reco
 results as acceptance evidence.
 
 Before any project/session enable action, require `tdd_readiness_status=ready`. If it is not ready,
-offer only `ec-tdd-init` or cancellation; never offer or persist "enable now, initialize later".
+route `needs_init` to `ec-tdd-init` and `needs_repair` to the reported repair. Preserve existing
+settings on failure; never offer or persist "enable now, initialize later". Normal build-file
+changes do not require initialization, and a CLI upgrade must preserve project/session TDD values.
 Readiness means infrastructure can measure future changed production lines. It does not certify
 repository-wide coverage and does not require tests for unchanged historical code.

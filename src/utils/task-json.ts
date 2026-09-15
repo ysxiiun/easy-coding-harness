@@ -380,13 +380,9 @@ function migrateTaskWorkflowState(task: Record<string, unknown>): boolean {
   }
   if (isActive && taskType !== "project-init" && typeof task.tdd_enabled !== "boolean") {
     task.tdd_enabled = false;
-    task.tdd_coverage_threshold = DEFAULT_TDD_COVERAGE_THRESHOLD;
+    task.tdd_coverage_threshold ??= DEFAULT_TDD_COVERAGE_THRESHOLD;
     task.tdd_confirmed_at = new Date().toISOString();
     task.tdd_confirmed_by = "upgrade-migration";
-    changed = true;
-  }
-  if (task.tdd_enabled === false && "tdd_baselines" in task) {
-    task.tdd_baselines = undefined;
     changed = true;
   }
 

@@ -81,7 +81,7 @@ describe("config-yaml", () => {
     expect(content).not.toContain("auto_mode");
   });
 
-  it("treats schema 4 TDD as unready while preserving its configured threshold", async () => {
+  it("preserves schema 4 TDD and its configured threshold", async () => {
     const beta1 = (await readFile(configPath, "utf8"))
       .replace("version: 1", "version: 4")
       .replace("  strict_confirm: true", "  approval_mode: guard")
@@ -91,7 +91,7 @@ describe("config-yaml", () => {
     await writeFile(configPath, beta1, "utf8");
 
     expect(resolveLegacyBehavior(await readConfigYaml(configPath))).toMatchObject({
-      tddEnabled: false,
+      tddEnabled: true,
       tddCoverageThreshold: 95,
     });
   });
