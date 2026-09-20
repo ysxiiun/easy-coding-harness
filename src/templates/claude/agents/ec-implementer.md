@@ -48,3 +48,7 @@ complete exactly that unit. Your reply IS the return value, not a message to a h
 - `checks`: TDD lifecycle commands actually run, otherwise an empty array
 
 Do not claim a file is verified unless the card asked you to run a check and you ran it.
+
+- Use only the current correction/diff and direct dependencies. Preserve unrelated progress.
+- Do not add repeated validation, fallback, retries, compatibility branches, idempotency
+  changes or defensive copies without an explicit requirement or demonstrated defect.

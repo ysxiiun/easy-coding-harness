@@ -105,6 +105,49 @@ async function writeCanonicalFixture(): Promise<{
 }
 
 describe("Canonical Spec v1 runtime integration", () => {
+  it("preserves Canonical correction progress when design synchronization is replayed", async () => {
+    const fixture = await writeCanonicalFixture();
+    initializeSpecExecution(fixture.specPath);
+    const taskId = "scoped-correction";
+    const created = JSON.parse(runState(["create-task-from-spec", "--spec", fixture.specPath,
+      "--spec-task", "R1-T1", "--task-id", taskId, "--type", "feature", "--title", "Bounded correction",
+      "--repo-path", `R1=${fixture.repoA}`, "--agent", "codex"]));
+    const taskPath = path.join(tempDir, ".easy-coding/tasks", taskId, "task.json");
+    const logPath = path.join(path.dirname(taskPath), "execution.jsonl");
+    const file = "order-domain/src/main/java/com/example/order/OrderEventPublisher.java";
+    const plan = { type: "plan", strategy: "single", spec_design_sha256: created.task.spec_source.design_sha256,
+      units: [{ id: "U1", title: "publisher", type: "backend", files: [file], depends_on: [],
+        local_baseline: [file], repo_id: "R1", source_task_id: "R1-T1", source_step_ids: ["S1"],
+        symbols: ["OrderEventPublisher#publish"], test_commands: ["mvn -Dtest=OrderEventPublisherTest test"] }] };
+    await writeFile(logPath, `${JSON.stringify(plan)}\n`);
+    const task = JSON.parse(await readFile(taskPath, "utf8"));
+    task.status = "IMPLEMENT";
+    await writeFile(taskPath, JSON.stringify(task));
+    runState(["begin-correction", "--file", file, "--summary", "Restore publishing behavior", "--agent", "codex"]);
+    runState(["begin-spec-change", "--affected-task", "R1-T1", "--summary", "Restore publishing behavior", "--agent", "codex"]);
+    await writeFile(fixture.specPath, (await readFile(fixture.specPath, "utf8"))
+      .replace('"revision": 1', '"revision": 2')
+      .replace("总目标：订单成功提交后发布事件，通知服务消费同一冻结契约。", "总目标：恢复订单成功提交后的事件发布行为。"));
+    const syncArgs = ["sync-spec-design", "--affected-task", "R1-T1", "--summary", "Restore publishing behavior",
+      "--idempotency-key", "correction:revision:2", "--agent", "codex"];
+    expect(JSON.parse(runState(syncArgs)).status).toBe("IMPLEMENT");
+    runState(["resume-spec-context", "--agent", "codex"]);
+    runState(["writeback-spec-step", "--spec-task", "R1-T1", "--step", "S1", "--status", "completed",
+      "--summary", "Correction verified", "--evidence", JSON.stringify({ kind: "test", status: "passed", test_id: "T1", ref: "test:correction" }),
+      "--idempotency-key", "correction:step", "--agent", "codex"]);
+    runState(["writeback-spec-task", "--spec-task", "R1-T1", "--status", "implemented", "--summary", "Correction complete",
+      "--idempotency-key", "correction:implemented", "--agent", "codex"]);
+    await appendFile(logPath, `${JSON.stringify({ type: "dispatch", unit_id: "U1" })}\n${JSON.stringify({ type: "result", unit_id: "U1", status: "done" })}\n`);
+    const laterTask = JSON.parse(await readFile(taskPath, "utf8"));
+    laterTask.stage_history.push({ stage: "IMPLEMENT", agent: "codex", entered_at: "2026-09-20T00:00:00Z" });
+    await writeFile(taskPath, JSON.stringify(laterTask));
+    const log = await readFile(logPath, "utf8");
+    runState(syncArgs);
+    expect(await readFile(logPath, "utf8")).toBe(log);
+    const inspected = JSON.parse(runState(["inspect-dev-spec", "--spec", fixture.specPath]));
+    expect(inspected.execution.tasks.find((item: { task_id: string }) => item.task_id === "R1-T1").status).toBe("implemented");
+  });
+
   it.each([
     ["codex", ".codex"], ["claude-code", ".claude"], ["qoder", ".qoder"],
   ])("restores external selected Spec context and pending changes after takeover by %s", async (agent, directory) => {

@@ -74,36 +74,7 @@ export async function config(): Promise<void> {
     return;
   }
 
-  const workflowMode = await select<ConfiguredWorkflowMode>({
-    message: `Select project workflow mode (current: ${current.workflowMode})`,
-    initialValue: current.workflowMode,
-    options: [
-      {
-        value: "adaptive",
-        label: "adaptive — choose by task risk (default)",
-        hint: "freezes to fast, standard, or strict after ANALYSIS",
-      },
-      {
-        value: "fast",
-        label: "fast — compact execution for low-risk tasks",
-        hint: "all workflow stages still run",
-      },
-      {
-        value: "standard",
-        label: "standard — balanced execution",
-        hint: "independent review and impacted verification",
-      },
-      {
-        value: "strict",
-        label: "strict — maximum assurance",
-        hint: "multi-dimensional review and full verification",
-      },
-    ],
-  });
-  if (typeof workflowMode === "symbol") {
-    cancel("Configuration cancelled.");
-    return;
-  }
+  const workflowMode: ConfiguredWorkflowMode = "adaptive";
 
   const tddEnabled = await select<boolean>({
     message: `Enable Java TDD for this project (current: ${current.tddEnabled ? "enabled" : "disabled"})`,

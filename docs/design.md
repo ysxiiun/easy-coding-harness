@@ -47,7 +47,7 @@ easy-coding-harness 是从 Easy Coding Skill（v4.3.2）升级而来，而非另
    guard 确认 ANALYSIS → IMPLEMENT 与 QUALITY → MEMORY，confirm 只确认
    ANALYSIS → IMPLEMENT，之后在机械门禁通过后自动执行，auto 从开始即自动执行。
    CLOSED 始终由显式关闭操作进入。
-2. **状态内深度**——Adaptive 在 ANALYSIS 结束时根据机械风险下限解析并冻结 Fast、Standard 或 Strict；冻结后只能升档。三个模式都运行完整代码状态链。
+2. **状态内深度**——Adaptive 在 ANALYSIS 结束时根据机械风险下限解析并冻结 Fast、Standard 或 Strict；旧模式不构成下限，局部纠正按本轮范围重新计算。三个模式都运行完整代码状态链。
 3. **QUALITY 双门**——同一候选下并行执行只读 Review Gate 与 Verification Gate；Fast 使用主 Agent 自审和最小定向验证，Standard 使用一个独立 reviewer 与受影响检查，Strict 使用至少两个独立维度并只对实际修改仓库执行完整适用检查。
 4. **MEMORY 长期门控**——MEMORY 先写短期记忆，再由状态 API 按阈值决定长期沉淀或 no-op；提示词不能绕过机械指令。
 
@@ -207,12 +207,12 @@ INIT ─自动→ ANALYSIS → IMPLEMENT → QUALITY → MEMORY ─自动→ COM
   `approve` 逐边确认，`guard` 确认两个关键边，`confirm` 只确认 ANALYSIS → IMPLEMENT，
   `auto` 自动执行全部合法边。所有自动边仍需满足机械质量门禁，CLOSED 始终要求显式
   关闭。
-- **工作流模式**：session 覆盖优先于项目 `behavior.workflow_mode`，缺失时为 `adaptive`。
+- **工作流模式**：直接采用机械最低模式；历史 session/project workflow_mode 可读取，但不构成执行下限。
   ANALYSIS 保存 configured/selected/minimum/source/reasons 提案，进入 IMPLEMENT 时原子冻结。
-  机械 floor 以 Standard 为普通业务默认：Fast 允许单个实际修改仓库、最多三个内聚 Unit、
+  机械最低模式优先 Fast：Fast 允许单个实际修改仓库、最多三个内聚 Unit、
   最多 8 个文件且没有明确高风险/宽契约；Strict 则必须同时命中明确高风险与真实复杂度。
   Canonical/supermodule 的未修改仓库元数据不参与定级。
-- **Java TDD 模式**：session 覆盖优先于项目 `behavior.tdd_enabled`，默认关闭；覆盖率阈值默认 90，可配置 1..100。开启入口必须先验证 `ec-tdd-init` readiness，不存在“先开启、稍后初始化”。专用 `tdd-init` 代码任务始终冻结 TDD 关闭，只建设 JUnit/JaCoCo/GitLab changed-line coverage 基础设施，不补存量业务单测或要求全量覆盖。后续业务任务进入 IMPLEMENT 时原子冻结 baseline 与阈值，以 100% 为测试设计目标、以配置阈值作为新增/修改生产代码行最低门禁；QUALITY 对每个实际修改仓库（Canonical 下每个 source task）同时要求通过的本地单测证据与本地 changed-line coverage 证据。GitLab TEST stage 继续复用同一脚本，但远程 pipeline URL、job identity 与成功状态不进入 Harness 验收；beta.1/beta.2 的历史 GitLab coverage 记录保留并在新门禁中忽略。
+- **Java TDD 模式**：session 覆盖优先于项目 `behavior.tdd_enabled`，默认关闭；覆盖率阈值默认 90，可配置 1..100。开启入口必须先验证 `ec-tdd-init` readiness，不存在“先开启、稍后初始化”。专用 `tdd-init` 代码任务始终冻结 TDD 关闭，只建设 JUnit/JaCoCo/GitLab changed-line coverage 基础设施，不补存量业务单测或要求全量覆盖。后续业务任务进入 IMPLEMENT 时原子冻结 baseline 与阈值，以配置阈值作为新增/修改生产代码行门禁，不为凑满 100% 扩大测试范围；QUALITY 对每个实际修改仓库（Canonical 下每个 source task）同时要求通过的本地单测证据与本地 changed-line coverage 证据。GitLab TEST stage 继续复用同一脚本，但远程 pipeline URL、job identity 与成功状态不进入 Harness 验收；beta.1/beta.2 的历史 GitLab coverage 记录保留并在新门禁中忽略。
 - **TDD 就绪与配置保护**：readiness 的 SHA-256 是初始化历史，不要求当前 POM、CI 或工具
   与快照一致。缺少凭据为 `needs_init`，必要本地入口或参数损坏为 `needs_repair`；初始化
   另检查完整 CI 契约。当前构建和工具内容同时绑定实施、验收契约及各仓库指纹，变化后

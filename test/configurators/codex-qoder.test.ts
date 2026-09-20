@@ -76,9 +76,9 @@ describe("configureCodex", () => {
     expect(skill).toContain("approval_mode = approve|guard|confirm|auto");
     expect(skill).toContain("workflow_mode = adaptive|fast|standard|strict");
     expect(skill).toContain("Every repository-mutation task uses this graph");
-    expect(skill).toContain("raise-workflow-mode");
+    expect(skill).toContain("begin-correction");
     expect(skill).toContain("Missing: tell the user to run `easy-coding init`");
-    expect(skill).toContain("During QUALITY, return to IMPLEMENT before");
+    expect(skill).toContain("preserves the plan");
     expect(skill).toContain("--manifest-only");
     expect(skill).toContain("never reconstruct completion from another local Harness task");
     expect(skill).toContain("non-durable process presentation");
@@ -103,8 +103,8 @@ describe("configureCodex", () => {
     expect(analysisSkill).toContain("resume-spec-context");
     expect(analysisSkill).toContain("`selected_spec_tasks`");
     expect(analysisSkill).toContain("`exact` and `scope-unchanged` use the fast projection path");
-    expect(analysisSkill).toContain("at least five units");
-    expect(analysisSkill).toContain("unused `repo_paths`");
+    expect(analysisSkill).toContain("mechanical minimum for the actual current scope");
+    expect(analysisSkill).toContain("Old configured/frozen modes do not raise the minimum");
     const noHarnessSkill = await readFile(
       path.join(tempDir, ".agents", "skills", "ec-no-harness", "SKILL.md"),
       "utf8",
@@ -520,7 +520,7 @@ describe("configureQoder", () => {
     expect(skill).toContain("approval_mode = approve|guard|confirm|auto");
     expect(skill).toContain("workflow_mode = adaptive|fast|standard|strict");
     expect(skill).toContain("Every repository-mutation task uses this graph");
-    expect(skill).toContain("raise-workflow-mode");
+    expect(skill).toContain("begin-correction");
     expect(skill).toContain("--manifest-only");
     expect(skill).toContain("never reconstruct completion from another local Harness task");
     expect(skill).toContain("non-durable process presentation");
@@ -545,8 +545,8 @@ describe("configureQoder", () => {
     expect(analysisSkill).toContain("resume-spec-context");
     expect(analysisSkill).toContain("`selected_spec_tasks`");
     expect(analysisSkill).toContain("`exact` and `scope-unchanged` use the fast projection path");
-    expect(analysisSkill).toContain("at least five units");
-    expect(analysisSkill).toContain("unused `repo_paths`");
+    expect(analysisSkill).toContain("mechanical minimum for the actual current scope");
+    expect(analysisSkill).toContain("Old configured/frozen modes do not raise the minimum");
     const taskManagementSkill = await readFile(
       path.join(tempDir, ".qoder", "skills", "ec-task-management", "SKILL.md"),
       "utf8",

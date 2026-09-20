@@ -3593,7 +3593,7 @@ describe("easy_coding_state.py automatic and optional transitions", () => {
     expect(output.session_confirm_mode).toBe("auto");
     expect(output.effective_confirm_mode).toBe("auto");
     expect(output.status_line).toContain(
-      "> **Easy Coding** · **Approval: Auto** · **Workflow: Standard** · `07-11-session-auto` · `IMPLEMENT`",
+      "> **Easy Coding** · **Approval: Auto** · **Workflow: Fast** · `07-11-session-auto` · `IMPLEMENT`",
     );
   });
 
@@ -4044,6 +4044,10 @@ describe("easy_coding_state.py automatic and optional transitions", () => {
       tdd_coverage_threshold: 90,
     });
     await writeAnalysisArtifacts(taskId);
+    await writeTddReadinessFixture();
+    const readinessPath = path.join(tempDir, ".easy-coding/tdd/readiness.json");
+    const readiness = await readFile(readinessPath, "utf8");
+    await rm(readinessPath);
     const fingerprints = JSON.parse(
       execFileSync(
         "python3",
@@ -4106,7 +4110,7 @@ describe("easy_coding_state.py automatic and optional transitions", () => {
     expect(blocked.status).toBe(1);
     expect(blocked.stderr).toContain("until readiness passes");
 
-    await writeTddReadinessFixture();
+    await writeFile(readinessPath, readiness);
     const ready = JSON.parse(
       execFileSync(
         "python3",
@@ -6003,7 +6007,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
     });
   });
 
-  it("rejects a proposal below the mechanical floor and atomically freezes a valid proposal", async () => {
+  it("ignores discretionary proposals and atomically freezes the calculated mechanical floor", async () => {
     const taskId = "07-27-workflow-freeze";
     await writeConfirmModeConfig("guard");
     await writeSessionFixture(taskId);
@@ -6072,8 +6076,8 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
       ],
       { cwd: tempDir, encoding: "utf8" },
     );
-    expect(understatedFloor.status).toBe(1);
-    expect(understatedFloor.stderr).toContain("below calculated floor strict");
+    expect(understatedFloor.status).toBe(0);
+    expect(JSON.parse(understatedFloor.stdout).task.workflow_mode_proposal.selected_mode).toBe("strict");
 
     const rejected = spawnSync(
       "python3",
@@ -6097,8 +6101,8 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
       ],
       { cwd: tempDir, encoding: "utf8" },
     );
-    expect(rejected.status).toBe(1);
-    expect(rejected.stderr).toContain("below the allowed minimum");
+    expect(rejected.status).toBe(0);
+    expect(JSON.parse(rejected.stdout).task.workflow_mode_proposal.selected_mode).toBe("strict");
 
     execFileSync(
       "python3",
@@ -6185,8 +6189,8 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
       ],
       { cwd: tempDir, encoding: "utf8" },
     );
-    expect(downgrade.status).toBe(1);
-    expect(downgrade.stderr).toContain("can only be raised above strict");
+    expect(downgrade.status).toBe(0);
+    expect(JSON.parse(downgrade.stdout).task.workflow_mode).toBe("strict");
   });
 
   it("classifies an actual multi-repository change as standard without a high-risk signal", async () => {
@@ -6786,7 +6790,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
     expect(fingerprint()).not.toBe(beforeEvidence);
   });
 
-  it("invalidates evidence for a dirty ignored submodule outside the plan", async () => {
+  it("preserves evidence when an unrelated submodule outside the input scope changes", async () => {
     const taskId = "07-27-dirty-submodule";
     const childSource = path.join(tempDir, "submodule-source");
     await mkdir(childSource, { recursive: true });
@@ -6898,7 +6902,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
       "export const child = 2;\n",
       "utf8",
     );
-    expect(fingerprint()).not.toBe(beforeChange);
+    expect(fingerprint()).toBe(beforeChange);
   });
 
   it("invalidates stale review and verification evidence by fingerprint", async () => {
@@ -7167,75 +7171,9 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
       ],
       { cwd: tempDir, encoding: "utf8" },
     );
-    expect(staleVerify.status).toBe(1);
-    expect(staleVerify.stderr).toContain("no longer matches the current config");
-
-    const refreshed = JSON.parse(
-      execFileSync(
-        "python3",
-        [
-          stateApiPath(),
-          "evidence-fingerprints",
-          "--session-file",
-          ".easy-coding/sessions/test.json",
-          "--agent",
-          "codex",
-        ],
-        { cwd: tempDir, encoding: "utf8" },
-      ),
-    ) as {
-      implementation_fingerprint: string;
-      config_fingerprint: string;
-      quality_attempt: { attempt: number };
-    };
-    await appendFile(
-      executionPath,
-      `${JSON.stringify({
-        type: "review",
-        dimension: "combined",
-        passed: true,
-        reviewer: "codex",
-        implementation_fingerprint: refreshed.implementation_fingerprint,
-        quality_attempt: refreshed.quality_attempt.attempt,
-        timestamp: "2026-07-27T00:01:00Z",
-        findings: [],
-      })}\n`,
-      "utf8",
-    );
-    await appendFile(
-      executionPath,
-      `${JSON.stringify({
-        type: "verify",
-        check: "targeted-test",
-        check_type: "test",
-        command: "npm test -- targeted",
-        passed: true,
-        implementation_fingerprint: refreshed.implementation_fingerprint,
-        config_fingerprint: refreshed.config_fingerprint,
-        quality_attempt: refreshed.quality_attempt.attempt,
-        timestamp: "2026-07-27T00:01:00Z",
-      })}\n`,
-      "utf8",
-    );
-    const requested = JSON.parse(
-      execFileSync(
-        "python3",
-        [
-          stateApiPath(),
-          "request-transition",
-          "--session-file",
-          ".easy-coding/sessions/test.json",
-          "--stage",
-          "MEMORY",
-          "--agent",
-          "codex",
-        ],
-        { cwd: tempDir, encoding: "utf8" },
-      ),
-    ) as { pending_transition: { from: string; to: string } };
-    expect(requested.pending_transition).toMatchObject({
-      from: "QUALITY",
-      to: "MEMORY",
+    expect(staleVerify.status, staleVerify.stderr).toBe(0);
+    expect(JSON.parse(staleVerify.stdout).pending_transition).toMatchObject({
+      from: "QUALITY", to: "MEMORY",
     });
   });
 
@@ -8139,74 +8077,17 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
     ]);
   });
 
-  it("restarts QUALITY in place after checkpoint config drift", async () => {
+  it("preserves the QUALITY checkpoint when only approval configuration changes", async () => {
     const taskId = "08-19-quality-checkpoint-config-drift";
     const fixture = await writeVerificationAcceptanceFixture(taskId, "guard");
-    const checkpointArgs = [
-      stateApiPath(),
-      "quality-checkpoint",
-      "--session-file",
-      ".easy-coding/sessions/test.json",
-      "--agent",
-      "codex",
-    ];
-    execFileSync("python3", checkpointArgs, { cwd: tempDir, encoding: "utf8" });
+    const args = [stateApiPath(), "quality-checkpoint", "--session-file",
+      ".easy-coding/sessions/test.json", "--agent", "codex"];
+    const before = JSON.parse(execFileSync("python3", args, { cwd: tempDir, encoding: "utf8" }));
+    const log = await readFile(fixture.executionPath, "utf8");
     await writeConfirmModeConfig("auto");
-
-    const fingerprints = JSON.parse(
-      execFileSync(
-        "python3",
-        [
-          stateApiPath(),
-          "evidence-fingerprints",
-          "--session-file",
-          ".easy-coding/sessions/test.json",
-          "--agent",
-          "codex",
-        ],
-        { cwd: tempDir, encoding: "utf8" },
-      ),
-    );
-    expect(fingerprints.quality_attempt.attempt).toBe(2);
-    const taskPath = path.join(tempDir, ".easy-coding", "tasks", taskId, "task.json");
-    expect(JSON.parse(await readFile(taskPath, "utf8"))).not.toHaveProperty(
-      "quality_checkpoint",
-    );
-    await appendFile(
-      fixture.executionPath,
-      `${[
-        {
-          type: "review",
-          dimension: "combined",
-          passed: true,
-          reviewer: "codex-reviewer",
-          implementation_fingerprint: fingerprints.implementation_fingerprint,
-          quality_attempt: fingerprints.quality_attempt.attempt,
-          timestamp: "2026-08-19T00:04:00Z",
-          findings: [],
-        },
-        {
-          type: "verify",
-          check: "targeted-test",
-          check_type: "test",
-          command: "npm test -- targeted",
-          passed: true,
-          implementation_fingerprint: fingerprints.implementation_fingerprint,
-          config_fingerprint: fingerprints.config_fingerprint,
-          quality_attempt: fingerprints.quality_attempt.attempt,
-          timestamp: "2026-08-19T00:05:00Z",
-        },
-      ]
-        .map((record) => JSON.stringify(record))
-        .join("\n")}\n`,
-      "utf8",
-    );
-    const checkpoint = JSON.parse(
-      execFileSync("python3", checkpointArgs, { cwd: tempDir, encoding: "utf8" }),
-    );
-    expect(checkpoint.quality_checkpoint.config_fingerprint).toBe(
-      fingerprints.config_fingerprint,
-    );
+    const after = JSON.parse(execFileSync("python3", args, { cwd: tempDir, encoding: "utf8" }));
+    expect(after.quality_checkpoint).toEqual(before.quality_checkpoint);
+    expect(await readFile(fixture.executionPath, "utf8")).toBe(log);
   });
 
   it("cancels an active QUALITY attempt when the task closes", async () => {
@@ -8817,129 +8698,21 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
     });
   });
 
-  it("invalidates review evidence when the frozen workflow mode is raised", async () => {
-    const taskId = "07-27-workflow-mode-fingerprint";
+  it("keeps evidence when a discretionary mode raise recalculates to the same minimum", async () => {
+    const taskId = "07-27-mode-recalculate";
     await writeConfirmModeConfig("guard");
     await writeSessionFixture(taskId);
     await writeTaskFixture(taskId, "IMPLEMENT", "codex", { workflow_mode: "fast" });
-    await mkdir(path.join(tempDir, "src"), { recursive: true });
-    await writeFile(path.join(tempDir, "src", "mode.ts"), "export const mode = true;\n");
-    const executionPath = path.join(
-      tempDir,
-      ".easy-coding",
-      "tasks",
-      taskId,
-      "execution.jsonl",
-    );
-    await writeFile(
-      executionPath,
-      `${JSON.stringify({
-        type: "plan",
-        strategy: "single",
-        units: [
-          {
-            id: "U1",
-            title: "mode fingerprint",
-            type: "backend",
-            files: ["src/mode.ts"],
-            depends_on: [],
-          },
-        ],
-      })}\n`,
-      "utf8",
-    );
-    const beforeRaise = JSON.parse(
-      execFileSync(
-        "python3",
-        [
-          stateApiPath(),
-          "evidence-fingerprints",
-          "--session-file",
-          ".easy-coding/sessions/test.json",
-          "--agent",
-          "codex",
-        ],
-        { cwd: tempDir, encoding: "utf8" },
-      ),
-    ) as { implementation_fingerprint: string };
-    await appendFile(
-      executionPath,
-      `${JSON.stringify({
-        type: "review",
-        dimension: "combined",
-        passed: true,
-        reviewer: "codex",
-        implementation_fingerprint: beforeRaise.implementation_fingerprint,
-        timestamp: "2026-07-27T00:00:00Z",
-        findings: [],
-      })}\n`,
-      "utf8",
-    );
-
-    execFileSync(
-      "python3",
-      [
-        stateApiPath(),
-        "raise-workflow-mode",
-        "--session-file",
-        ".easy-coding/sessions/test.json",
-        "--mode",
-        "standard",
-        "--reason",
-        "new impact discovered",
-        "--agent",
-        "codex",
-      ],
-      { cwd: tempDir, encoding: "utf8" },
-    );
-    const afterRaise = JSON.parse(
-      execFileSync(
-        "python3",
-        [
-          stateApiPath(),
-          "evidence-fingerprints",
-          "--session-file",
-          ".easy-coding/sessions/test.json",
-          "--agent",
-          "codex",
-        ],
-        { cwd: tempDir, encoding: "utf8" },
-      ),
-    ) as { implementation_fingerprint: string };
-    expect(afterRaise.implementation_fingerprint).not.toBe(
-      beforeRaise.implementation_fingerprint,
-    );
-
-    execFileSync(
-      "python3",
-      [
-        stateApiPath(),
-        "auto-transition",
-        "--session-file",
-        ".easy-coding/sessions/test.json",
-        "--stage",
-        "QUALITY",
-        "--agent",
-        "codex",
-      ],
-      { cwd: tempDir, encoding: "utf8" },
-    );
-    const staleReview = spawnSync(
-      "python3",
-      [
-        stateApiPath(),
-        "request-transition",
-        "--session-file",
-        ".easy-coding/sessions/test.json",
-        "--stage",
-        "MEMORY",
-        "--agent",
-        "codex",
-      ],
-      { cwd: tempDir, encoding: "utf8" },
-    );
-    expect(staleReview.status).toBe(1);
-    expect(staleReview.stderr).toContain("without review evidence");
+    await writeAnalysisArtifacts(taskId);
+    const args = [stateApiPath(), "evidence-fingerprints", "--session-file",
+      ".easy-coding/sessions/test.json", "--agent", "codex"];
+    const before = JSON.parse(execFileSync("python3", args, { cwd: tempDir, encoding: "utf8" }));
+    const mode = JSON.parse(execFileSync("python3", [stateApiPath(), "raise-workflow-mode",
+      "--mode", "strict", "--reason", "discretionary escalation", "--agent", "codex",
+      "--session-file", ".easy-coding/sessions/test.json"], { cwd: tempDir, encoding: "utf8" }));
+    expect(mode.task.workflow_mode).toBe("fast");
+    const after = JSON.parse(execFileSync("python3", args, { cwd: tempDir, encoding: "utf8" }));
+    expect(after.implementation_fingerprint).toBe(before.implementation_fingerprint);
   });
 
   it("rejects a workflow mode raise in QUALITY before mutating the frozen mode", async () => {

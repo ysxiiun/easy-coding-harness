@@ -53,3 +53,9 @@ dimension named in your task card. Your reply IS the return value.
 - `repo_id` and `source_task_id`: copy unchanged when present in the task card
 - `findings`: array of `{file, line, issue, severity}` (`severity`: info | warning | error)
 - `suggestion`: optional fix direction per finding
+
+- Use only the current correction/diff and direct dependencies. Preserve unrelated progress.
+- Do not add repeated validation, fallback, retries, compatibility branches, idempotency
+  changes or defensive copies without an explicit requirement or demonstrated defect.
+- Review code and test behavior only. Do not reconstruct fingerprints or inspect workflow
+  history. Passed work stays passed until relevant inputs change; suggestions do not block.

@@ -13,7 +13,7 @@ and available actions. Never mutate project or session settings without an expli
 Call `snapshot` and show project, session, effective, and frozen task values for:
 
 - `approval_mode`;
-- `workflow_mode`;
+- the mechanically calculated workflow mode (read-only);
 - `tdd_enabled` and `tdd_coverage_threshold`.
 
 Use the returned fields directly, including `project_tdd_enabled`, `session_tdd_enabled`,
@@ -42,7 +42,7 @@ and accept that exact new diff; this exception does not convert `auto` into `gua
 ## Project configuration
 
 Use `easy-coding config` for project settings. The CLI confirms one atomic update of Approval,
-Workflow, TDD, and (when enabled) the threshold. The threshold must be an integer from 1 to 100.
+TDD, and (when enabled) the threshold. Execution depth is calculated automatically. The threshold must be an integer from 1 to 100.
 Enabling TDD is rejected atomically unless `ec-tdd-init` readiness is currently `ready`.
 
 ## Session configuration
@@ -53,10 +53,6 @@ After explicit user selection, use the current logical session file:
 # approval
 {{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py set-approval-mode --mode approve|guard|confirm|auto --agent <agent-id> --session-file <P>
 {{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py clear-approval-mode --agent <agent-id> --session-file <P>
-
-# workflow
-{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py set-workflow-mode --mode adaptive|fast|standard|strict --agent <agent-id> --session-file <P>
-{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py clear-workflow-mode --agent <agent-id> --session-file <P>
 
 # TDD; omitting threshold preserves an existing session threshold, otherwise project/default 90 applies
 {{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py set-tdd --enabled true|false [--threshold 1..100] --agent <agent-id> --session-file <P>
@@ -76,3 +72,6 @@ settings on failure; never offer or persist "enable now, initialize later". Norm
 changes do not require initialization, and a CLI upgrade must preserve project/session TDD values.
 Readiness means infrastructure can measure future changed production lines. It does not certify
 repository-wide coverage and does not require tests for unchanged historical code.
+
+Execution depth always equals the current mechanical minimum. Legacy workflow_mode settings
+remain readable but do not raise it. Do not offer mode choices or recommend changing to Lite.

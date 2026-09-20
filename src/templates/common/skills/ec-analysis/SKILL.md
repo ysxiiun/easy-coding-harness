@@ -21,12 +21,8 @@ Communicate with the user in the user's language.
 4. Inspect concrete code paths and tests. Expand context only when evidence reveals another
    dependency or risk.
 
-Apply a progressive cost budget while doing this work. A likely Fast task reads only the nearest
-comparable implementation, its direct contracts, and targeted tests. Standard reads the affected
-module closure. Expand into cross-module or repository-wide context only after concrete evidence
-shows the compound high-risk and complexity signals required for Strict. Do not scan unrelated
-repositories, the full Spec, broad Git history, or every architecture section merely to prove
-that a bounded task might be complicated.
+Load context only for the current change and its direct dependencies. Reuse existing findings;
+without new evidence, do not repeat discovery or expand into unrelated modules.
 
 For a task with `task.json.spec_source`, use `resume-spec-context` against the stored source, exact
 `selected_spec_tasks`, and only their stored `task.repo_paths` bindings. Schema, Spec ID, design
@@ -73,7 +69,8 @@ when local evidence conflicts or a deviation can change the contract, risk, or a
 
 ## Analysis artifacts
 
-Copy `.easy-coding/templates/dev-spec-skeleton.md` first, then replace every `[[EC_TODO:...]]`.
+For a non-TDD Fast task use the compact form below. Otherwise copy
+`.easy-coding/templates/dev-spec-skeleton.md` first, then replace every `[[EC_TODO:...]]`.
 Keep every mandatory section. The `### 决策闭环` (Decision Closure) and `### Workflow Mode`
 sections are required. The decision section must contain exactly one standalone
 `decision_status: closed` marker, and no other `decision_status` marker may appear elsewhere in
@@ -153,7 +150,7 @@ line count, or create many one-use helpers, merely to make the plan look modular
 clear semantic boundary, reuse point, or independently testable responsibility. Use parallel only
 for truly independent write scopes. Better unit contracts reduce later QUALITY rework.
 
-Every Harness task is a repository-mutation task and requires `test-strategy.md`. Pure read-only
+Standard/Strict tasks require `test-strategy.md`; compact Fast tasks keep checks in the plan. Pure read-only
 conversation never enters ANALYSIS and creates no task.
 
 ## Optional Java TDD analysis
@@ -172,8 +169,7 @@ When TDD is enabled for a Java code task, make `test-strategy.md` record:
 
 - detected Java/JUnit build system, exact unit-test command, production/test source roots, and
   JaCoCo XML paths;
-- immutable Git baseline SHA and the configured changed-production-line threshold; design tests
-  toward 100% while treating the threshold as the mechanical minimum;
+- immutable Git baseline SHA and the configured changed-production-line threshold; meet that threshold without adding assertions or tests solely to reach 100%;
 - feature/bug RED -> GREEN -> REFACTOR evidence, or for pure refactors a pre-change
   characterization GREEN -> post-change GREEN sequence without inventing a RED failure;
 - the local unit-test command and local changed-line acceptance command. Record that
@@ -201,60 +197,27 @@ mode decision before advancing. The CLI never installs JaCoCo or edits CI automa
 
 ## Workflow mode calculation
 
-Resolve configured mode from the state snapshot:
+Execution mode equals the mechanical minimum for the actual current scope. Do not propose a
+higher mode or ask the user to select one. Old configured/frozen modes do not raise the minimum.
+Use `propose-workflow-mode --agent <agent-id> --session-file <P>` once after the plan exists;
+it returns the calculated mode and reasons, so a separate floor/proposal round is unnecessary.
 
-`session.workflow_mode > project behavior.workflow_mode > adaptive`
+For a non-TDD Fast task, dev-spec.md may use the compact form:
 
-After writing the execution plan, ask the state API to calculate the mechanical minimum:
-
-```bash
-{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py workflow-floor \
-  --agent <agent-id> --session-file <P>
+```markdown
+<!-- easy-coding:compact -->
+decision_status: closed
+Goal: <confirmed behavior>
+Scope: <exact files and preservation boundary>
+Acceptance: <observable outcome and minimum check>
 ```
 
-Use its `minimum_mode` and `reasons` as the proposal floor. You may raise this result when
-uncertainty or user preference requires more rigor, but never lower or replace it with a
-self-reported floor. The state API rechecks the floor when the proposal is saved and frozen.
-
-The calculation is intentionally Standard-centered:
-
-- `fast`: up to three coherent low-risk units in one actually modified repository, at most eight
-  changed files, no explicit high-risk signal, and no public or cross-repository contract impact.
-  Small parameter changes, bounded field/mapping edits, and a few ordinary model files should
-  normally remain Fast.
-- `standard`: the default for ordinary business work. Four or more units, more than eight files,
-  bounded compatibility work, actual but contained multi-repository changes, broad low-risk work,
-  and bounded high-risk work remain Standard.
-- `strict`: requires both an explicit high-risk signal and concrete complexity/blast-radius
-  evidence. Complexity means actual multi-repository edits, at least five units, at least fifteen
-  changed files, or a public/cross-repository contract. Parallel execution is a Standard signal
-  by itself. Generic domain words in a risk description, title, file path, Spec repository
-  catalog, or unselected task are never sufficient evidence of high risk.
-
-Repository count comes only from repositories that own files in current plan units. Canonical
-Spec metadata, unselected tasks, dependency summaries, unused `repo_paths`, and supermodule child
-registrations do not raise the mode. A real multi-repository change is a Standard signal by
-itself and reaches Strict only when an explicit high-risk signal is also present.
-
-If configuration is concrete, it is also a floor. The selected mode may be raised by the user
-but never placed below either floor. The Agent must not raise an adaptive proposal to Strict from
-vague uncertainty or a domain keyword; cite both the explicit risk and the concrete complexity
-signal. Explain the decision and state-specific effects in the dev-spec.
-
-Persist the proposal before requesting ANALYSIS -> IMPLEMENT:
-
-```bash
-{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py propose-workflow-mode \
-  --configured <adaptive|fast|standard|strict> \
-  --selected <fast|standard|strict> \
-  --minimum <fast|standard|strict> \
-  --source <project|session|adaptive|user> \
-  --reason "<reason>" \
-  --agent <agent-id> --session-file <P>
-```
-
-Repeat `--reason` for distinct material risks. Re-running the command replaces the proposal
-while still in ANALYSIS.
+Record Unit `input_files` for the known additional direct inputs (an empty list means the
+Unit files are self-contained). Include shared helpers, fixtures, schemas and configuration
+actually consumed by its checks. Without a declared closure, checks cover the owning module.
+Build commands still include their module compilation inputs. Do not infer a whole-program call graph. Keep Unit contracts and test points in the existing execution plan. Do not duplicate them across
+full template chapters or create a separate test strategy for this compact form. Canonical work
+consumes the selected source closure; it does not redesign unrelated selected tasks.
 
 ## User presentation and transition
 
@@ -263,9 +226,9 @@ pasting the full `dev-spec.md`. The receipt must contain:
 
 - the core solution and affected scope/units;
 - acceptance and test-strategy highlights;
-- configured, minimum, and selected workflow modes with reasons;
+- the computed minimum workflow mode and its concrete reasons;
 - the material risks and explicit acceptance boundaries;
-- explicit user ability to request a higher mode or a permitted lower mode.
+- the computed minimum mode as an execution fact, without offering mode choices.
 
 End the summary with the absolute path to
 `.easy-coding/tasks/<task-id>/dev-spec.md`. When the current client supports local-file Markdown
@@ -305,6 +268,6 @@ If evidence requires changing Canonical task boundaries, contracts, files, symbo
 or dependencies, obtain confirmation and run `begin-spec-change --affected-task <id> --summary
 <confirmed-change> --agent <agent-id> --session-file <P>` before editing. This persists the
 intent across handoffs and blocks implementation/acceptance until synchronization. Update the original static design with revision +1,
-restore READY, and call `sync-spec-design --affected-task ...`. This invalidates the old local
-plan. Run `resume-spec-context` after synchronization, then refresh derived artifacts. Never
+restore READY, and call `sync-spec-design --affected-task ...`. For bounded corrections this refreshes only affected Unit mappings; other design changes
+invalidate the old local plan. Run `resume-spec-context` after synchronization, then refresh derived artifacts. Never
 substitute edits to the derived `dev-spec.md`, and never edit `EDS:EXECUTION` by hand.

@@ -42,8 +42,8 @@ First run `/ec-init`; daily work goes through `/ec-workflow`.
 ## Workflow discipline
 
 - Approval mode is session override > project `behavior.approval_mode` > `guard`; workflow mode
-  is session override > project `behavior.workflow_mode` > `adaptive`. Approval controls waiting;
-  workflow controls execution depth. ANALYSIS shows and freezes adaptive to fast/standard/strict.
+  is the mechanical minimum for the current actual change. Approval controls waiting;
+  workflow controls execution depth. Do not recommend or inflate the calculated mode.
   Confirm approval waits only at ANALYSIS -> IMPLEMENT, then advances green later stages
   automatically; Auto advances all legal green edges. A new code diff after the QUALITY
   checkpoint is the only exceptional pause across all modes: show the exact diff, bind acceptance
@@ -147,6 +147,12 @@ First run `/ec-init`; daily work goes through `/ec-workflow`.
 - Shared Canonical writeback is a stage gate but not proof of Git commit/push, and Git delivery is
   not proof of writeback. Keep those facts and scopes separate.
 {{supermodule_boundary}}
+
+
+Execution efficiency: use begin-correction for confirmed bounded repairs; preserve unrelated
+Units and reuse input-bound checks through prepare-check/record-check. Stage or Spec revision
+changes alone do not invalidate tests. No execution budget. No repeated internal validation,
+speculative fallback/retry/compatibility logic, or defensive copying.
 
 <!-- ═══ end easy-coding-harness generated ═══ -->
 

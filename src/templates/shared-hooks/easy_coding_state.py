@@ -16,6 +16,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 import sys
 
+from easy_coding_inputs import (
+    evidence_operation, memo, digest, input_spec, capture, changed_inputs, command_covers,
+)
+
 from easy_dev_spec import (
     EasyDevSpecError,
     inspect_manifest,
@@ -1825,13 +1829,42 @@ def is_valid_review_finding(value: object) -> bool:
     )
 
 
+def gate_identity(record: dict) -> tuple:
+    return (str(record.get("source_task_id") or ""), str(record.get("unit_id") or ""),
+            str(record.get("dimension") or record.get("check") or ""),
+            str(record.get("review_scope") or record.get("coverage_scope") or ""))
+
+
+def failure_label(record: dict) -> str:
+    _, unit, name, scope = gate_identity(record)
+    label = f"{record['type']}:{name}"
+    if scope:
+        label += f":{scope}"
+    if unit:
+        label += f":unit={unit}"
+    return label
+
+
+def require_unit_evidence(plan: dict, records: list[dict], label: str, dimensions: int = 0) -> None:
+    if not any(record.get("unit_id") for record in records):
+        return
+    for unit in plan.get("units", []):
+        applicable = [record for record in records
+                      if record.get("unit_id") == unit["id"] or
+                      (not record.get("unit_id") and
+                       (not record.get("source_task_id") or
+                        record["source_task_id"] == unit.get("source_task_id")))]
+        if not applicable or (dimensions and len({r.get("dimension") for r in applicable}) < dimensions):
+            raise StateError(f"{label} evidence does not cover Unit {unit['id']} at the required depth.")
+
+
 def validate_quality_gate_record_schemas(
     review_records: list[dict], verification_records: list[dict]
 ) -> None:
     latest_reviews: dict[tuple[str, str], dict] = {}
     for index, record in enumerate(review_records):
         dimension = str(record.get("dimension") or f"<missing-{index}>")
-        latest_reviews[(str(record.get("source_task_id") or ""), dimension)] = record
+        latest_reviews[gate_identity(record)] = record
     for record in latest_reviews.values():
         findings = record.get("findings")
         if (
@@ -1859,13 +1892,7 @@ def validate_quality_gate_record_schemas(
     latest_verifications: dict[tuple[str, str, str], dict] = {}
     for index, record in enumerate(verification_records):
         check = str(record.get("check") or f"<missing-{index}>")
-        latest_verifications[
-            (
-                str(record.get("source_task_id") or ""),
-                check,
-                str(record.get("coverage_scope") or ""),
-            )
-        ] = record
+        latest_verifications[gate_identity(record)] = record
     for record in latest_verifications.values():
         applicable = record.get("applicable") is not False
         if (
@@ -2249,6 +2276,34 @@ def require_spec_context(
         raise StateError("Current session must consume the bound Canonical Spec via resume-spec-context before advancing.")
 
 
+def refresh_correction_plan(root: Path, task_id: str, task: dict, inspection: dict) -> None:
+    plan = latest_execution_plan(root, task_id)
+    if plan is None:
+        raise StateError("A correction must preserve its original execution plan.")
+    selection = select_tasks(inspection, task["selected_spec_tasks"], allow_pending_hard_dependencies=True)
+    steps = {s["step_id"]: s for s in selection["selected_steps"]}
+    changes = {c["change_id"]: c for c in selection["selected_changes"]}
+    tests = {t["test_id"]: t for t in selection["selected_tests"]}
+    correction = task["correction"]
+    plan["spec_design_sha256"] = inspection["design_sha256"]
+    for unit in plan["units"]:
+        if unit["id"] not in correction["unit_ids"]:
+            continue
+        source_steps = [steps[s] for s in unit["source_step_ids"] if s in steps]
+        selected_changes = [changes[c] for s in source_steps for c in s.get("change_ids", [])]
+        original_files = set(unit["files"])
+        mapped_files = {c["path"] for c in selected_changes}
+        if not mapped_files <= original_files:
+            raise StateError("Source design expands the correction scope; analyze the new requirement.")
+        unit["source_step_ids"] = [s["step_id"] for s in source_steps]
+        unit["files"] = sorted(mapped_files | (original_files & set(correction["files"])))
+        unit["symbols"] = sorted({symbol for c in selected_changes for symbol in c.get("symbols", [])})
+        unit["test_commands"] = sorted({tests[t]["command"] for s in source_steps for t in s.get("test_ids", [])})
+        unit["acceptance_criteria"] = [correction["summary"]]
+        unit["contracts"] = [correction["summary"]]
+    append_execution_record(root, task_id, plan)
+
+
 def begin_spec_change(
     root: Path, affected_task_ids: list[str], summary: str, agent: str,
     task_id: str | None = None, session_file: str | Path | None = None,
@@ -2375,7 +2430,7 @@ def is_valid_spec_execution_plan(root: Path, task: dict, plan: object) -> bool:
         if (
             not step_change_ids.issubset(change_by_id)
             or not step_test_ids.issubset(test_by_id)
-            or set(unit.get("files", [])) != step_files
+            or (set(unit.get("files", [])) - set(task.get("correction", {}).get("files", []))) != (step_files - set(task.get("correction", {}).get("files", [])))
             or set(unit["symbols"]) != step_symbols
             or not set(unit["test_commands"]).issuperset(step_commands)
         ):
@@ -2397,9 +2452,10 @@ def is_valid_spec_execution_plan(root: Path, task: dict, plan: object) -> bool:
         steps = covered_steps[source_task_id]
         if len(steps) != len(set(steps)) or set(steps) != set(source_task.get("step_ids", [])):
             return False
-        if covered_files[source_task_id] != {
+        restoration_files = set(task.get("correction", {}).get("files", []))
+        if covered_files[source_task_id] - restoration_files != {
             str(change["path"]) for change in changes_by_task[source_task_id]
-        }:
+        } - restoration_files:
             return False
         if covered_symbols[source_task_id] != {
             str(symbol)
@@ -2545,7 +2601,7 @@ def has_valid_execution_plan(root: Path, task_id: str) -> bool:
                 return False
             if isinstance(record, dict) and record.get("type") == "plan":
                 latest_plan = record
-            elif isinstance(record, dict) and record.get("type") == "spec-design-sync":
+            elif isinstance(record, dict) and record.get("type") == "spec-design-sync" and not record.get("preserve_plan"):
                 latest_plan = None
     except OSError:
         return False
@@ -2583,7 +2639,7 @@ def latest_execution_plan(root: Path, task_id: str) -> dict | None:
     for record in execution_records(root, task_id):
         if record.get("type") == "plan":
             latest = record
-        elif record.get("type") == "spec-design-sync":
+        elif record.get("type") == "spec-design-sync" and not record.get("preserve_plan"):
             latest = None
     if latest is None or not is_valid_execution_plan(latest, allow_empty_files=True):
         return None
@@ -3076,220 +3132,165 @@ def tdd_infrastructure_fingerprint(repositories: set[Path]) -> str:
     return digest.hexdigest()
 
 
+def check_identity(record: dict) -> tuple:
+    return tuple(str(record.get(key) or "") for key in (
+        "type", "unit_id", "source_task_id", "dimension", "review_scope", "check", "check_type", "command", "coverage_scope"
+    ))
+
+
+def prepare_check(root: Path, task_id: str, task: dict, descriptor: dict, agent: str) -> dict:
+    if task.get("status") not in {"IMPLEMENT", "QUALITY"}:
+        raise StateError("Checks belong to IMPLEMENT or QUALITY.")
+    if descriptor.get("type") not in {"review", "verify"}:
+        raise StateError("A check must identify type review or verify.")
+    if descriptor.get("type") == "verify" and not is_non_empty_string(descriptor.get("command")):
+        raise StateError("Verification must identify the actual command before execution.")
+    plan = latest_execution_plan(root, task_id) or {}
+    if descriptor.get("unit_id"):
+        owner = next((u for u in plan.get("units", []) if u["id"] == descriptor["unit_id"]), None)
+        if owner is None:
+            raise StateError("Check unit does not belong to the current plan.")
+        for field in ("repo_id", "source_task_id"):
+            if field in owner:
+                descriptor[field] = owner[field]
+    inputs = capture(input_spec(root, task, plan, descriptor))
+    records = execution_records(root, task_id)
+    previous = next((r for r in reversed(records)
+                     if check_identity(r) == check_identity(descriptor)), None)
+    if previous and previous.get("passed") is True and previous.get("inputs") == inputs:
+        return {"reusable": True, "evidence_index": records.index(previous),
+                "input_signature": inputs["signature"], "changed_inputs": []}
+    prepared_id = digest([descriptor, inputs["signature"]])
+    if not any(r.get("prepared_id") == prepared_id and r.get("type") == "check-inputs" for r in records):
+        append_execution_record(root, task_id, {
+            "type": "check-inputs", "prepared_id": prepared_id, "descriptor": descriptor,
+            "inputs": inputs, "timestamp": now_iso(), "agent": agent,
+        })
+    return {"reusable": False, "prepared_id": prepared_id,
+            "input_signature": inputs["signature"],
+            "changed_inputs": changed_inputs(previous["inputs"], inputs)
+            if previous and isinstance(previous.get("inputs"), dict) else ["no matching input-bound evidence"]}
+
+
+def record_check(root: Path, task_id: str, task: dict, prepared_id: str, result: dict, agent: str) -> dict:
+    prepared = next((r for r in reversed(execution_records(root, task_id))
+                     if r.get("type") == "check-inputs" and r.get("prepared_id") == prepared_id), None)
+    if prepared is None:
+        raise StateError("Prepare the check before executing it.")
+    descriptor = prepared["descriptor"]
+    current = capture(input_spec(root, task, latest_execution_plan(root, task_id) or {}, descriptor))
+    changes = changed_inputs(prepared["inputs"], current)
+    if changes:
+        raise StateError("Check inputs changed during execution: " + "; ".join(changes))
+    if type(result.get("passed")) is not bool:
+        raise StateError("Check result must include passed.")
+    if descriptor["type"] == "verify" and result.get("applicable") is not False:
+        if type(result.get("exit_code")) is not int or result["passed"] != (result["exit_code"] == 0):
+            raise StateError("Verification passed must agree with its real exit_code.")
+    context = None
+    if task.get("status") == "QUALITY":
+        context = ensure_quality_attempt_context(root, task_id, task, agent, persist=True)
+    elif task.get("status") != "IMPLEMENT":
+        raise StateError("Record checks only during implementation or quality.")
+    record = {
+        **result, **descriptor, **evidence_fingerprints(root, task_id),
+        "inputs": current, "prepared_id": prepared_id, "timestamp": now_iso(),
+        "quality_attempt": context["attempt"] if context else 0,
+    }
+    append_execution_record(root, task_id, record)
+    return {"recorded": True, "passed": record["passed"], "input_signature": current["signature"]}
+
+
+def carry_forward_scoped_evidence(root: Path, task_id: str, task: dict, context: dict) -> None:
+    plan = latest_execution_plan(root, task_id) or {}
+    latest = {}
+    for index, record in enumerate(execution_records(root, task_id)):
+        if record.get("type") in {"review", "verify"}:
+            latest[check_identity(record)] = (index, record)
+    for index, record in latest.values():
+        if record.get("passed") is not True or not isinstance(record.get("inputs"), dict):
+            continue
+        if any(f.get("severity") == "error" for f in record.get("findings", [])):
+            continue
+        if record.get("unit_id") and not any(u["id"] == record["unit_id"] for u in plan.get("units", [])):
+            continue
+        current = capture(input_spec(root, task, plan, record))
+        if current != record["inputs"]:
+            continue
+        if record.get("quality_attempt") == context["attempt"]:
+            continue
+        # 仅运行时生成引用，保留原始执行时间与输入；Agent 不重新包装历史结论。
+        append_execution_record(root, task_id, {
+            **record, "reused_from": index, "quality_attempt": context["attempt"],
+            "implementation_fingerprint": context["implementation_fingerprint"],
+            "config_fingerprint": context["config_fingerprint"],
+        })
+
+
+def begin_correction(root: Path, task_id: str, task: dict, files: list[str], summary: str,
+                     risks: list[str], agent: str) -> dict:
+    if task.get("status") not in {"IMPLEMENT", "QUALITY", "MEMORY", "ANALYSIS"}:
+        raise StateError("A correction needs an active implementation task.")
+    plan = latest_execution_plan(root, task_id) or {}
+    units = plan.get("units", [])
+    allowed = {f for unit in units for f in unit.get("files", [])}
+    if not files or not set(files) <= allowed or not summary.strip():
+        raise StateError("A correction must name existing task files and the confirmed change.")
+    cancel_active_quality_attempt(root, task_id, task, agent, summary, "manual-return")
+    task = load_task(root, task_id) or task
+    cleanup_verification_checkpoint(root, task_id, task)
+    task["correction"] = {
+        "files": sorted(set(files)), "summary": summary.strip(), "risks": risks,
+        "unit_ids": [u["id"] for u in units if set(u.get("files", [])) & set(files)],
+        "started_at": now_iso(),
+    }
+    records = validated_quality_records(root, task_id)
+    if records:
+        task["quality_consumed_attempt"] = records[-1][1]["attempt"]
+    task.pop("quality_return_required", None)
+    task.pop("pending_transition", None)
+    task["status"] = "IMPLEMENT"
+    append_stage_history(task, "IMPLEMENT", agent)
+    write_task(root, task_id, task)
+    task["workflow_mode"], reasons = calculate_workflow_floor(root, task_id)
+    write_task(root, task_id, task)
+    if isinstance(task.get("spec_source"), dict):
+        writeback_ready_tasks_for_implement(root, task_id, task, agent, source_task_ids={
+            str(u["source_task_id"]) for u in units if u["id"] in task["correction"]["unit_ids"]
+        })
+    append_execution_record(root, task_id, {
+        "type": "correction", **task["correction"], "workflow_mode": task["workflow_mode"],
+    })
+    return {"task_id": task_id, "status": "IMPLEMENT", "workflow_mode": task["workflow_mode"],
+            "reasons": reasons, "correction": task["correction"]}
+
+
 def implementation_fingerprint(root: Path, task_id: str) -> str:
     plan = latest_execution_plan(root, task_id)
     if not plan:
         raise StateError("Cannot calculate implementation fingerprint without a valid plan.")
-    task = load_task(root, task_id)
-    workflow_mode = str(task.get("workflow_mode") or "") if task else ""
-    digest = hashlib.sha256()
-    digest.update(b"workflow-mode\0")
-    digest.update(workflow_mode.encode("utf-8"))
-    digest.update(b"\0")
-    if task and task.get("tdd_enabled") is True:
-        digest.update(b"tdd\0enabled\0")
-        digest.update(str(task.get("tdd_coverage_threshold") or "").encode("utf-8"))
-        digest.update(b"\0")
-        digest.update(
-            json.dumps(
-                task.get("tdd_baselines") or {},
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode("utf-8")
-        )
-        digest.update(b"\0")
-        digest.update(tdd_infrastructure_fingerprint(
-            {root.resolve(), *task_repository_roots(root, task, plan)}
-        ).encode("ascii"))
-    digest.update(b"execution-plan\0")
-    digest.update(
-        json.dumps(
-            plan,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
-    )
-    digest.update(b"\0")
-    if task and isinstance(task.get("spec_source"), dict):
-        digest.update(b"canonical-spec\0")
-        source = task.get("spec_source") or {}
-        digest.update(
-            json.dumps(
-                {
-                    "source": {
-                        "schema": source.get("schema"),
-                        "spec_id": source.get("spec_id"),
-                        "revision": source.get("revision"),
-                        "design_sha256": source.get("design_sha256"),
-                    },
-                    "selected_tasks": task.get("selected_spec_tasks"),
-                },
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode("utf-8")
-        )
-        digest.update(b"\0")
-    update_git_worktree_fingerprint(digest, root, task, plan)
-    repo_paths = task.get("repo_paths") if task else None
-    file_entries: set[tuple[str, str | None]] = {
-        (str(file_name), str(unit.get("repo_id")) if unit.get("repo_id") else None)
-        for unit in plan.get("units", [])
-        if isinstance(unit, dict)
-        for file_name in unit.get("files", [])
-        if is_non_empty_string(file_name)
-    }
-    for file_name, repo_id in sorted(file_entries, key=lambda item: (item[0], item[1] or "")):
-        candidate = Path(file_name)
-        was_absolute = candidate.is_absolute()
-        base = root
-        if (
-            task
-            and isinstance(task.get("spec_source"), dict)
-            and isinstance(repo_paths, dict)
-            and repo_id
-            and is_non_empty_string(repo_paths.get(repo_id))
-        ):
-            raw_base = Path(str(repo_paths[repo_id]))
-            base = raw_base if raw_base.is_absolute() else root / raw_base
-        if not was_absolute:
-            candidate = base / candidate
-        resolved = candidate.resolve()
-        if not was_absolute:
-            try:
-                resolved.relative_to(base.resolve())
-            except ValueError as error:
-                raise StateError(f"Execution plan file escapes repository: {file_name}") from error
-        digest.update(f"{repo_id or ''}:{file_name}".encode("utf-8"))
-        digest.update(b"\0")
-        try:
-            digest.update(resolved.read_bytes())
-        except OSError:
-            digest.update(b"<missing>")
-        digest.update(b"\0")
-    return digest.hexdigest()
+    task = load_task(root, task_id) or {}
+    # 候选只绑定实际输入与验收契约，执行状态、revision、模式和计划说明不参与。
+    return capture(input_spec(root, task, plan, {"type": "review"}))["signature"]
 
 
-def canonical_repository_fingerprints(
-    root: Path, task_id: str, task: dict
-) -> dict[str, str]:
+def canonical_repository_fingerprints(root: Path, task_id: str, task: dict) -> dict[str, str]:
     if not isinstance(task.get("spec_source"), dict):
         return {}
     plan = latest_execution_plan(root, task_id) or {}
-    repo_paths = task.get("repo_paths") if isinstance(task.get("repo_paths"), dict) else {}
-    fingerprints: dict[str, str] = {}
-    for repo_id in sorted(
-        {
-            str(unit.get("repo_id"))
-            for unit in plan.get("units", [])
-            if isinstance(unit, dict) and is_non_empty_string(unit.get("repo_id"))
-        }
-    ):
-        raw_base = repo_paths.get(repo_id)
-        if not is_non_empty_string(raw_base):
-            continue
-        base = Path(str(raw_base))
-        if not base.is_absolute():
-            base = root / base
-        base = base.resolve()
-        digest = hashlib.sha256()
-        if task.get("tdd_enabled") is True:
-            digest.update(tdd_infrastructure_fingerprint({root.resolve(), base}).encode("ascii"))
-        units = [
-            unit
-            for unit in plan.get("units", [])
-            if isinstance(unit, dict) and unit.get("repo_id") == repo_id
-        ]
-        digest.update(
-            json.dumps(
-                units,
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode("utf-8")
-        )
-        digest.update(b"\0")
-        repository = git_repository_root(base)
-        if repository is not None and repository.resolve() == base:
-            update_git_repository_content_fingerprint(
-                digest,
-                root,
-                repository,
-                [base],
-                set(),
-            )
-        else:
-            for unit in units:
-                for file_name in sorted(
-                    str(value)
-                    for value in unit.get("files", [])
-                    if is_non_empty_string(value)
-                ):
-                    candidate = (base / file_name).resolve()
-                    try:
-                        candidate.relative_to(base)
-                    except ValueError as error:
-                        raise StateError(
-                            f"Execution plan file escapes repository: {file_name}"
-                        ) from error
-                    digest.update(file_name.encode("utf-8"))
-                    digest.update(b"\0")
-                    try:
-                        digest.update(candidate.read_bytes())
-                    except OSError:
-                        digest.update(b"<missing>")
-                    digest.update(b"\0")
-        fingerprints[repo_id] = digest.hexdigest()
-    return fingerprints
-
-
-def config_without_frozen_tdd_settings(payload: bytes) -> bytes:
-    """任务冻结 TDD 契约后，从证据指纹中排除仅影响未来任务的实时 TDD 配置。"""
-    try:
-        lines = payload.decode("utf-8").splitlines(keepends=True)
-    except UnicodeDecodeError:
-        return payload
-    filtered: list[str] = []
-    in_behavior = False
-    behavior_indent = 0
-    behavior_key_indent: int | None = None
-    for line in lines:
-        clean = line.split("#", 1)[0].rstrip()
-        stripped = clean.strip()
-        indent = len(clean) - len(clean.lstrip(" "))
-        if stripped == "behavior:":
-            in_behavior = True
-            behavior_indent = indent
-            behavior_key_indent = None
-            filtered.append(line)
-            continue
-        if in_behavior and stripped and indent <= behavior_indent:
-            in_behavior = False
-        if in_behavior and stripped:
-            if behavior_key_indent is None:
-                behavior_key_indent = indent
-            key = stripped.split(":", 1)[0]
-            if (
-                indent == behavior_key_indent
-                and key in {"tdd_enabled", "tdd_coverage_threshold"}
-            ):
-                continue
-        filtered.append(line)
-    return "".join(filtered).encode("utf-8")
+    return {
+        repo: digest([capture(input_spec(root, task, plan, {
+            "type": "review", "unit_id": unit["id"]
+        }))["signature"] for unit in plan.get("units", []) if unit.get("repo_id") == repo])
+        for repo in sorted({unit["repo_id"] for unit in plan.get("units", [])})
+    }
 
 
 def behavior_config_fingerprint(root: Path, task: dict | None = None) -> str:
-    path = root / ".easy-coding" / "config.yaml"
-    digest = hashlib.sha256()
-    try:
-        payload = path.read_bytes()
-        if task and isinstance(task.get("tdd_enabled"), bool):
-            payload = config_without_frozen_tdd_settings(payload)
-        digest.update(payload)
-    except OSError:
-        digest.update(b"<missing-config>")
-    return digest.hexdigest()
+    # 审批方式、记忆策略等配置不影响已经执行的测试。
+    return digest({key: (task or {}).get(key) for key in (
+        "tdd_enabled", "tdd_coverage_threshold", "tdd_baselines"
+    )})
 
 
 def evidence_fingerprints(root: Path, task_id: str) -> dict[str, str]:
@@ -3599,6 +3600,7 @@ def ensure_quality_attempt_context(
             )
         if (
             finalized.get("outcome") in {"passed", "repair", "replan"}
+            and finalized.get("attempt") != task.get("quality_consumed_attempt")
             and finalized.get("implementation_fingerprint")
             == expected["implementation_fingerprint"]
             and finalized.get("config_fingerprint") == expected["config_fingerprint"]
@@ -3612,6 +3614,7 @@ def ensure_quality_attempt_context(
     )
     if persist:
         append_canonical_quality_carry_forward(root, task_id, task, context, agent)
+        carry_forward_scoped_evidence(root, task_id, task, context)
         task["quality_attempt"] = context
         task["last_agent"] = agent
         write_task(root, task_id, task)
@@ -3888,19 +3891,9 @@ def finalize_quality_attempt(
     latest_failure_records: dict[tuple[str, str], dict] = {}
     for record in [*current_reviews, *current_verifications]:
         owner = str(record.get("source_task_id")) if canonical else task_id
-        if record.get("type") == "review" and is_non_empty_string(
-            record.get("dimension")
-        ):
-            label = f"review:{record['dimension']}"
-        elif record.get("type") == "verify" and is_non_empty_string(
-            record.get("check")
-        ):
-            coverage_scope = str(record.get("coverage_scope") or "")
-            label = f"verify:{record['check']}"
-            if coverage_scope:
-                label = f"{label}:{coverage_scope}"
-        else:
+        if record.get("type") not in {"review", "verify"}:
             continue
+        label = failure_label(record)
         latest_failure_records[(owner, label)] = record
     evidence_failure_classes: set[str] = set()
     for owner, labels in failures.items():
@@ -4981,8 +4974,10 @@ def validate_spec_implementation_results(root: Path, task_id: str, task: dict) -
         default=-1,
     )
     lifecycle_by_unit: dict[str, list[dict]] = {unit_id: [] for unit_id in unit_by_id}
-    for record in records[latest_plan_index + 1 :]:
+    for index, record in enumerate(records):
         unit_id = str(record.get("unit_id") or "")
+        if index <= latest_plan_index and unit_id in task.get("correction", {}).get("unit_ids", list(unit_by_id)):
+            continue
         if record.get("type") in {"dispatch", "result"} and unit_id in unit_by_id:
             lifecycle_by_unit[unit_id].append(record)
     missing_dispatches = sorted(
@@ -5065,7 +5060,7 @@ def validate_review_readiness(
         ):
             dimension = str(record["dimension"])
             source_task_id = str(record.get("source_task_id") or "")
-            record_key = f"{dimension}\0{source_task_id}" if is_spec_task else dimension
+            record_key = gate_identity(record)
             latest_by_dimension[record_key] = record
     if not latest_by_dimension:
         raise StateError(
@@ -5121,6 +5116,9 @@ def validate_review_readiness(
                 "Canonical Spec review evidence does not cover selected source tasks: "
                 + ", ".join(missing_review_tasks)
             )
+    require_unit_evidence(latest_execution_plan(root, task_id) or {},
+                          list(latest_by_dimension.values()), "Review",
+                          2 if task.get("workflow_mode") == "strict" else 1)
     has_failed_dimension = False
     for record in latest_by_dimension.values():
         findings = record.get("findings")
@@ -5167,7 +5165,7 @@ def validate_review_readiness(
                     "Strict Canonical Spec review requires at least two passed dimensions for "
                     "every selected source task: " + ", ".join(missing_strict_dimensions)
                 )
-        elif len(latest_by_dimension) < 2:
+        elif len({record["dimension"] for record in latest_by_dimension.values()}) < 2:
             raise StateError(
                 "Strict workflow requires at least two passed review dimensions for the current implementation fingerprint."
             )
@@ -5214,11 +5212,7 @@ def validate_verification_readiness(
             ):
                 # 远程 CI 只作为生成的自动化能力，历史 pending/failed 记录不再参与本地验收。
                 continue
-            check = str(record["check"])
-            if task.get("tdd_enabled") is True and record.get("check_type") == "coverage":
-                check = f"{check}\0{record.get('coverage_scope') or ''}"
-            if is_spec_task:
-                check = f"{check}\0{record.get('source_task_id') or ''}"
+            check = gate_identity(record)
             previous = latest_by_check.get(check)
             if (
                 record.get("applicable") is False
@@ -5273,6 +5267,7 @@ def validate_verification_readiness(
     applicable_records = [
         record for record in latest_by_check.values() if record.get("applicable") is not False
     ]
+    require_unit_evidence(latest_execution_plan(root, task_id) or {}, applicable_records, "Verification")
     if not applicable_records:
         raise StateError(
             "QUALITY cannot advance to MEMORY without at least one applicable executed check."
@@ -5506,7 +5501,10 @@ def validate_verification_readiness(
             for record in applicable_records
             if is_non_empty_string(record.get("command"))
         }
-        missing_commands = sorted(required_test_commands - executed_commands)
+        missing_commands = sorted(required for required in required_test_commands if not any(
+            actual[:2] == required[:2] and command_covers(actual[2], required[2])
+            for actual in executed_commands
+        ))
         if missing_commands:
             raise StateError(
                 "Canonical Spec verification is missing source test commands: "
@@ -5575,7 +5573,7 @@ def quality_repair_failures_for_window(
         and is_non_empty_string(unit.get("source_task_id"))
         and is_non_empty_string(unit.get("repo_id"))
     }
-    fingerprints = evidence_fingerprints(root, task_id)
+    fingerprints = evidence_fingerprints(root, task_id) if not (implementation_fingerprint_value and config_fingerprint_value) else {}
     implementation = (
         implementation_fingerprint_value or fingerprints["implementation_fingerprint"]
     )
@@ -5640,7 +5638,7 @@ def quality_repair_failures_for_window(
                 )
             ):
                 owner = source_task_id if canonical else task_id
-                latest_reviews[(owner, str(record["dimension"]))] = record
+                latest_reviews[(owner, *gate_identity(record)[1:])] = record
         elif record_type == "verify" and record.get(
             "implementation_fingerprint"
         ) == implementation and record.get("config_fingerprint") == config:
@@ -5669,16 +5667,10 @@ def quality_repair_failures_for_window(
             ):
                 continue
             owner = source_task_id if canonical else task_id
-            latest_verifications[
-                (
-                    owner,
-                    str(record["check"]),
-                    str(record.get("coverage_scope") or ""),
-                )
-            ] = record
+            latest_verifications[(owner, *gate_identity(record)[1:])] = record
 
     failures: dict[str, list[str]] = {}
-    for (source_task_id, dimension), record in latest_reviews.items():
+    for (source_task_id, unit_id, dimension, _scope), record in latest_reviews.items():
         findings = record.get("findings")
         has_error = isinstance(findings, list) and any(
             isinstance(finding, dict)
@@ -5686,13 +5678,10 @@ def quality_repair_failures_for_window(
             for finding in findings
         )
         if record.get("passed") is not True or has_error:
-            failures.setdefault(source_task_id, []).append(f"review:{dimension}")
-    for (source_task_id, check, scope), record in latest_verifications.items():
+            failures.setdefault(source_task_id, []).append(failure_label(record))
+    for (source_task_id, unit_id, check, scope), record in latest_verifications.items():
         if record.get("applicable") is not False and record.get("passed") is not True:
-            label = f"verify:{check}"
-            if scope:
-                label = f"{label}:{scope}"
-            failures.setdefault(source_task_id, []).append(label)
+            failures.setdefault(source_task_id, []).append(failure_label(record))
     return failures
 
 
@@ -6421,6 +6410,16 @@ def validate_analysis_readiness(
     behavior = resolve_behavior(root, session or default_session())
     tdd_enabled = behavior[8] if task_type != TDD_INIT_TASK_TYPE else False
     tdd_threshold = behavior[11]
+
+    if dev_spec.is_file() and not tdd_enabled:
+        compact = dev_spec.read_text(encoding="utf-8")
+        if compact.startswith("<!-- easy-coding:compact -->"):
+            mode, _ = calculate_workflow_floor(root, task_id)
+            if mode != "fast" or not has_valid_execution_plan(root, task_id):
+                raise StateError("Compact analysis requires a valid Fast implementation plan.")
+            if re.findall(r"^decision_status:\s*(\w+)\s*$", compact, re.MULTILINE) != ["closed"]:
+                raise StateError("Compact analysis must record the confirmed scope.")
+            return
 
     dev_spec_content = ""
     if not dev_spec.exists():
@@ -8592,7 +8591,8 @@ def reconcile_local_result_evidence(
             and check.get("passed") is True
             and is_non_empty_string(check.get("command"))
         }
-        missing_unit_commands = sorted(set(unit.get("test_commands", [])) - passed_commands)
+        missing_unit_commands = sorted(command for command in unit.get("test_commands", [])
+                                       if not any(command_covers(actual, command) for actual in passed_commands))
         if missing_unit_commands:
             unresolved.append(
                 f"{unit_id}:missing-passed-command=" + ",".join(missing_unit_commands)
@@ -8630,7 +8630,7 @@ def reconcile_local_result_evidence(
             missing_commands = [
                 str(test.get("command"))
                 for test in tests
-                if str(test.get("command")) not in passed_commands
+                if not any(command_covers(actual, str(test.get("command"))) for actual in passed_commands)
             ]
             if missing_commands:
                 unresolved.append(
@@ -9035,23 +9035,29 @@ def sync_spec_design_state(
     progress.pop("pending_action", None)
     task.pop("spec_change", None)
     task.pop("spec_context", None)
-    if task.get("status") not in {"INIT", "ANALYSIS"}:
-        cleanup_verification_checkpoint(root, resolved_task_id, task)
-        task["status"] = "ANALYSIS"
-        append_stage_history(task, "ANALYSIS", agent)
-    task.pop("pending_transition", None)
-    task["last_agent"] = agent
     already_acknowledged = any(
         record.get("type") == "spec-design-sync"
         and record.get("idempotency_key") == idempotency_key
         for record in execution_records(root, resolved_task_id)
     )
+    if task.get("correction") and not already_acknowledged:
+        refresh_correction_plan(root, resolved_task_id, task, inspection)
+    if task.get("correction") and not already_acknowledged:
+        task["status"] = "IMPLEMENT"
+        append_stage_history(task, "IMPLEMENT", agent)
+    if not task.get("correction") and task.get("status") not in {"INIT", "ANALYSIS"}:
+        cleanup_verification_checkpoint(root, resolved_task_id, task)
+        task["status"] = "ANALYSIS"
+        append_stage_history(task, "ANALYSIS", agent)
+    task.pop("pending_transition", None)
+    task["last_agent"] = agent
     if not already_acknowledged:
         append_execution_record(
             root,
             resolved_task_id,
             {
                 "type": "spec-design-sync",
+                "preserve_plan": bool(task.get("correction")),
                 "affected_task_ids": requested_task_ids,
                 "event_id": event["event_id"],
                 "design_sha256": details["design_sha256"],
@@ -9061,6 +9067,10 @@ def sync_spec_design_state(
             },
         )
     write_task(root, resolved_task_id, task)
+    if task.get("correction"):
+        writeback_ready_tasks_for_implement(root, resolved_task_id, task, agent,
+                                           source_task_ids=set(requested_task_ids),
+                                           restart_statuses={"not_started"})
     snapshot = snapshot_state(root, session_file, session)
     snapshot["action"] = "sync-spec-design"
     return snapshot
@@ -9297,7 +9307,7 @@ def writeback_verified_tasks(
                     if record.get("passed") is True
                     and str(record.get("source_task_id") or "") == source_task_id
                     and str(record.get("repo_id") or "") == repo_id
-                    and str(record.get("command") or "") == command
+                    and command_covers(str(record.get("command") or ""), command)
                 ),
                 None,
             )
@@ -9569,52 +9579,16 @@ def resolve_current_task(
 
 
 def validate_workflow_mode_proposal(
-    root: Path,
-    session: dict,
-    proposal: object,
-    task_id: str | None = None,
+    root: Path, session: dict, proposal: object, task_id: str | None = None,
 ) -> dict:
-    if not isinstance(proposal, dict):
-        raise StateError("workflow_mode_proposal is missing.")
-    configured = str(proposal.get("configured_mode") or "")
-    selected = str(proposal.get("selected_mode") or "")
-    minimum = str(proposal.get("minimum_mode") or "")
-    source = str(proposal.get("source") or "")
-    reasons = proposal.get("reasons")
-    effective_configured = resolve_behavior(root, session)[5]
-    if configured != effective_configured:
-        raise StateError(
-            "Workflow proposal configured_mode no longer matches the effective project/session setting."
-        )
-    if configured not in CONFIGURED_WORKFLOW_MODES:
-        raise StateError("Invalid configured workflow mode.")
-    if selected not in WORKFLOW_MODES or minimum not in WORKFLOW_MODES:
-        raise StateError("selected_mode and minimum_mode must be fast, standard, or strict.")
-    if source not in {"project", "session", "adaptive", "user", "migration"}:
-        raise StateError("Invalid workflow proposal source.")
-    if not is_string_list(reasons, allow_empty=False):
-        raise StateError("Workflow proposal reasons must contain at least one non-empty reason.")
-    required_rank = WORKFLOW_MODE_RANK[minimum]
-    if configured in WORKFLOW_MODES and WORKFLOW_MODE_RANK[minimum] < WORKFLOW_MODE_RANK[configured]:
-        raise StateError(
-            f"Workflow minimum {minimum} is below configured floor {configured}."
-        )
-    if task_id:
-        calculated_minimum, calculated_reasons = calculate_workflow_floor(root, task_id)
-        calculated_rank = WORKFLOW_MODE_RANK[calculated_minimum]
-        if WORKFLOW_MODE_RANK[minimum] < calculated_rank:
-            raise StateError(
-                f"Workflow minimum {minimum} is below calculated floor {calculated_minimum}: "
-                + ", ".join(calculated_reasons)
-            )
-        required_rank = max(required_rank, calculated_rank)
-    if configured in WORKFLOW_MODES:
-        required_rank = max(required_rank, WORKFLOW_MODE_RANK[configured])
-    if WORKFLOW_MODE_RANK[selected] < required_rank:
-        raise StateError(
-            f"Workflow mode {selected} is below the allowed minimum for this task."
-        )
-    return proposal
+    if task_id is None:
+        raise StateError("A task is required to calculate the mechanical workflow mode.")
+    mode, reasons = calculate_workflow_floor(root, task_id)
+    return {
+        "configured_mode": resolve_behavior(root, session)[5],
+        "selected_mode": mode, "minimum_mode": mode, "source": "adaptive",
+        "reasons": reasons,
+    }
 
 
 def calculate_workflow_floor(root: Path, task_id: str) -> tuple[str, list[str]]:
@@ -9626,6 +9600,12 @@ def calculate_workflow_floor(root: Path, task_id: str) -> tuple[str, list[str]]:
     if not plan:
         raise StateError("Cannot calculate workflow floor without a valid execution plan.")
     units = [unit for unit in plan.get("units", []) if isinstance(unit, dict)]
+    correction = task.get("correction")
+    if isinstance(correction, dict):
+        files = set(correction["files"])
+        units = [{**unit, "files": sorted(set(unit.get("files", [])) & files),
+                  "risks": correction.get("risks", []), "contracts": []}
+                 for unit in units if unit["id"] in correction["unit_ids"]]
     missing_local_baseline = [
         str(unit.get("id") or "<unknown>")
         for unit in units
@@ -9642,7 +9622,7 @@ def calculate_workflow_floor(root: Path, task_id: str) -> tuple[str, list[str]]:
         for file_name in unit.get("files", [])
         if is_non_empty_string(file_name)
     }
-    repositories = workflow_plan_repository_roots(root, task, plan)
+    repositories = workflow_plan_repository_roots(root, task, {"units": units})
     ignored_values = {"none", "no", "n/a", "无", "无风险"}
     risk_values = [
         str(item)
@@ -9711,7 +9691,7 @@ def propose_workflow_mode(
         "proposed_at": now_iso(),
         "proposed_by": agent,
     }
-    validate_workflow_mode_proposal(root, session, proposal, resolved_task_id)
+    proposal.update(validate_workflow_mode_proposal(root, session, proposal, resolved_task_id))
     task["workflow_mode_proposal"] = proposal
     task["last_agent"] = agent
     write_task(root, resolved_task_id, task)
@@ -9784,21 +9764,8 @@ def raise_workflow_mode(
         )
     if stage != "IMPLEMENT":
         raise StateError("A frozen workflow mode can only be raised during active execution.")
-    current = str(task.get("workflow_mode") or "")
-    if current not in WORKFLOW_MODES or mode not in WORKFLOW_MODES:
-        raise StateError("Workflow mode must be frozen before it can be raised.")
-    if WORKFLOW_MODE_RANK[mode] <= WORKFLOW_MODE_RANK[current]:
-        raise StateError(f"Workflow mode can only be raised above {current}.")
+    mode, _reasons = calculate_workflow_floor(root, resolved_task_id)
     task["workflow_mode"] = mode
-    task.setdefault("workflow_mode_escalations", []).append(
-        {
-            "from": current,
-            "to": mode,
-            "reason": reason.strip(),
-            "raised_at": now_iso(),
-            "raised_by": agent,
-        }
-    )
     task["last_agent"] = agent
     write_task(root, resolved_task_id, task)
     snapshot = snapshot_state(root, session_file, session)
@@ -9987,7 +9954,7 @@ def apply_transition(
     if (
         previous == "QUALITY"
         and stage in {"IMPLEMENT", "ANALYSIS"}
-        and quality_exit_outcome in {"repair", "replan"}
+        and quality_exit_outcome in {"repair", "replan", "cancelled"}
     ):
         quality_records = validated_quality_records(root, resolved_task_id)
         task["quality_consumed_attempt"] = quality_records[-1][1]["attempt"]
@@ -10012,6 +9979,11 @@ def apply_transition(
         task = load_task(root, resolved_task_id) or task
     if stage in {"ANALYSIS", "IMPLEMENT", "MEMORY", "COMPLETE", "CLOSED"}:
         cleanup_verification_checkpoint(root, resolved_task_id, task)
+    if previous == "IMPLEMENT" and stage == "QUALITY":
+        quality_records = validated_quality_records(root, resolved_task_id)
+        if quality_records:
+            task["quality_consumed_attempt"] = quality_records[-1][1]["attempt"]
+        task.pop("quality_return_required", None)
     task.pop("pending_transition", None)
     if stage == "MEMORY" and previous != stage:
         task["memory_progress"] = {}
@@ -10501,6 +10473,7 @@ def parse_evidence_args(values: list[str]) -> list[dict]:
     return evidence
 
 
+@evidence_operation()
 def main() -> int:
     configure_stdio()
     common = argparse.ArgumentParser(add_help=False)
@@ -10660,20 +10633,20 @@ def main() -> int:
         "propose-workflow-mode", parents=[common]
     )
     propose_workflow_parser.add_argument(
-        "--configured", required=True, choices=sorted(CONFIGURED_WORKFLOW_MODES)
+        "--configured", default="adaptive", choices=sorted(CONFIGURED_WORKFLOW_MODES)
     )
     propose_workflow_parser.add_argument(
-        "--selected", required=True, choices=sorted(WORKFLOW_MODES)
+        "--selected", default="fast", choices=sorted(WORKFLOW_MODES)
     )
     propose_workflow_parser.add_argument(
-        "--minimum", required=True, choices=sorted(WORKFLOW_MODES)
+        "--minimum", default="fast", choices=sorted(WORKFLOW_MODES)
     )
     propose_workflow_parser.add_argument(
         "--source",
-        required=True,
+        default="adaptive",
         choices=["project", "session", "adaptive", "user", "migration"],
     )
-    propose_workflow_parser.add_argument("--reason", required=True, action="append")
+    propose_workflow_parser.add_argument("--reason", action="append", default=[])
     propose_workflow_parser.add_argument("--agent", required=True)
     propose_workflow_parser.add_argument("--task-id")
 
@@ -10690,6 +10663,22 @@ def main() -> int:
     fingerprints_parser = subcommands.add_parser("evidence-fingerprints", parents=[common])
     fingerprints_parser.add_argument("--agent", required=True)
     fingerprints_parser.add_argument("--task-id")
+
+    for name in ("prepare-check", "record-check"):
+        check_parser = subcommands.add_parser(name, parents=[common])
+        check_parser.add_argument("--agent", required=True)
+        check_parser.add_argument("--task-id")
+        if name == "prepare-check":
+            check_parser.add_argument("--record", required=True)
+        else:
+            check_parser.add_argument("--prepared-id", required=True)
+            check_parser.add_argument("--result", required=True)
+    correction_parser = subcommands.add_parser("begin-correction", parents=[common])
+    correction_parser.add_argument("--file", action="append", required=True)
+    correction_parser.add_argument("--summary", required=True)
+    correction_parser.add_argument("--risk", action="append", default=[])
+    correction_parser.add_argument("--agent", required=True)
+    correction_parser.add_argument("--task-id")
 
     finalize_quality_parser = subcommands.add_parser(
         "finalize-quality", parents=[common]
@@ -11261,6 +11250,16 @@ def main() -> int:
                     session_file,
                 )
             )
+        elif command in {"prepare-check", "record-check", "begin-correction"}:
+            session, task_id, task = resolve_current_task(root, args.task_id, session_file)
+            require_spec_context(root, task, agent, session_file)
+            if command == "prepare-check":
+                result = prepare_check(root, task_id, task, json.loads(args.record), agent)
+            elif command == "record-check":
+                result = record_check(root, task_id, task, args.prepared_id, json.loads(args.result), agent)
+            else:
+                result = begin_correction(root, task_id, task, args.file, args.summary, args.risk, agent)
+            emit(result)
         elif command == "finalize-quality":
             emit(
                 attach_status_context(
@@ -11547,7 +11546,7 @@ def main() -> int:
                 )
             )
         return 0
-    except (StateError, EasyDevSpecError) as error:
+    except (StateError, EasyDevSpecError, ValueError) as error:
         print(json.dumps({"error": str(error)}, ensure_ascii=False), file=sys.stderr)
         return 1
     finally:

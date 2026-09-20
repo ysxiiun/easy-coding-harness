@@ -276,6 +276,13 @@ export interface TaskJson {
   created_by: WorkflowActorIdentity;
   last_agent: WorkflowActorIdentity;
   stage_history: StageHistoryEntry[];
+  correction?: {
+    files: string[];
+    summary: string;
+    risks: string[];
+    unit_ids: string[];
+    started_at: string;
+  };
   pending_transition?: PendingTransition;
   quality_attempt?: {
     schema: 1;
@@ -362,6 +369,8 @@ export interface Unit {
   title: string;
   type: string;
   files: string[];
+  /** 已分析的额外直接输入；声明后使用文件闭包，未声明时使用所属模块范围。 */
+  input_files?: string[];
   depends_on: string[];
   rules_sections?: string[];
   abstract_modules?: string[];
@@ -376,7 +385,31 @@ export interface Unit {
   test_commands?: string[];
 }
 
+/** 单次检查冻结的输入；运行时保存并比较，Agent 不生成摘要。 */
+export interface CheckInputSnapshot {
+  spec: Record<string, unknown>;
+  files: Record<string, Record<string, [string, string] | null>>;
+  signature: string;
+}
+
 export type ExecutionRecord =
+  | {
+      type: "correction";
+      files: string[];
+      summary: string;
+      risks: string[];
+      unit_ids: string[];
+      started_at: string;
+      workflow_mode: WorkflowMode;
+    }
+  | {
+      type: "check-inputs";
+      prepared_id: string;
+      descriptor: Record<string, unknown>;
+      inputs: CheckInputSnapshot;
+      timestamp: string;
+      agent: WorkflowAgentIdentity;
+    }
   | {
       type: "plan";
       strategy: "single" | "sequential" | "parallel";
@@ -424,6 +457,10 @@ export type ExecutionRecord =
     }
   | {
       type: "review";
+      unit_id?: string;
+      inputs?: CheckInputSnapshot;
+      prepared_id?: string;
+      reused_from?: number;
       dimension: string;
       passed: boolean;
       implementation_fingerprint: string;
@@ -482,6 +519,11 @@ export type ExecutionRecord =
     }
   | {
       type: "verify";
+      unit_id?: string;
+      inputs?: CheckInputSnapshot;
+      prepared_id?: string;
+      reused_from?: number;
+      exit_code?: number;
       check: string;
       check_type: "lint" | "typecheck" | "test" | "build" | "coverage";
       command?: string;

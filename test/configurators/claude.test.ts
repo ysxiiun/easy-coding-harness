@@ -118,11 +118,11 @@ describe("configureClaude", () => {
     expect(skill).toContain("workflow_mode = adaptive|fast|standard|strict");
     expect(skill).toContain("Every repository-mutation task uses this graph");
     expect(skill).toContain("Preserve `pending_transition` on cancellation");
-    expect(skill).toContain("raise-workflow-mode");
+    expect(skill).toContain("begin-correction");
     expect(skill).toContain("review fingerprint");
     expect(skill).toContain("verification fingerprint");
     expect(skill).toContain("Missing: tell the user to run `easy-coding init`");
-    expect(skill).toContain("During QUALITY, return to IMPLEMENT before");
+    expect(skill).toContain("preserves the plan");
     expect(skill).toContain("[easy-coding:lite-direct]");
     expect(skill).not.toContain("workflow_mode_legacy_direct_edge");
     expect(skill).not.toContain("open the target agent");
@@ -155,11 +155,11 @@ describe("configureClaude", () => {
     );
     expect(analysisSkill).toContain("For an automatic edge, do not add a pause");
     expect(analysisSkill).toContain("decision_status: closed");
-    expect(analysisSkill).toContain("progressive cost budget");
+    expect(analysisSkill).not.toContain("progressive cost budget");
     expect(analysisSkill).toContain("## Local implementation baseline");
-    expect(analysisSkill).toContain("at least five units");
-    expect(analysisSkill).toContain("compound high-risk and complexity signals");
-    expect(analysisSkill).toContain("unused `repo_paths`");
+    expect(analysisSkill).toContain("mechanical minimum for the actual current scope");
+    expect(analysisSkill).toContain("Do not propose a");
+    expect(analysisSkill).toContain("Old configured/frozen modes do not raise the minimum");
 
     const implementingSkill = await readFile(
       path.join(tempDir, ".claude", "skills", "ec-implementing", "SKILL.md"),
@@ -355,7 +355,7 @@ describe("configureClaude", () => {
     expect(main).toContain("`Claude with Easy Coding` is not a workflow identity");
     expect(main).toContain("injected session namespace must agree");
     expect(main).toContain("project `behavior.approval_mode`");
-    expect(main).toContain("project `behavior.workflow_mode`");
+    expect(main).toContain("mechanical minimum for the current actual change");
     expect(main).toContain("`auto-transition`");
     expect(main).toContain("Every mutation task runs QUALITY");
     expect(main).toContain("A confirmation-required boundary is not fully presented");
@@ -394,7 +394,7 @@ describe("configureClaude", () => {
     expect(analysisSkill).toContain("second round of Spec");
 
     expect(qualitySkill).toContain("evidence-fingerprints");
-    expect(qualitySkill).toContain("candidate fingerprint");
+    expect(qualitySkill).toContain("runtime-owned attempt and candidate");
     expect(qualitySkill).toContain("config fingerprints");
     expect(qualitySkill).not.toContain("then re-REVIEW");
     expect(qualitySkill).not.toContain("MEMORY_SHORT");
@@ -1420,7 +1420,7 @@ describe("configureClaude", () => {
         expect(transitionOutput.status_context).toContain("[workflow-state:idle]");
       } else {
         expect(transitionOutput.status).toBe(stage);
-        const expectedWorkflow = stage === "ANALYSIS" ? "Adaptive" : "Standard";
+        const expectedWorkflow = stage === "ANALYSIS" ? "Adaptive" : "Fast";
         expect(transitionOutput.status_line).toContain(
           `> **Easy Coding** · **Approval: Guard** · **Workflow: ${expectedWorkflow}** · \`06-12-api\` · \`${stage}\``,
         );

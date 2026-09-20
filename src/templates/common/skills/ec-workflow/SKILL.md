@@ -33,10 +33,10 @@ Pure conversation, explanation, analysis, and read-only review stay Ready and cr
 - `tdd_enabled` independently activates Java TDD and changed-line coverage. It defaults off;
   `tdd_coverage_threshold` defaults to 90 and accepts integers from 1 to 100.
 
-Resolution order for each configured value is session override, then project config, then
-defaults (`guard`, `adaptive`). ANALYSIS resolves `adaptive` to a concrete mode, presents the
-selection and reasons, allows the user to change it within the risk floor, and freezes it when
-ANALYSIS -> IMPLEMENT is applied.
+Approval and TDD retain session-over-project precedence. Execution depth is always the
+mechanically calculated minimum for the current change. Do not recommend, select a higher mode,
+or inherit an old task mode. Persist it once with `propose-workflow-mode --agent <agent-id>
+--session-file <P>`; the runtime calculates and freezes the value.
 
 TDD resolves with the same session-over-project precedence and freezes its enabled flag and
 threshold on ANALYSIS -> IMPLEMENT. It may be enabled only after `ec-tdd-init` readiness passes;
@@ -206,19 +206,21 @@ passed current-fingerprint targeted check first. If the digest changes, inspect 
 new diff. Config, plan, workflow, Canonical-design, or nested-repository drift is not an
 acceptance-diff choice and returns to the stage required by the state API.
 
-## Mode escalation
+## Current-change routing
 
-When implementation reveals a higher risk, call:
+For an explicitly confirmed rollback, scope reduction, or bounded correction of an active task,
+call `begin-correction --file <existing-task-file> ... --summary <confirmed-change>
+[--risk <actual-new-risk>] --agent <agent-id> --session-file <P>`. The runtime preserves the plan,
+unaffected Units and evidence, consumes old QUALITY state, and enters IMPLEMENT at the mechanical
+minimum for these files. Do not reconstruct the original task or its documents. Synchronize only
+conflicting source Spec clauses once when needed; then continue the correction. Never restore an
+entire file over unrelated user edits. A new feature or expanded contract still needs ANALYSIS.
 
-```bash
-{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py raise-workflow-mode \
-  --mode standard|strict --reason "<new risk>" \
-  --agent <agent-id> --session-file <P>
-```
+## Recalculate actual risk
 
-Only upward changes are legal after ANALYSIS. During QUALITY, return to IMPLEMENT before
-raising the mode so the task re-enters QUALITY with fresh evidence. Scope or design changes return
-to ANALYSIS.
+Only an actual change in the current scope or risk changes execution depth. The runtime
+recalculates the minimum; old configuration, task size, and unrelated risks never raise it.
+There is no time, token, tool-count, or execution-budget gate.
 
 ## Handoff and closure
 

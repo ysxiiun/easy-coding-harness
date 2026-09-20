@@ -21,17 +21,26 @@ to QUALITY's Verification Gate. TDD is the only exception because RED/GREEN/REFA
 part of the implementation method; current-fingerprint green evidence may be reused by QUALITY.
 
 When frozen TDD is enabled, every feature/bug unit must capture a meaningful failing unit test
-before production code (RED), the smallest passing implementation (GREEN), and a green refactor.
+before production code (RED) and the smallest passing implementation (GREEN). Refactor only
+when a concrete improvement is needed; unchanged GREEN inputs do not require another run.
 Pure refactors instead capture a passing characterization test before the change and rerun it
 afterward. Never fake RED evidence. Keep tests deterministic, boundary-focused, and minimally
-mocked, and design changed production code toward 100% unit coverage.
+mocked, and meet the confirmed changed-line threshold without expanding scope for extra coverage.
 
 Communicate with the user in the user's language.
 
+For a bounded correction already routed by `begin-correction`, use the existing plan and the
+returned file scope. Restoring known behavior needs the affected regression checks, not an
+artificial RED/REFACTOR cycle. Preserve all unrelated Unit progress. A correction of generated
+tracking metadata is handled once; do not reopen design or rewrite the complete plan for it.
+
+When a lifecycle check is necessary, call `prepare-check` before running it and `record-check`
+afterward as documented in ec-quality. QUALITY reuses these input-bound results.
+
 ## Non-negotiable gates
 
-1. Modify only files in the confirmed change-scope table. A new file requirement returns the
-   task to ANALYSIS.
+1. Modify only confirmed files. Return to ANALYSIS only for a substantive scope/contract
+   expansion; restoring a previously mapped file uses the correction scope.
 2. Preserve existing encoding and project comment conventions.
 3. Each unit must carry `acceptance_criteria`, `test_points`, `contracts`, and `risks`.
    Missing unit context is an analysis defect; do not make the implementer rediscover it.
@@ -87,6 +96,11 @@ Communicate with the user in the user's language.
     report unrelated defects instead of fixing them without an approved scope change.
 14. Use one blank line between coherent logic sections. Do not create noisy blank-line gaps or
     compress unrelated steps into an unreadable block.
+
+Keep validation at its responsible boundary. Do not repeat internal null/state checks already
+covered by the contract. Without an explicit requirement or demonstrated defect, add no fallback,
+retry, compatibility branch, idempotency change, defensive copy, or speculative error handling.
+An added validation needs a concrete triggering input and the failure it prevents.
 
 ## Choose the execution owner
 
@@ -176,7 +190,8 @@ checks:[], issues:[], needs_attention:[]
 8. If a static Canonical change is confirmed, first persist it with `begin-spec-change
    --affected-task <id> --summary <confirmed-change> --agent <agent-id> --session-file <P>`.
    Revise the original design by exactly one revision, validate READY and use `sync-spec-design`;
-   then `resume-spec-context` and rebuild the local plan in ANALYSIS. Never edit the
+   then `resume-spec-context`. A bounded correction preserves the plan and continues IMPLEMENT;
+   substantive expansion returns to ANALYSIS. Never edit the
    machine-owned execution block. If a writeback was
    interrupted, run `reconcile-spec-execution` with the stored idempotent pending action.
    Reconciliation only consumes dispatch/result evidence created after the current `in_progress`
@@ -188,8 +203,8 @@ conversation overhead while keeping work observable.
 ## End state
 
 - After all units are implemented, hand control to ec-workflow for IMPLEMENT -> QUALITY.
-- New risk above the frozen mode: call `raise-workflow-mode`; modes may rise but never silently
-  fall after ANALYSIS.
+- A concrete new risk changes the calculated minimum: update its Unit risk and call
+  `raise-workflow-mode` to recalculate. The argument cannot inflate the mechanical result.
 
 ## Self-check
 

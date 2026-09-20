@@ -116,7 +116,6 @@ describe("config command", () => {
     await writeReadyTddInfrastructure();
     promptMocks.select
       .mockResolvedValueOnce("confirm")
-      .mockResolvedValueOnce("strict")
       .mockResolvedValueOnce(true);
     promptMocks.text.mockResolvedValueOnce("95");
     promptMocks.confirm.mockResolvedValue(true);
@@ -125,18 +124,17 @@ describe("config command", () => {
 
     const content = await readFile(configPath, "utf8");
     expect(content).toContain("approval_mode: confirm");
-    expect(content).toContain("workflow_mode: strict");
+    expect(content).toContain("workflow_mode: adaptive");
     expect(content).toContain("tdd_enabled: true");
     expect(content).toContain("tdd_coverage_threshold: 95");
     expect(promptMocks.outro).toHaveBeenCalledWith(
-      expect.stringContaining("Project modes updated: approval=confirm, workflow=strict, TDD=95%"),
+      expect.stringContaining("Project modes updated: approval=confirm, workflow=adaptive, TDD=95%"),
     );
   });
 
   it("rejects enabling TDD before initialization without partially changing project modes", async () => {
     promptMocks.select
       .mockResolvedValueOnce("confirm")
-      .mockResolvedValueOnce("strict")
       .mockResolvedValueOnce(true);
 
     await config();
@@ -154,7 +152,6 @@ describe("config command", () => {
     await writeReadyTddInfrastructure();
     promptMocks.select
       .mockResolvedValueOnce("confirm")
-      .mockResolvedValueOnce("strict")
       .mockResolvedValueOnce(true);
     promptMocks.text.mockResolvedValueOnce("95");
     promptMocks.confirm.mockImplementationOnce(async () => {
@@ -176,7 +173,6 @@ describe("config command", () => {
   it("leaves the config unchanged when confirmation is declined", async () => {
     promptMocks.select
       .mockResolvedValueOnce("approve")
-      .mockResolvedValueOnce("fast")
       .mockResolvedValueOnce(false);
     promptMocks.confirm.mockResolvedValue(false);
 

@@ -83,10 +83,11 @@ any stage --[user abort via ec-task-close]--> CLOSED
   ANALYSIS → IMPLEMENT 确认一次，随后各阶段在质量门禁通过后自动推进，`auto` 从开始即
   自动推进。所有模式仅在 QUALITY 绿色检查点之后又出现新代码差异时临时暂停：展示
   精确 diff 与摘要，由用户确认该摘要后继续；这不会把 `auto` 永久降级为人工审批。
-- 工作流模式优先级为 session 覆盖 > 项目 `behavior.workflow_mode` > `adaptive`。Adaptive
-  以 Standard 作为普通业务默认：单仓、最多三个内聚 Unit 且不超过 8 个文件的低风险局部修改
-  优先 Fast；只有明确高风险与真实复杂度/大影响面同时存在才进入 Strict。仓库数只按当前
-  execution plan 实际修改的 Git root 计算，用户可在机械风险下限之上调整。
+- 执行深度直接使用本轮实际修改的机械最低模式：能 Fast 就 Fast，不再推荐或人为提高档位，
+  历史模式不构成下限。局部纠正通过 `begin-correction` 保留原任务进度；审批语义保持独立。
+- 检查通过 `prepare-check` / `record-check` 绑定实际输入并复用。阶段、计划说明或 Spec revision
+  不会单独让测试失效；相关源码、测试或构建依赖变化时，仅刷新受影响结果。一次操作共享输入
+  快照，状态展示不计算内容指纹，合并测试一次执行并覆盖对应验收项。
 - ANALYSIS 会先通过问答闭合影响技术路线、接口、模型、状态、范围或验收的实质性问题，
   并在 Dev-Spec 中记录唯一的 `decision_status: closed`。会话只展示核心方案、验收摘要、
   Workflow Mode 与主要风险；完整 `dev-spec.md` 通过绝对本地链接或路径按需查看。原生选择
@@ -94,7 +95,7 @@ any stage --[user abort via ec-task-close]--> CLOSED
 - Java TDD 默认关闭；优先级为 session 覆盖 > 项目配置 > `false/90%`。首次开启前必须运行 `ec-tdd-init`，只建设 JUnit/JaCoCo/GitLab 增量覆盖率基础设施，不补存量业务单测；readiness 通过后才允许显式开启。开启后在 ANALYSIS → IMPLEMENT 冻结开关、baseline 与阈值，只验收本任务新增/修改生产代码行，执行 RED/GREEN/REFACTOR（纯重构使用 characterization GREEN → GREEN），并要求本地单测通过、本地差异覆盖率达到冻结阈值。GitLab TEST-stage job 仍会生成，但远程 pipeline 结果不属于 Harness 验收证据，也不会触发中间提交推送。关闭时普通任务不扫描 CI/JaCoCo、不增加命令或提高原工作流验收深度。
 - 所有修改任务都进入 QUALITY；纯对话分析、解释、报告和只读 review 保持 Ready，不创建任务。文档或配置一旦写入仓库，仍走完整状态机。
 - `QUALITY` 同时编排只读 Review Gate 与 Verification Gate。Fast 使用主 Agent 聚焦自审和最小定向验证，Standard 使用一个独立 reviewer 与受影响检查，Strict 使用至少两个独立维度并只对实际修改仓库运行完整适用检查。两个 Gate 绑定同一候选指纹和 attempt，必须完成或明确取消后才形成一次 Repair Bundle；代码/测试缺陷回 IMPLEMENT，契约歧义优先回 ANALYSIS并保留同轮其他缺陷，环境问题留在 QUALITY 重试；候选漂移会审计为 cancelled 并强制先回 IMPLEMENT。
-- Canonical repair 后重跑受影响仓库及其 hard/contract 下游；其余未变化仓库必须由状态层以 `quality-carry-forward` 精确引用上一 attempt 的通过证据，不能由 Agent 复制或改写旧记录。
+- 修复仅刷新受影响检查；运行时引用输入未变化的历史证据，保留来源与执行时间，Agent 不重写通过记录。
 - 非 TDD 的 IMPLEMENT 只负责编码，不运行测试；Verification Gate 统一执行 lint/typecheck/test/build。TDD 的 RED/GREEN/REFACTOR 是唯一例外，当前指纹绿色证据可在 QUALITY 复用。
 - QUALITY 通过后冻结验收检查点；若代码随后变化，Harness 展示完整差异并绑定
   `diff_sha256`。用户确认后不重跑 Review Gate：纯非执行差异可沿用

@@ -13,24 +13,40 @@ does not modify source, tests, configuration, plans, or task scope.
 For Canonical-backed tasks, load the current session's bound selection through `resume-spec-context`
 when resuming. Pass that original consumption closure to both gates and compare selected contracts,
 changes, Steps and Tests against the candidate. Pending `spec_change` blocks QUALITY acceptance
-until source revision synchronization and ANALYSIS replanning have completed.
+until the source revision is synchronized. Bounded corrections refresh only their affected Unit
+mappings and continue IMPLEMENT; substantive expansion returns to ANALYSIS.
 
-Call `evidence-fingerprints` once and use the returned implementation/config fingerprints for
-the whole attempt. It also returns the runtime-owned `quality_attempt` number, start time, evidence
-boundary, and repair count. Every Review and Verification record in this attempt must carry that
-same candidate fingerprint and `quality_attempt` number. If the candidate changes, return to
-IMPLEMENT; the state API finalizes the old attempt as `cancelled` before the transition. Never mix
-evidence from two candidates.
+Call `evidence-fingerprints` once to obtain the runtime-owned attempt and candidate. The runtime
+owns signatures and prior-evidence references. Never calculate historical fingerprints, import
+runtime internals to reconstruct old candidates, or ask a reviewer to audit workflow bookkeeping.
 
-`execution.jsonl` is append-only. Do not write `type:"quality"` yourself. The state API appends
-exactly one fingerprint-bound finalized record when QUALITY passes, leaves for repair/replan, or is
-cancelled by candidate drift, rework, or task closure. Retries reuse that record instead of
-duplicating it. An incomplete, duplicate, or out-of-sequence quality record blocks the transition.
+For each distinct review or verification, prepare its actual inputs before executing it:
 
-Review Gate and Verification Gate are independent and may run in parallel. Review never executes
-commands. Verification never edits files. If a hard blocker makes remaining work meaningless,
-cancel the other checks explicitly and record the cancellation; do not start repair while a gate
-is still running or unacknowledged.
+```bash
+{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py prepare-check \
+  --record '<review/verify JSON with unit_id, dimension or check/check_type/command>' \
+  --agent <agent-id> --session-file <P>
+```
+
+When `reusable:true`, use the returned evidence index and skip that check. Otherwise run the
+specified check once, then register its real result:
+
+```bash
+{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py record-check \
+  --prepared-id <returned-id> --result '<JSON with passed, exit_code for verification, findings/reviewer for review>' \
+  --agent <agent-id> --session-file <P>
+```
+
+Preparation binds code/test inputs, module dependencies, build files and the actual command.
+Use the analyzed Unit `input_files` closure for additional helpers/fixtures/configuration, and record intentional
+environment overrides in the check descriptor. Production-only reviews may declare
+`review_scope:"production"`; test review still covers changed test behavior. A result is accepted
+only if its inputs remained unchanged. One grouped Maven `-Dtest=A,B` execution covers both source
+commands when all other arguments agree. Do not run individual commands and then repeat a combined
+clean run. IMPLEMENT results and prior attempts use the same reuse mechanism.
+
+Record failed checks with failure_classes. Review and Verification remain independent; cancel a
+meaningless remaining check when a concrete blocker is found. Aggregate the repair once.
 
 ## Workflow depth
 
@@ -54,7 +70,7 @@ is still running or unacknowledged.
   checks. A repository merely mentioned by a Spec, dependency, supermodule, or path map is not in
   scope.
 - When frozen TDD is enabled, include the required TDD review dimension, local unit test, and
-  changed-production-line coverage. Record one coverage result with `coverage_scope:"local"`;
+  changed-production-line coverage at the confirmed threshold. Record one coverage result with `coverage_scope:"local"`;
   GitLab coverage is informative, not a task acceptance gate. Reuse current-fingerprint GREEN
   evidence from IMPLEMENT instead of rerunning an identical command.
 
@@ -143,12 +159,12 @@ After repair, choose the minimum honest evidence refresh:
 - localized business code: delta review plus impacted tests;
 - contract/config/plan/shared behavior: rerun all applicable gates for the affected scope.
 
-When uncertain, rerun rather than infer. On the next attempt, the state API emits an append-only
-`quality-carry-forward` record only for Canonical repositories whose plan and repository content
-fingerprints are unchanged and whose sources are not hard/contract downstream of a changed source;
-it references the exact passed evidence indices from the consumed repair attempt. Never copy or
-relabel old evidence yourself. Strict may consume that state-owned record for independent,
-unaffected repositories, but must rerun every affected or dependency-invalidated repository gate.
+Use the runtime's reusable/changed-input result to decide what remains. Changes to a plan
+narrative, stage, approval mode or Spec revision alone do not require test execution. Refresh only
+affected evidence, including actual shared dependencies; never restart all Units in the repository.
+Passed checks are terminal until their inputs change or a concrete new defect invalidates them.
+Suggestions never trigger another review round. No reviewer may demand new defensive checks
+without a concrete triggering input and demonstrated failure. Preserve the original error strategy.
 
 ## Acceptance boundary
 
