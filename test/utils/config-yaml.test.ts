@@ -54,29 +54,29 @@ afterEach(async () => {
 });
 
 describe("config-yaml", () => {
-  it("creates schema 5 configs with default-off TDD and a 90 percent threshold", () => {
+  it("creates schema 6 configs with default none strategy and a 90 percent threshold", () => {
     const config = createDefaultConfig({
       projectName: "demo",
       harnessVersion: "1.0.0",
       agents: ["claude-code"],
     });
-    expect(config.version).toBe(5);
+    expect(config.version).toBe(6);
     expect(config.behavior).toEqual({
       approval_mode: "guard",
       workflow_mode: "adaptive",
-      tdd_enabled: false,
-      tdd_coverage_threshold: 90,
+      unit_test_mode: "none",
+      ut_coverage_threshold: 90,
     });
   });
 
   it("migrates legacy confirmation booleans and removes them", async () => {
     await migrateBehaviorConfig(configPath);
     const content = await readFile(configPath, "utf8");
-    expect(content).toContain("version: 5");
+    expect(content).toContain("version: 6");
     expect(content).toContain("approval_mode: approve");
     expect(content).toContain("workflow_mode: adaptive");
-    expect(content).toContain("tdd_enabled: false");
-    expect(content).toContain("tdd_coverage_threshold: 90");
+    expect(content).toContain("unit_test_mode: none");
+    expect(content).toContain("ut_coverage_threshold: 90");
     expect(content).not.toContain("strict_confirm");
     expect(content).not.toContain("auto_mode");
   });
@@ -91,26 +91,39 @@ describe("config-yaml", () => {
     await writeFile(configPath, beta1, "utf8");
 
     expect(resolveLegacyBehavior(await readConfigYaml(configPath))).toMatchObject({
-      tddEnabled: true,
-      tddCoverageThreshold: 95,
+      unitTestMode: "tdd",
+      utCoverageThreshold: 95,
     });
   });
 
   it("writes explicit behavior modes without restoring legacy keys", async () => {
-    await setBehaviorModes(configPath, "confirm", "fast", true, 95);
+    await setBehaviorModes(configPath, "confirm", "fast", "tdd", 95);
     const content = await readFile(configPath, "utf8");
     expect(content).toContain("approval_mode: confirm");
     expect(content).toContain("workflow_mode: fast");
-    expect(content).toContain("tdd_enabled: true");
-    expect(content).toContain("tdd_coverage_threshold: 95");
+    expect(content).toContain("unit_test_mode: tdd");
+    expect(content).toContain("ut_coverage_threshold: 95");
     expect(content).not.toContain("strict_confirm");
     expect(content).not.toContain("auto_mode");
   });
 
   it.each([0, 101, 90.5])("rejects invalid TDD coverage threshold %s", async (threshold) => {
-    await expect(setBehaviorModes(configPath, "guard", "adaptive", true, threshold)).rejects.toThrow(
+    await expect(setBehaviorModes(configPath, "guard", "adaptive", "tdd", threshold)).rejects.toThrow(
       "integer from 1 to 100",
     );
+  });
+
+  it.each(["none", "ut", "tdd"] as const)("preserves %s and its threshold across idempotent migration", async (mode) => {
+    await setBehaviorModes(configPath, "guard", "adaptive", mode, 93);
+    await migrateBehaviorConfig(configPath);
+    const before = await readFile(configPath, "utf8");
+    await migrateBehaviorConfig(configPath);
+    expect(await readFile(configPath, "utf8")).toBe(before);
+    expect((await readConfigYaml(configPath)).behavior).toMatchObject({
+      unit_test_mode: mode, ut_coverage_threshold: 93,
+    });
+    expect(before).not.toContain("tdd_enabled");
+    expect(before).not.toContain("tdd_coverage_threshold");
   });
 
   it("keeps an existing workflow mode when the deprecated approval setter is used", async () => {

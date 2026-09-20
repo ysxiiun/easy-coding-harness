@@ -13,8 +13,8 @@ then a blank line. Do not render the machine breadcrumbs to the user.
 
 `{approval-mode}` is the effective approval mode and `{workflow-mode}` is the configured or
 task-frozen execution mode; session overrides take precedence over project settings.
-When effective/frozen TDD is enabled, insert `· **TDD**` immediately after Workflow. When it is
-disabled, omit the TDD segment entirely and preserve the existing status-line format.
+When effective/frozen unit_test_mode is `ut` or `tdd`, insert `· **UT**` or `· **TDD**`
+immediately after Workflow. For `none`, omit this segment and preserve the status-line format.
 
 - Ready: > **Easy Coding** · **Approval: {approval-mode}** · **Workflow: {workflow-mode}** · Ready · Use `ec-workflow` to start or resume a task, `ec-brainstorming` to brainstorm, `ec-task-management` to manage tasks, or `ec-config` to inspect or change modes
 - Waiting init: > **Easy Coding** · **Approval: {approval-mode}** · **Workflow: {workflow-mode}** · Waiting init · Use `ec-init` to initialize
@@ -34,7 +34,7 @@ Trigger Easy Coding skills with your platform prefix — Codex: `$ec-*`, Qoder: 
 - `ec-brainstorming` — design exploration before building (hard design gate)
 - `ec-analysis` `ec-implementing` `ec-quality` — workflow stages
 - `ec-memory` — short/long memory archive
-- `ec-task-management` — task lifecycle panel · `ec-config` — Approval/Workflow/TDD settings · `ec-tdd-init` — Java changed-line gate initialization · `ec-task-close` — interrupt a task
+- `ec-task-management` — task lifecycle panel · `ec-config` — Approval/Workflow/unit-test settings · `ec-tdd-init` — Java changed-line gate initialization · `ec-task-close` — interrupt a task
 - `ec-no-harness` — bypass only Easy Coding for the current session
 - `ec-lite` — user-controlled direct mode with one proposal confirmation and no task/QUALITY/MEMORY
 - `ec-git` — git discipline · `ec-meta` — understand/customize the harness
@@ -51,17 +51,18 @@ First run `ec-init`; daily work goes through `ec-workflow`.
   checkpoint is the only exceptional pause across all modes: show the exact diff, bind acceptance
   to its digest, and continue without rereview when the user accepts.
   Every mutation task runs QUALITY; no mode changes scope, delivery form, or evidence gates.
-- TDD is session override > project `behavior.tdd_enabled` > `false`; its changed-line threshold
-  is session override > project `behavior.tdd_coverage_threshold` > `90`. ANALYSIS -> IMPLEMENT
-  freezes both. TDD may be enabled only after `ec-tdd-init` records valid infrastructure readiness;
-  build version/content changes require fresh task evidence, not reinitialization. Repair missing
-  local entries without resetting TDD; CLI upgrades preserve project/session/frozen task settings;
-  there is no enable-now/init-later state. The dedicated `tdd-init` task always freezes TDD off and
-  initializes only changed-line coverage infrastructure, never historical business-test coverage.
-  Disabled TDD adds no CI scan, JaCoCo work, commands, artifacts, or stronger gates. Enabled TDD
-  applies only to Java code tasks and requires lifecycle, review, passed local unit tests, and
-  local coverage for production lines changed since the task baseline. `ec-tdd-init` still
-  generates GitLab TEST-stage automation, but remote CI status is not Harness acceptance evidence.
+- Unit test strategy is session override > project `behavior.unit_test_mode` > `none`.
+  Values are `none`, `ut`, and `tdd`; both enabled strategies share `ut_coverage_threshold`
+  (session > project > 90, integer 1..100). ANALYSIS -> IMPLEMENT freezes strategy, threshold,
+  and repository baselines. `none` adds no coverage work and retains ordinary task verification.
+  UT requires passed local unit tests and changed-production-line coverage, without test-first
+  ordering, RED/GREEN artifacts, or a separate TDD review. TDD additionally requires its lifecycle
+  and review dimension. Assertions remain part of ordinary review in UT.
+  Both currently support Java and reuse `ec-tdd-init` readiness, JaCoCo, and existing evidence
+  reuse. One test execution supplies tests plus coverage. No new stages or workflow escalation.
+  The dedicated `tdd-init` task freezes strategy `none`; readiness failure reports repair rather
+  than resetting configuration. CLI upgrades migrate old fields and preserve frozen task progress.
+  GitLab automation is infrastructure, not remote acceptance evidence.
 - Confirmation-required edges use `pending_transition`; automatic edges use the restricted
   `auto-transition` API. Pure read-only conversation stays Ready and creates no task. Any
   repository write, including documentation or configuration, uses the full state machine.

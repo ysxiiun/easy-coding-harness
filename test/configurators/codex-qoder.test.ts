@@ -129,7 +129,7 @@ describe("configureCodex", () => {
       path.join(tempDir, ".agents", "skills", "ec-config", "SKILL.md"),
       "utf8",
     );
-    expect(configSkill).toContain("set-tdd");
+    expect(configSkill).toContain("set-unit-test-mode");
     expect(configSkill).not.toContain("{{");
     const tddInitSkill = await readFile(
       path.join(tempDir, ".agents", "skills", "ec-tdd-init", "SKILL.md"),
@@ -557,7 +557,7 @@ describe("configureQoder", () => {
       path.join(tempDir, ".qoder", "skills", "ec-config", "SKILL.md"),
       "utf8",
     );
-    expect(configSkill).toContain("set-tdd");
+    expect(configSkill).toContain("set-unit-test-mode");
     expect(configSkill).not.toContain("{{");
     const tddInitSkill = await readFile(
       path.join(tempDir, ".qoder", "skills", "ec-tdd-init", "SKILL.md"),

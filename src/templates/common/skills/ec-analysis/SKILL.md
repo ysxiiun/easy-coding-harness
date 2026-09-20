@@ -153,47 +153,36 @@ for truly independent write scopes. Better unit contracts reduce later QUALITY r
 Standard/Strict tasks require `test-strategy.md`; compact Fast tasks keep checks in the plan. Pure read-only
 conversation never enters ANALYSIS and creates no task.
 
-## Optional Java TDD analysis
+## Optional Java unit test strategies
 
-Read `effective_tdd_enabled` and `effective_tdd_coverage_threshold` from the state snapshot.
-For a `type=tdd-init` task, treat frozen TDD as off even if the project/session requests it. That
-task is the sole exception allowed to inspect and plan build/CI coverage infrastructure while TDD
-is off. Its scope is infrastructure only: never plan historical business-test backfill or a
-repository-wide coverage target, and explicitly record `coverage scope: changed production lines`.
+Read `effective_unit_test_mode` and `effective_ut_coverage_threshold` from the snapshot. The
+strategy is independent of workflow depth. For `type=tdd-init`, freeze strategy `none` and only
+initialize the existing changed-line infrastructure; do not backfill historical business tests.
 
-When TDD is disabled, stop here: do not inspect GitLab CI or JaCoCo, do not add TDD fields or
-extra tests, and do not strengthen the selected Workflow Mode's ordinary acceptance depth. This
-zero-cost rule applies to ordinary tasks, not the explicit `tdd-init` infrastructure task above.
+With `none`, retain ordinary task-required verification and add no coverage scan, command, or
+artifact. With `ut` or `tdd`, reuse the existing Java/JUnit/JaCoCo readiness. Missing infrastructure
+uses `ec-tdd-init`; damaged local entries need only the reported repair. Build-file changes alone
+do not require reinitialization. GitLab execution is not an acceptance dependency.
 
-When TDD is enabled for a Java code task, make `test-strategy.md` record:
+For UT, keep the normal compact Fast analysis when applicable. Record the related unit-test
+command with coverage collection and the changed-line gate command in the plan for compact Fast,
+or in the existing `test-strategy.md` for other tasks, using the
+confirmed `ut_coverage_threshold`. The state API freezes each repository's current Git HEAD in
+`task.tdd_baselines`; use that exact baseline at verification time. Do not duplicate these values
+across extra documents or add a UT Mode section. No RED/GREEN/REFACTOR evidence or TDD review is
+required. Existing tests may already satisfy the threshold; add tests only for relevant gaps.
 
-- detected Java/JUnit build system, exact unit-test command, production/test source roots, and
-  JaCoCo XML paths;
-- immutable Git baseline SHA and the configured changed-production-line threshold; meet that threshold without adding assertions or tests solely to reach 100%;
-- feature/bug RED -> GREEN -> REFACTOR evidence, or for pure refactors a pre-change
-  characterization GREEN -> post-change GREEN sequence without inventing a RED failure;
-- the local unit-test command and local changed-line acceptance command. Record that
-  `ec-tdd-init` generated the GitLab TEST-stage job, but remote execution, pipeline identity, and
-  status are non-blocking and never require an intermediate commit or push. Include these exact,
-  language-independent contract markers: `local_test_gate: required` and
-  `remote_ci_acceptance: non-blocking`.
-- current `tdd_readiness_status=ready`; a missing receipt requires `ec-tdd-init`, while
-  `needs_repair` requires fixing the reported entry without resetting TDD configuration.
-  Build-file content changes use current task tests and coverage; they do not require reinit.
+For TDD, also record the existing test-first contract in `test-strategy.md` and a `### TDD Mode`
+section in `dev-spec.md`: frozen threshold, immutable baseline per repository, local unit-test
+command, JaCoCo XML paths, and lifecycle evidence. Use RED -> GREEN -> REFACTOR for feature/bug
+units, or characterization GREEN -> post-change GREEN for pure refactors. Refactor only for a
+concrete improvement. Include `TDD`, `JaCoCo`, `baseline`, `local_test_gate: required`, and
+`remote_ci_acceptance: non-blocking` in the test strategy.
 
-The state API mechanically freezes current Git `HEAD` per repository into `task.tdd_baselines`
-when ANALYSIS advances to IMPLEMENT. Plan the local command with that exact SHA and the frozen
-threshold. The generated GitLab job remains parameterized for infrastructure parity, but the
-Harness acceptance plan never waits for remote CI. Never use a mutable `HEAD` fallback at
-verification time. Non-Canonical TDD is limited to one Git repository; multi-repository TDD must
-use Canonical repository bindings.
-
-Also append a `### TDD Mode` section to `dev-spec.md` with enabled state, frozen threshold,
-baseline, local unit-test gate, local coverage gate, generated GitLab job as non-blocking
-infrastructure, and lifecycle evidence. Do not add this section when TDD is disabled.
-
-If the task is not a Java project, explain that Java-only TDD cannot be activated and obtain a
-mode decision before advancing. The CLI never installs JaCoCo or edits CI automatically.
+Both strategies accept changed production lines at the configured threshold, without chasing
+100% or expanding to historical coverage. One grouped test execution supplies both test and
+coverage evidence. Non-Canonical coverage uses one Git repository; multi-repository coverage uses
+Canonical repository bindings. Preserve failed tests as failures even when coverage reaches target.
 
 ## Workflow mode calculation
 

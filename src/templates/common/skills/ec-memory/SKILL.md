@@ -42,10 +42,9 @@ policy, changed files, and any Canonical source tasks that required targeted ver
 the user's accepted exception without re-reviewing or re-analyzing the code. Canonical writeback
 already carries the same digest and authorization as shared `acceptance` evidence.
 
-When frozen TDD is enabled, add its threshold, lifecycle evidence, passed local unit-test result,
-and local changed-line result to the short memory's execution evidence. Remote CI status is not
-part of Harness acceptance or task memory. When TDD is off, omit TDD fields entirely so ordinary
-tasks incur no additional memory work.
+For frozen UT/TDD, record the strategy, shared threshold, passed local unit-test result, and
+changed-line coverage result with its frozen baseline. Only TDD includes lifecycle evidence.
+Remote CI is not acceptance evidence. With `none`, omit coverage-specific fields.
 
 Ask the state API for `memory-instruction`. Distill only when it returns `action:distill`;
 otherwise record `no-op`. Long memory receives reusable facts only, not file dumps, transient

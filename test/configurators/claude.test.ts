@@ -253,19 +253,19 @@ describe("configureClaude", () => {
       path.join(tempDir, ".claude", "skills", "ec-config", "SKILL.md"),
       "utf8",
     );
-    expect(configSkill).toContain("project_tdd_enabled");
-    expect(configSkill).toContain("set-tdd");
-    expect(configSkill).toContain("clear-tdd");
+    expect(configSkill).toContain("project_unit_test_mode");
+    expect(configSkill).toContain("set-unit-test-mode");
+    expect(configSkill).toContain("clear-unit-test-mode");
     expect(configSkill).not.toContain("{{");
     const tddInitSkill = await readFile(
       path.join(tempDir, ".claude", "skills", "ec-tdd-init", "SKILL.md"),
       "utf8",
     );
     expect(tddInitSkill).toContain("historical coverage required: no");
-    expect(tddInitSkill).toContain("TDD off -> initialize infrastructure");
+    expect(tddInitSkill).toContain("unit_test_mode=none -> initialize infrastructure");
     expect(tddInitSkill).toContain("not a Harness task acceptance dependency");
     expect(tddInitSkill).not.toContain("{{");
-    expect(qualitySkill).toContain('coverage result with `coverage_scope:"local"`');
+    expect(qualitySkill).toContain('(`coverage_scope:"local"`)');
     expect(qualitySkill).not.toContain('coverage_scope:"gitlab"');
     expect(qualitySkill).not.toContain("pipeline_url");
     expect(

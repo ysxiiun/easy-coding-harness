@@ -30,20 +30,20 @@ Pure conversation, explanation, analysis, and read-only review stay Ready and cr
   edge. The only additional pause is an exceptional code diff detected after the frozen
   QUALITY acceptance checkpoint; accepting that exact diff does not change the mode.
 - `workflow_mode = adaptive|fast|standard|strict` controls execution cost and assurance depth.
-- `tdd_enabled` independently activates Java TDD and changed-line coverage. It defaults off;
-  `tdd_coverage_threshold` defaults to 90 and accepts integers from 1 to 100.
+- `unit_test_mode` independently selects `none`, `ut`, or `tdd`. It defaults to `none`;
+  `ut_coverage_threshold` defaults to 90 and accepts integers from 1 to 100.
 
-Approval and TDD retain session-over-project precedence. Execution depth is always the
+Approval and unit test strategy retain session-over-project precedence. Execution depth is always the
 mechanically calculated minimum for the current change. Do not recommend, select a higher mode,
 or inherit an old task mode. Persist it once with `propose-workflow-mode --agent <agent-id>
 --session-file <P>`; the runtime calculates and freezes the value.
 
-TDD resolves with the same session-over-project precedence and freezes its enabled flag and
-threshold on ANALYSIS -> IMPLEMENT. It may be enabled only after `ec-tdd-init` readiness passes;
-there is no enabled-but-pending-initialization state. A dedicated `tdd-init` task always freezes
-TDD off so it can create or repair the required infrastructure without circular gating. When off,
-ordinary tasks add no CI scan, artifacts, commands, coverage work, or stronger acceptance. Use
-`ec-config` for all mode configuration.
+Unit test strategy uses the same session-over-project precedence and freezes its mode and
+`ut_coverage_threshold` on ANALYSIS -> IMPLEMENT. UT and TDD share passed local unit tests and
+changed-line coverage, and reuse `ec-tdd-init` readiness. Only TDD requires test-first lifecycle
+and its review dimension. UT keeps ordinary review and compact Fast planning. The `tdd-init`
+task itself freezes strategy `none`; `none` adds no infrastructure scan or coverage gate.
+Both strategies reuse input-bound results and do not raise workflow depth.
 
 `confirm` and `auto` do not hide the proposal: show it in the plan. Confirm waits for that one
 plan decision; Auto continues immediately. Both remove later waiting, not quality gates.

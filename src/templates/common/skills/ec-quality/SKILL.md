@@ -69,10 +69,15 @@ meaningless remaining check when a concrete blocker is found. Aggregate the repa
 - For each actually modified repository, run all applicable lint, typecheck, test, and build
   checks. A repository merely mentioned by a Spec, dependency, supermodule, or path map is not in
   scope.
-- When frozen TDD is enabled, include the required TDD review dimension, local unit test, and
-  changed-production-line coverage at the confirmed threshold. Record one coverage result with `coverage_scope:"local"`;
-  GitLab coverage is informative, not a task acceptance gate. Reuse current-fingerprint GREEN
-  evidence from IMPLEMENT instead of rerunning an identical command.
+
+### Unit test strategy (all depths)
+
+For frozen `unit_test_mode=ut|tdd` at any workflow depth, require passed local unit tests and
+changed-production-line coverage at `ut_coverage_threshold`. Run the related tests with coverage
+collection once and record both results from that execution (`coverage_scope:"local"`). Reuse
+unchanged input-bound evidence from IMPLEMENT or earlier attempts. Only `tdd` adds the TDD review
+dimension and lifecycle contract. UT reviews assertions within ordinary review and does not add a
+separate review. `none` adds no coverage gate. GitLab results are informative, not acceptance gates.
 
 ## Review Gate
 

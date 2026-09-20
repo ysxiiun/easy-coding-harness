@@ -108,7 +108,7 @@ async function writeSessionFixture(
   currentTask: string | null,
   extra: Record<string, unknown> = {},
 ): Promise<void> {
-  if (extra.tdd_enabled === true) await writeTddReadinessFixture();
+  if (extra.unit_test_mode === "tdd" || extra.unit_test_mode === "ut") await writeTddReadinessFixture();
   await mkdir(path.join(tempDir, ".easy-coding", "sessions"), { recursive: true });
   await writeFile(
     path.join(tempDir, ".easy-coding", "sessions", "test.json"),
@@ -248,8 +248,8 @@ async function writeVerificationAcceptanceFixture(
   await writeSessionFixture(taskId);
   await writeTaskFixture(taskId, "QUALITY", "codex", {
     workflow_mode: "fast",
-    tdd_enabled: false,
-    tdd_coverage_threshold: 90,
+    unit_test_mode: "none",
+    ut_coverage_threshold: 90,
   });
   const sourcePath = path.join(tempDir, "src", "example.ts");
   await mkdir(path.dirname(sourcePath), { recursive: true });
@@ -348,8 +348,8 @@ async function writeQualityDecisionFixture(taskId: string): Promise<{
   await writeSessionFixture(taskId);
   await writeTaskFixture(taskId, "QUALITY", "codex", {
     workflow_mode: "fast",
-    tdd_enabled: false,
-    tdd_coverage_threshold: 90,
+    unit_test_mode: "none",
+    ut_coverage_threshold: 90,
   });
   const sourcePath = path.join(tempDir, "src", "quality.ts");
   await mkdir(path.dirname(sourcePath), { recursive: true });
@@ -2284,7 +2284,7 @@ describe("easy_coding_state.py ANALYSIS template gate", () => {
 
   it("freezes effective TDD settings atomically on ANALYSIS to IMPLEMENT", async () => {
     const taskId = "08-06-freeze-tdd";
-    await writeSessionFixture(taskId, { tdd_enabled: true, tdd_coverage_threshold: 95 });
+    await writeSessionFixture(taskId, { unit_test_mode: "tdd", ut_coverage_threshold: 95 });
     await writeTaskFixture(taskId, "ANALYSIS", "codex");
     await writeAnalysisArtifacts(taskId);
     const taskDir = path.join(tempDir, ".easy-coding", "tasks", taskId);
@@ -2302,12 +2302,12 @@ describe("easy_coding_state.py ANALYSIS template gate", () => {
     await writeFile(
       path.join(tempDir, ".easy-coding", "config.yaml"),
       [
-        "version: 5",
+        "version: 6",
         "behavior:",
         "  approval_mode: guard",
         "  workflow_mode: adaptive",
-        "  tdd_enabled: false",
-        "  tdd_coverage_threshold: 90",
+        "  unit_test_mode: none",
+        "  ut_coverage_threshold: 90",
         "",
       ].join("\n"),
       "utf8",
@@ -2399,8 +2399,8 @@ describe("easy_coding_state.py ANALYSIS template gate", () => {
     const task = JSON.parse(await readFile(path.join(taskDir, "task.json"), "utf8"));
     expect(task).toMatchObject({
       status: "IMPLEMENT",
-      tdd_enabled: true,
-      tdd_coverage_threshold: 95,
+      unit_test_mode: "tdd",
+      ut_coverage_threshold: 95,
       tdd_confirmed_by: "codex",
       tdd_baselines: { project: baseline },
     });
@@ -3047,7 +3047,7 @@ describe("easy_coding_state.py ANALYSIS template gate", () => {
 
   it("does not grant a legacy read-only task a TDD or execution-plan exemption", async () => {
     const taskId = "08-07-read-only-tdd-off";
-    await writeSessionFixture(taskId, { tdd_enabled: true, tdd_coverage_threshold: 95 });
+    await writeSessionFixture(taskId, { unit_test_mode: "tdd", ut_coverage_threshold: 95 });
     await writeTaskFixture(taskId, "ANALYSIS", "codex", { type: "report" });
     await writeAnalysisArtifacts(taskId);
     const taskDir = path.join(tempDir, ".easy-coding", "tasks", taskId);
@@ -3874,7 +3874,7 @@ describe("easy_coding_state.py automatic and optional transitions", () => {
     },
   );
 
-  it("shows TDD only when enabled and honors a frozen task over later session changes", async () => {
+  it.each(["ut", "tdd"] as const)("shows %s and honors its frozen settings over later session changes", async (mode) => {
     await writeConfirmModeConfig("guard");
     await writeSessionFixture(null);
     await writeTddReadinessFixture();
@@ -3884,11 +3884,11 @@ describe("easy_coding_state.py automatic and optional transitions", () => {
         "python3",
         [
           stateApiPath(),
-          "set-tdd",
+          "set-unit-test-mode",
           "--session-file",
           ".easy-coding/sessions/test.json",
-          "--enabled",
-          "true",
+          "--mode",
+          mode,
           "--threshold",
           "95",
           "--agent",
@@ -3898,15 +3898,15 @@ describe("easy_coding_state.py automatic and optional transitions", () => {
       ),
     ) as Record<string, unknown>;
 
-    expect(enabled.effective_tdd_enabled).toBe(true);
-    expect(enabled.effective_tdd_coverage_threshold).toBe(95);
-    expect(enabled.status_line).toContain("**Workflow: Adaptive** · **TDD** · Ready");
+    expect(enabled.effective_unit_test_mode).toBe(mode);
+    expect(enabled.effective_ut_coverage_threshold).toBe(95);
+    expect(enabled.status_line).toContain(`**Workflow: Adaptive** · **${mode.toUpperCase()}** · Ready`);
 
     await writeTaskFixture("tdd-frozen", "IMPLEMENT", "codex", {
-      tdd_enabled: true,
-      tdd_coverage_threshold: 95,
+      unit_test_mode: mode,
+      ut_coverage_threshold: 95,
     });
-    await writeSessionFixture("tdd-frozen", { tdd_enabled: false, tdd_coverage_threshold: 80 });
+    await writeSessionFixture("tdd-frozen", { unit_test_mode: "none", ut_coverage_threshold: 80 });
     const frozen = JSON.parse(
       execFileSync(
         "python3",
@@ -3922,9 +3922,9 @@ describe("easy_coding_state.py automatic and optional transitions", () => {
       ),
     ) as Record<string, unknown>;
 
-    expect(frozen.effective_tdd_enabled).toBe(false);
-    expect(frozen.displayed_tdd_enabled).toBe(true);
-    expect(frozen.displayed_tdd_coverage_threshold).toBe(95);
+    expect(frozen.effective_unit_test_mode).toBe("none");
+    expect(frozen.displayed_unit_test_mode).toBe(mode);
+    expect(frozen.displayed_ut_coverage_threshold).toBe(95);
 
     await rm(path.join(tempDir, ".gitlab-ci.yml"));
     const disabled = JSON.parse(
@@ -3941,12 +3941,12 @@ describe("easy_coding_state.py automatic and optional transitions", () => {
         { cwd: tempDir, encoding: "utf8" },
       ),
     ) as Record<string, unknown>;
-    expect(disabled.status_line).not.toContain("**TDD**");
-    expect(disabled.tdd_readiness_status).toBe("not_checked");
-    expect(disabled.tdd_readiness_reasons).toEqual([]);
+    expect(disabled.status_line).not.toContain(`**${mode.toUpperCase()}**`);
+    expect(disabled.unit_test_readiness_status).toBe("not_checked");
+    expect(disabled.unit_test_readiness_reasons).toEqual([]);
   });
 
-  it("rejects a session TDD enable before ec-tdd-init readiness exists", async () => {
+  it.each(["ut", "tdd"] as const)("rejects session %s before ec-tdd-init readiness exists", async (mode) => {
     await writeConfirmModeConfig("guard");
     await writeSessionFixture(null);
 
@@ -3954,11 +3954,11 @@ describe("easy_coding_state.py automatic and optional transitions", () => {
       "python3",
       [
         stateApiPath(),
-        "set-tdd",
+        "set-unit-test-mode",
         "--session-file",
         ".easy-coding/sessions/test.json",
-        "--enabled",
-        "true",
+        "--mode",
+        mode,
         "--agent",
         "codex",
       ],
@@ -3970,7 +3970,7 @@ describe("easy_coding_state.py automatic and optional transitions", () => {
     const session = JSON.parse(
       await readFile(path.join(tempDir, ".easy-coding", "sessions", "test.json"), "utf8"),
     ) as Record<string, unknown>;
-    expect(session).not.toHaveProperty("tdd_enabled");
+    expect(session).not.toHaveProperty("unit_test_mode");
   });
 
   it("forces a tdd-init task to TDD off even when a stale session requests TDD", async () => {
@@ -3979,7 +3979,7 @@ describe("easy_coding_state.py automatic and optional transitions", () => {
     await writeSessionFixture(taskId);
     const sessionPath = path.join(tempDir, ".easy-coding", "sessions", "test.json");
     const session = JSON.parse(await readFile(sessionPath, "utf8")) as Record<string, unknown>;
-    session.tdd_enabled = true;
+    session.unit_test_mode = "tdd";
     await writeFile(sessionPath, JSON.stringify(session, null, 2), "utf8");
     await writeTaskFixture(taskId, "ANALYSIS", "codex", { type: "tdd-init" });
     await writeAnalysisArtifacts(taskId);
@@ -4028,8 +4028,8 @@ describe("easy_coding_state.py automatic and optional transitions", () => {
     ) as Record<string, unknown>;
 
     expect(output.status).toBe("IMPLEMENT");
-    expect(output.task_tdd_enabled).toBe(false);
-    expect(output.displayed_tdd_enabled).toBe(false);
+    expect(output.task_unit_test_mode).toBe("none");
+    expect(output.displayed_unit_test_mode).toBe("none");
   });
 
   it("blocks tdd-init verification completion until readiness is ready", async () => {
@@ -4040,8 +4040,8 @@ describe("easy_coding_state.py automatic and optional transitions", () => {
       type: "tdd-init",
       workflow_mode: "fast",
       workflow_mode_legacy: true,
-      tdd_enabled: false,
-      tdd_coverage_threshold: 90,
+      unit_test_mode: "none",
+      ut_coverage_threshold: 90,
     });
     await writeAnalysisArtifacts(taskId);
     await writeTddReadinessFixture();
@@ -4139,8 +4139,8 @@ describe("easy_coding_state.py automatic and optional transitions", () => {
         "behavior:",
         "  approval_mode: guard",
         "  workflow_mode: adaptive",
-        "  tdd_enabled: true",
-        "  tdd_coverage_threshold: 99",
+        "  unit_test_mode: tdd",
+        "  ut_coverage_threshold: 99",
         "",
       ].join("\n"),
       "utf8",
@@ -4162,8 +4162,8 @@ describe("easy_coding_state.py automatic and optional transitions", () => {
       ),
     ) as Record<string, unknown>;
 
-    expect(snapshot.project_tdd_enabled).toBe(false);
-    expect(snapshot.project_tdd_coverage_threshold).toBe(90);
+    expect(snapshot.project_unit_test_mode).toBe("none");
+    expect(snapshot.project_ut_coverage_threshold).toBe(90);
   });
 
   it("maps the legacy set-confirm-mode lite alias to guard plus fast", async () => {
@@ -6911,8 +6911,8 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
     await writeSessionFixture(taskId);
     await writeTaskFixture(taskId, "QUALITY", "codex", {
       workflow_mode: "fast",
-      tdd_enabled: false,
-      tdd_coverage_threshold: 90,
+      unit_test_mode: "none",
+      ut_coverage_threshold: 90,
     });
     await mkdir(path.join(tempDir, "src"), { recursive: true });
     await writeFile(path.join(tempDir, "src", "example.ts"), "export const value = 1;\n", "utf8");
@@ -6978,7 +6978,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
     };
     await appendFile(
       path.join(tempDir, ".easy-coding", "config.yaml"),
-      "  tdd_enabled: true\n  tdd_coverage_threshold: 99\n",
+      "  unit_test_mode: tdd\n  ut_coverage_threshold: 99\n",
       "utf8",
     );
     const afterProjectTddChange = JSON.parse(
@@ -7135,7 +7135,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
       { cwd: tempDir, encoding: "utf8" },
     );
     expect(disabledCoverage.status).toBe(1);
-    expect(disabledCoverage.stderr).toContain("not allowed when the frozen TDD mode is off");
+    expect(disabledCoverage.stderr).toContain("not allowed when the frozen unit test mode is none");
     await appendFile(
       executionPath,
       `${JSON.stringify({
@@ -8392,7 +8392,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
           `sys.path.insert(0, ${JSON.stringify(moduleDir)})`,
           "import easy_coding_state as state",
           "root = Path(sys.argv[1])",
-          "task = {'spec_source': {}, 'tdd_enabled': False, 'workflow_mode': 'fast'}",
+          "task = {'spec_source': {}, 'unit_test_mode': 'none', 'workflow_mode': 'fast'}",
           "current = 'c' * 64",
           "config = 'd' * 64",
           "acceptance = {'verification_policy': 'targeted', 'required_targeted_source_tasks': ['R1-T1', 'R2-T1']}",
@@ -8825,15 +8825,15 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
     );
   });
 
-  it("requires a passed local unit-test record for a frozen TDD task", async () => {
+  it.each(["ut", "tdd"])("requires a passed local unit-test record for a frozen %s task", async (mode) => {
     const taskId = "08-07-tdd-local-test";
     await writeConfirmModeConfig("guard");
     await writeSessionFixture(taskId);
     await writeTddReadinessFixture();
     await writeTaskFixture(taskId, "QUALITY", "codex", {
       workflow_mode: "fast",
-      tdd_enabled: true,
-      tdd_coverage_threshold: 95,
+      unit_test_mode: mode,
+      ut_coverage_threshold: 95,
       tdd_baselines: { project: "0".repeat(40) },
     });
     await mkdir(path.join(tempDir, "src"), { recursive: true });
@@ -8880,7 +8880,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
       config_fingerprint: string;
       quality_attempt: { attempt: number };
     };
-    for (const dimension of ["combined", "tdd"]) {
+    for (const dimension of mode === "tdd" ? ["combined", "tdd"] : ["combined"]) {
       await appendFile(
         executionPath,
         `${JSON.stringify({
@@ -8941,15 +8941,15 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
     expect(missingLocalTest.stderr).toContain("requires passed local unit-test evidence");
   });
 
-  it("requires TDD review, local unit tests, and local changed-line coverage only for a frozen TDD task", async () => {
+  it.each(["ut", "tdd"])("requires TDD review, local unit tests, and local changed-line coverage only for a frozen %s task", async (mode) => {
     const taskId = "08-06-tdd-verification";
     await writeConfirmModeConfig("guard");
     await writeSessionFixture(taskId);
     await writeTddReadinessFixture();
     await writeTaskFixture(taskId, "QUALITY", "codex", {
       workflow_mode: "fast",
-      tdd_enabled: true,
-      tdd_coverage_threshold: 95,
+      unit_test_mode: mode,
+      ut_coverage_threshold: 95,
       tdd_baselines: { project: "0".repeat(40) },
     });
     await mkdir(path.join(tempDir, "src"), { recursive: true });
@@ -8969,7 +8969,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
         units: [
           {
             id: "U1",
-            title: "TDD verification",
+            title: "Unit test verification",
             type: "backend",
             files: ["src/Example.java"],
             depends_on: [],
@@ -8996,7 +8996,7 @@ describe("easy_coding_state.py workflow mode and evidence gates", () => {
       config_fingerprint: string;
       quality_attempt: { attempt: number };
     };
-    for (const dimension of ["combined", "tdd"]) {
+    for (const dimension of mode === "tdd" ? ["combined", "tdd"] : ["combined"]) {
       await appendFile(
         executionPath,
         `${JSON.stringify({

@@ -87,7 +87,7 @@ beforeEach(async () => {
   await writeFile(
     configPath,
     [
-      "version: 5",
+      "version: 6",
       `harness_version: ${VERSION}`,
       "agents:",
       "  - codex",
@@ -97,8 +97,8 @@ beforeEach(async () => {
       "behavior:",
       "  approval_mode: guard",
       "  workflow_mode: adaptive",
-      "  tdd_enabled: false",
-      "  tdd_coverage_threshold: 90",
+      "  unit_test_mode: none",
+      "  ut_coverage_threshold: 90",
       "",
     ].join("\n"),
     "utf8",
@@ -112,11 +112,11 @@ afterEach(async () => {
 });
 
 describe("config command", () => {
-  it("interactively updates project modes and the Java TDD threshold", async () => {
+  it.each(["ut", "tdd"])("interactively selects %s and the shared threshold", async (mode) => {
     await writeReadyTddInfrastructure();
     promptMocks.select
       .mockResolvedValueOnce("confirm")
-      .mockResolvedValueOnce(true);
+      .mockResolvedValueOnce(mode);
     promptMocks.text.mockResolvedValueOnce("95");
     promptMocks.confirm.mockResolvedValue(true);
 
@@ -125,24 +125,24 @@ describe("config command", () => {
     const content = await readFile(configPath, "utf8");
     expect(content).toContain("approval_mode: confirm");
     expect(content).toContain("workflow_mode: adaptive");
-    expect(content).toContain("tdd_enabled: true");
-    expect(content).toContain("tdd_coverage_threshold: 95");
+    expect(content).toContain(`unit_test_mode: ${mode}`);
+    expect(content).toContain("ut_coverage_threshold: 95");
     expect(promptMocks.outro).toHaveBeenCalledWith(
-      expect.stringContaining("Project modes updated: approval=confirm, workflow=adaptive, TDD=95%"),
+      expect.stringContaining(`Project modes updated: approval=confirm, workflow=adaptive, unit-test=${mode} (95%)`),
     );
   });
 
   it("rejects enabling TDD before initialization without partially changing project modes", async () => {
     promptMocks.select
       .mockResolvedValueOnce("confirm")
-      .mockResolvedValueOnce(true);
+      .mockResolvedValueOnce("tdd");
 
     await config();
 
     const content = await readFile(configPath, "utf8");
     expect(content).toContain("approval_mode: guard");
     expect(content).toContain("workflow_mode: adaptive");
-    expect(content).toContain("tdd_enabled: false");
+    expect(content).toContain("unit_test_mode: none");
     expect(promptMocks.text).not.toHaveBeenCalled();
     expect(promptMocks.confirm).not.toHaveBeenCalled();
     expect(promptMocks.cancel).toHaveBeenCalledWith(expect.stringContaining("Run ec-tdd-init first"));
@@ -152,7 +152,7 @@ describe("config command", () => {
     await writeReadyTddInfrastructure();
     promptMocks.select
       .mockResolvedValueOnce("confirm")
-      .mockResolvedValueOnce(true);
+      .mockResolvedValueOnce("tdd");
     promptMocks.text.mockResolvedValueOnce("95");
     promptMocks.confirm.mockImplementationOnce(async () => {
       await rm(path.join(tempDir, "pom.xml"));
@@ -164,7 +164,7 @@ describe("config command", () => {
     const content = await readFile(configPath, "utf8");
     expect(content).toContain("approval_mode: guard");
     expect(content).toContain("workflow_mode: adaptive");
-    expect(content).toContain("tdd_enabled: false");
+    expect(content).toContain("unit_test_mode: none");
     expect(promptMocks.cancel).toHaveBeenCalledWith(
       expect.stringContaining("readiness changed before save"),
     );
@@ -173,7 +173,7 @@ describe("config command", () => {
   it("leaves the config unchanged when confirmation is declined", async () => {
     promptMocks.select
       .mockResolvedValueOnce("approve")
-      .mockResolvedValueOnce(false);
+      .mockResolvedValueOnce("none");
     promptMocks.confirm.mockResolvedValue(false);
 
     await config();

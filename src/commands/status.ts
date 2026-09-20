@@ -36,7 +36,6 @@ export async function status(): Promise<void> {
   const activeTasks = tasks.filter((item) => isActiveTask(item.task));
   const sessions = await listSessionFiles(cwd);
   const versionRelation = compareVersions(config.harness_version, VERSION);
-  const tddReadiness = await inspectTddReadiness(cwd);
 
   console.log(chalk.bold("Harness"));
   console.log(`  version: ${config.harness_version}`);
@@ -57,27 +56,34 @@ export async function status(): Promise<void> {
   const projectWorkflowMode = isConfiguredWorkflowMode(config.behavior?.workflow_mode)
     ? config.behavior.workflow_mode
     : migratedBehavior.workflowMode;
-  const projectTddEnabled = migratedBehavior.tddEnabled;
-  const projectTddCoverageThreshold = migratedBehavior.tddCoverageThreshold;
+  const projectUnitTestMode = migratedBehavior.unitTestMode;
+  const projectUtCoverageThreshold = migratedBehavior.utCoverageThreshold;
+  const needsCoverage =
+    projectUnitTestMode !== "none" ||
+    sessions.some(({ session }) => ["ut", "tdd"].includes(session.unit_test_mode ?? "none")) ||
+    activeTasks.some(({ task }) => ["ut", "tdd"].includes(task.unit_test_mode ?? "none"));
+  const readiness = needsCoverage
+    ? await inspectTddReadiness(cwd)
+    : { status: "not_checked", reasons: [] };
   console.log(`  approval_mode: ${projectApprovalMode}`);
   console.log(`  workflow_mode: ${projectWorkflowMode}`);
-  console.log(`  tdd_enabled: ${projectTddEnabled}`);
-  console.log(`  tdd_coverage_threshold: ${projectTddCoverageThreshold}`);
-  console.log(`  tdd_readiness: ${tddReadiness.status}`);
-  if (tddReadiness.status !== "ready") {
-    console.log(`  tdd_readiness_reasons: ${tddReadiness.reasons.join("; ")}`);
+  console.log(`  unit_test_mode: ${projectUnitTestMode}`);
+  console.log(`  ut_coverage_threshold: ${projectUtCoverageThreshold}`);
+  console.log(`  unit_test_readiness: ${readiness.status}`);
+  if (readiness.reasons.length > 0) {
+    console.log(`  unit_test_readiness_reasons: ${readiness.reasons.join("; ")}`);
   }
   console.log("");
   console.log(chalk.bold("Sessions"));
   console.log(`  project_approval_mode: ${projectApprovalMode}`);
   console.log(`  project_workflow_mode: ${projectWorkflowMode}`);
-  console.log(`  project_tdd_enabled: ${projectTddEnabled}`);
-  console.log(`  project_tdd_coverage_threshold: ${projectTddCoverageThreshold}`);
+  console.log(`  project_unit_test_mode: ${projectUnitTestMode}`);
+  console.log(`  project_ut_coverage_threshold: ${projectUtCoverageThreshold}`);
   console.log(`  effective_approval_mode: ${projectApprovalMode} (without a session override)`);
   console.log(`  configured_workflow_mode: ${projectWorkflowMode} (without a session override)`);
-  console.log(`  effective_tdd_enabled: ${projectTddEnabled} (without a session override)`);
+  console.log(`  effective_unit_test_mode: ${projectUnitTestMode} (without a session override)`);
   console.log(
-    `  effective_tdd_coverage_threshold: ${projectTddCoverageThreshold} (without a session override)`,
+    `  effective_ut_coverage_threshold: ${projectUtCoverageThreshold} (without a session override)`,
   );
   if (sessions.length === 0) {
     console.log("  no session files");
@@ -92,20 +98,20 @@ export async function status(): Promise<void> {
     const sessionWorkflowMode =
       session.workflow_mode ??
       (legacySessionMode === "lite" ? "fast" : hasLegacySessionMode ? "adaptive" : undefined);
-    const sessionTddEnabled = session.tdd_enabled;
-    const sessionTddCoverageThreshold = session.tdd_coverage_threshold;
+    const sessionUnitTestMode = session.unit_test_mode;
+    const sessionUtCoverageThreshold = session.ut_coverage_threshold;
     console.log(`  - ${key}`);
     console.log(`    agent: ${session.agent ?? "legacy/unknown"}`);
     console.log(`    source: ${session.session_source ?? "legacy"}`);
     console.log(`    approval_mode: ${sessionApprovalMode ?? "project default"}`);
     console.log(`    workflow_mode: ${sessionWorkflowMode ?? "project default"}`);
-    console.log(`    tdd_enabled: ${sessionTddEnabled ?? "project default"}`);
-    console.log(`    tdd_coverage_threshold: ${sessionTddCoverageThreshold ?? "project default"}`);
+    console.log(`    unit_test_mode: ${sessionUnitTestMode ?? "project default"}`);
+    console.log(`    ut_coverage_threshold: ${sessionUtCoverageThreshold ?? "project default"}`);
     console.log(`    effective_approval_mode: ${sessionApprovalMode ?? projectApprovalMode}`);
     console.log(`    configured_workflow_mode: ${sessionWorkflowMode ?? projectWorkflowMode}`);
-    console.log(`    effective_tdd_enabled: ${sessionTddEnabled ?? projectTddEnabled}`);
+    console.log(`    effective_unit_test_mode: ${sessionUnitTestMode ?? projectUnitTestMode}`);
     console.log(
-      `    effective_tdd_coverage_threshold: ${sessionTddCoverageThreshold ?? projectTddCoverageThreshold}`,
+      `    effective_ut_coverage_threshold: ${sessionUtCoverageThreshold ?? projectUtCoverageThreshold}`,
     );
     console.log(
       `    harness: ${session.harness_disabled ? "disabled for this session" : "enabled"}`,
@@ -126,10 +132,8 @@ export async function status(): Promise<void> {
       console.log(
         `    task_workflow_mode: ${task.workflow_mode ?? task.workflow_mode_proposal?.selected_mode ?? "not resolved"}`,
       );
-      console.log(`    task_tdd_enabled: ${task.tdd_enabled ?? "not frozen"}`);
-      console.log(
-        `    task_tdd_coverage_threshold: ${task.tdd_coverage_threshold ?? "not frozen"}`,
-      );
+      console.log(`    task_unit_test_mode: ${task.unit_test_mode ?? "not frozen"}`);
+      console.log(`    task_ut_coverage_threshold: ${task.ut_coverage_threshold ?? "not frozen"}`);
       console.log(`    last_agent: ${task.last_agent}`);
     } else {
       console.log(`    current_task: ${session.current_task} (task.json missing)`);

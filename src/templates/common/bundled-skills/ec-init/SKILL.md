@@ -85,7 +85,7 @@ initialization standard. Check each item:
   and non-empty?
 - **Project profile**: `project.yaml` exists with `mode` and `test` fields (ec-init owns it;
   `config.yaml` is CLI-owned — not ec-init's concern)?
-- **TDD runtime contract**: CLI-owned `config.yaml` has schema 5 TDD defaults and both
+- **TDD runtime contract**: CLI-owned `config.yaml` has schema 6 unit test defaults and both
   `.easy-coding/tools/easy_coding_java_coverage.py` and
   `.easy-coding/tools/easy_coding_tdd_readiness.py` exist? Missing fields or tools mean
   `easy-coding upgrade` is required; ec-init must not repair them directly. Project-specific
@@ -169,7 +169,7 @@ agent must be able to see what was generated and on what evidence.
    tests live, naming conventions, coverage expectations, which classes of code this project
    tests vs skips. Also fill `project.yaml` `test.framework` and `test.command` with commands
    you verified exist (read package.json scripts or equivalent — do not guess).
-   If effective TDD is disabled, do not inspect JaCoCo or GitLab and do not add TDD-specific
+   If effective unit test strategy is `none`, do not inspect JaCoCo or GitLab and do not add TDD-specific
    requirements. If it is enabled for Java, additionally document JUnit/JaCoCo commands,
    production/test source roots, XML report paths, the local acceptance gate, and the generated
    GitLab TEST-stage job as non-blocking automation infrastructure.

@@ -19,7 +19,14 @@ import {
   ensureProjectId,
   writeConfigYaml,
 } from "./config-yaml.js";
-import { ensureDir, pathExists, readTextFile, writeTextFile } from "./file-writer.js";
+import {
+  ensureDir,
+  pathExists,
+  readTextFile,
+  readTextIfExists,
+  writeTextFile,
+} from "./file-writer.js";
+import { isActiveTask, listTasks } from "./task-json.js";
 import { getTemplatePath } from "./template-paths.js";
 
 export async function writeRuntimeScaffold(
@@ -54,16 +61,37 @@ export async function writeRuntimeScaffold(
   await ensureDir(path.join(easyCodingDir, SPEC_DIR, DEV_SPEC_DIR));
   await writeMemoryScaffold(easyCodingDir);
   await writeTemplatesScaffold(easyCodingDir);
-  await writeToolsScaffold(easyCodingDir);
+  await writeToolsScaffold(cwd);
   return projectId;
 }
 
-async function writeToolsScaffold(easyCodingDir: string): Promise<void> {
-  const toolsDir = path.join(easyCodingDir, TOOLS_DIR);
-  await ensureDir(toolsDir);
+export async function runtimeToolUpdates(
+  cwd: string,
+): Promise<{ path: string; content: string }[]> {
+  const frozen = (await listTasks(cwd)).some(
+    ({ task }) =>
+      isActiveTask(task) &&
+      (task.unit_test_mode === "ut" ||
+        task.unit_test_mode === "tdd" ||
+        (task as unknown as Record<string, unknown>).tdd_enabled === true),
+  );
+  const updates: { path: string; content: string }[] = [];
   for (const file of ["easy_coding_java_coverage.py", "easy_coding_tdd_readiness.py"]) {
-    const src = getTemplatePath("runtime", "tools", file);
-    await writeTextFile(path.join(toolsDir, file), await readTextFile(src));
+    const target = path.join(cwd, EASY_CODING_DIR, TOOLS_DIR, file);
+    const current = await readTextIfExists(target);
+    // 活动任务的证据绑定工具内容；任务结束后的 upgrade 再更新，避免全局证据失效。
+    if (frozen && current !== null) continue;
+    const content = await readTextFile(getTemplatePath("runtime", "tools", file));
+    if (content !== current) updates.push({ path: target, content });
+  }
+  return updates;
+}
+
+async function writeToolsScaffold(cwd: string): Promise<void> {
+  const toolsDir = path.join(cwd, EASY_CODING_DIR, TOOLS_DIR);
+  await ensureDir(toolsDir);
+  for (const update of await runtimeToolUpdates(cwd)) {
+    await writeTextFile(update.path, update.content);
   }
 }
 

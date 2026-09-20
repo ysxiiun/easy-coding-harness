@@ -77,5 +77,5 @@ For an explicit repository mutation:
    another file changed after confirmation, or Git HEAD moved. Re-present the proposal rather
    than bypassing that result. Lite remains enabled for the next request.
 
-Lite intentionally omits TDD, QUALITY, MEMORY, task history, and completion transitions. Use a
+Lite intentionally omits UT/TDD coverage gates, QUALITY, MEMORY, task history, and completion transitions. Use a
 normal Fast task instead when the user wants those guarantees.

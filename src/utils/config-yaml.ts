@@ -3,10 +3,12 @@ import { readFile } from "node:fs/promises";
 import YAML, { isScalar, isSeq, parseDocument } from "yaml";
 import type { AgentPlatform } from "../types/platform.js";
 import type { SupermoduleConfig } from "../types/supermodule.js";
+import type { UnitTestMode } from "../types/task.js";
 import { writeTextFile } from "./file-writer.js";
 
-export const CONFIG_SCHEMA_VERSION = 5;
-export const DEFAULT_TDD_COVERAGE_THRESHOLD = 90;
+export const CONFIG_SCHEMA_VERSION = 6;
+export const DEFAULT_UT_COVERAGE_THRESHOLD = 90;
+export const UNIT_TEST_MODES = ["none", "ut", "tdd"] as const;
 export const APPROVAL_MODES = ["approve", "guard", "confirm", "auto"] as const;
 export const CONFIGURED_WORKFLOW_MODES = ["adaptive", "fast", "standard", "strict"] as const;
 export const CONCRETE_WORKFLOW_MODES = ["fast", "standard", "strict"] as const;
@@ -34,8 +36,8 @@ export interface EasyCodingConfig {
   behavior: {
     approval_mode: ApprovalMode;
     workflow_mode: ConfiguredWorkflowMode;
-    tdd_enabled: boolean;
-    tdd_coverage_threshold: number;
+    unit_test_mode: UnitTestMode;
+    ut_coverage_threshold: number;
   };
   supermodule?: SupermoduleConfig;
   [key: string]: unknown;
@@ -67,8 +69,8 @@ export function createDefaultConfig(params: {
     behavior: {
       approval_mode: "guard",
       workflow_mode: "adaptive",
-      tdd_enabled: false,
-      tdd_coverage_threshold: DEFAULT_TDD_COVERAGE_THRESHOLD,
+      unit_test_mode: "none",
+      ut_coverage_threshold: DEFAULT_UT_COVERAGE_THRESHOLD,
     },
   };
   if (params.supermodule) {
@@ -147,15 +149,37 @@ export function isConfiguredWorkflowMode(value: unknown): value is ConfiguredWor
   );
 }
 
-export function isTddCoverageThreshold(value: unknown): value is number {
+export function isUtCoverageThreshold(value: unknown): value is number {
   return Number.isInteger(value) && Number(value) >= 1 && Number(value) <= 100;
+}
+
+export function isUnitTestMode(value: unknown): value is UnitTestMode {
+  return typeof value === "string" && UNIT_TEST_MODES.includes(value as UnitTestMode);
+}
+
+/** 只在迁移边界转换旧字段，缺省的 session 值继续继承项目配置。 */
+export function migrateUnitTestSettings(record: Record<string, unknown>): boolean {
+  let changed = false;
+  if ("tdd_enabled" in record) {
+    if (!("unit_test_mode" in record) && typeof record.tdd_enabled === "boolean") {
+      record.unit_test_mode = record.tdd_enabled ? "tdd" : "none";
+    }
+    Reflect.deleteProperty(record, "tdd_enabled");
+    changed = true;
+  }
+  if ("tdd_coverage_threshold" in record) {
+    record.ut_coverage_threshold ??= record.tdd_coverage_threshold;
+    Reflect.deleteProperty(record, "tdd_coverage_threshold");
+    changed = true;
+  }
+  return changed;
 }
 
 export function resolveLegacyBehavior(config: EasyCodingConfig): {
   approvalMode: ApprovalMode;
   workflowMode: ConfiguredWorkflowMode;
-  tddEnabled: boolean;
-  tddCoverageThreshold: number;
+  unitTestMode: UnitTestMode;
+  utCoverageThreshold: number;
 } {
   const behavior = (config.behavior ?? {}) as unknown as Record<string, unknown>;
   const legacyLite = behavior.confirm_mode === "lite";
@@ -173,24 +197,32 @@ export function resolveLegacyBehavior(config: EasyCodingConfig): {
     : legacyLite
       ? "fast"
       : "adaptive";
-  const supportsTddThreshold = Number(config.version) >= 4;
-  const tddEnabled = supportsTddThreshold && behavior.tdd_enabled === true;
-  const tddCoverageThreshold =
-    supportsTddThreshold && isTddCoverageThreshold(behavior.tdd_coverage_threshold)
-      ? behavior.tdd_coverage_threshold
-      : DEFAULT_TDD_COVERAGE_THRESHOLD;
-  return { approvalMode, workflowMode, tddEnabled, tddCoverageThreshold };
+  const unitTestMode = isUnitTestMode(behavior.unit_test_mode)
+    ? behavior.unit_test_mode
+    : Number(config.version) >= 4 && behavior.tdd_enabled === true
+      ? "tdd"
+      : "none";
+  const configuredThreshold =
+    behavior.ut_coverage_threshold ??
+    (Number(config.version) >= 4 ? behavior.tdd_coverage_threshold : undefined);
+  const utCoverageThreshold = isUtCoverageThreshold(configuredThreshold)
+    ? configuredThreshold
+    : DEFAULT_UT_COVERAGE_THRESHOLD;
+  return { approvalMode, workflowMode, unitTestMode, utCoverageThreshold };
 }
 
 export async function setBehaviorModes(
   filePath: string,
   approvalMode: ApprovalMode,
   workflowMode: ConfiguredWorkflowMode,
-  tddEnabled?: boolean,
-  tddCoverageThreshold?: number,
+  unitTestMode?: UnitTestMode,
+  utCoverageThreshold?: number,
 ): Promise<EasyCodingConfig> {
-  if (tddCoverageThreshold !== undefined && !isTddCoverageThreshold(tddCoverageThreshold)) {
-    throw new Error("TDD coverage threshold must be an integer from 1 to 100.");
+  if (unitTestMode !== undefined && !isUnitTestMode(unitTestMode)) {
+    throw new Error("Unit test mode must be none, ut, or tdd.");
+  }
+  if (utCoverageThreshold !== undefined && !isUtCoverageThreshold(utCoverageThreshold)) {
+    throw new Error("Unit test coverage threshold must be an integer from 1 to 100.");
   }
   return updateConfigYaml(filePath, (config) => {
     const legacyBehavior = (config.behavior ?? {}) as unknown as Record<string, unknown>;
@@ -204,13 +236,15 @@ export async function setBehaviorModes(
           key !== "approval_mode" &&
           key !== "workflow_mode" &&
           key !== "tdd_enabled" &&
-          key !== "tdd_coverage_threshold",
+          key !== "tdd_coverage_threshold" &&
+          key !== "unit_test_mode" &&
+          key !== "ut_coverage_threshold",
       ),
     );
     behavior.approval_mode = approvalMode;
     behavior.workflow_mode = workflowMode;
-    behavior.tdd_enabled = tddEnabled ?? resolvedBehavior.tddEnabled;
-    behavior.tdd_coverage_threshold = tddCoverageThreshold ?? resolvedBehavior.tddCoverageThreshold;
+    behavior.unit_test_mode = unitTestMode ?? resolvedBehavior.unitTestMode;
+    behavior.ut_coverage_threshold = utCoverageThreshold ?? resolvedBehavior.utCoverageThreshold;
     config.behavior = behavior as EasyCodingConfig["behavior"];
     config.version = CONFIG_SCHEMA_VERSION;
   });
@@ -218,9 +252,9 @@ export async function setBehaviorModes(
 
 export async function migrateBehaviorConfig(filePath: string): Promise<EasyCodingConfig> {
   const config = await readConfigYaml(filePath);
-  const { approvalMode, workflowMode, tddEnabled, tddCoverageThreshold } =
+  const { approvalMode, workflowMode, unitTestMode, utCoverageThreshold } =
     resolveLegacyBehavior(config);
-  return setBehaviorModes(filePath, approvalMode, workflowMode, tddEnabled, tddCoverageThreshold);
+  return setBehaviorModes(filePath, approvalMode, workflowMode, unitTestMode, utCoverageThreshold);
 }
 
 /** @deprecated Use setBehaviorModes. Kept for API compatibility during the 0.9 beta. */
@@ -229,13 +263,13 @@ export async function setConfirmMode(
   mode: LegacyConfirmMode,
 ): Promise<EasyCodingConfig> {
   const config = await readConfigYaml(filePath);
-  const { workflowMode, tddEnabled, tddCoverageThreshold } = resolveLegacyBehavior(config);
+  const { workflowMode, unitTestMode, utCoverageThreshold } = resolveLegacyBehavior(config);
   return setBehaviorModes(
     filePath,
     mode === "lite" ? "guard" : mode,
     mode === "lite" ? "fast" : workflowMode,
-    tddEnabled,
-    tddCoverageThreshold,
+    unitTestMode,
+    utCoverageThreshold,
   );
 }
 

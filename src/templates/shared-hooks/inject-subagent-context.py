@@ -71,10 +71,10 @@ def main() -> int:
         workflow_mode = state.get("concrete_workflow_mode")
         if workflow_mode:
             context.append(f"Frozen workflow mode: {workflow_mode}")
-        if state.get("displayed_tdd_enabled") is True:
+        if state.get("displayed_unit_test_mode") in {"ut", "tdd"}:
             context.append(
-                "TDD is enabled; changed production Java executable-line coverage must meet "
-                f"{state.get('displayed_tdd_coverage_threshold')}%."
+                "Unit test coverage is enabled; changed production Java executable-line coverage must meet "
+                f"{state.get('displayed_ut_coverage_threshold')}%."
             )
 
     event_name = payload.get("hook_event_name") or payload.get("hookEventName") or "PreToolUse"

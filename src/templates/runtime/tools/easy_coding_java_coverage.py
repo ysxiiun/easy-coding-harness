@@ -191,16 +191,16 @@ def read_project_threshold(repo: Path) -> int:
                 schema_version = 0
             continue
         if (
-            schema_version >= 4
+            schema_version >= 6
             and in_behavior
-            and stripped.startswith("tdd_coverage_threshold:")
+            and stripped.startswith("ut_coverage_threshold:")
         ):
             try:
                 value = int(stripped.split(":", 1)[1].strip().strip("'\""))
             except ValueError as error:
-                raise CoverageError("Invalid behavior.tdd_coverage_threshold") from error
+                raise CoverageError("Invalid behavior.ut_coverage_threshold") from error
             if not 1 <= value <= 100:
-                raise CoverageError("TDD coverage threshold must be from 1 to 100")
+                raise CoverageError("Unit test coverage threshold must be from 1 to 100")
             return value
     return DEFAULT_THRESHOLD
 
@@ -294,7 +294,7 @@ def main() -> int:
             else read_project_threshold(repo)
         )
         if not 1 <= threshold <= 100:
-            raise CoverageError("TDD coverage threshold must be from 1 to 100")
+            raise CoverageError("Unit test coverage threshold must be from 1 to 100")
         reports = (
             sorted({Path(item).resolve() for item in args.report})
             if args.report

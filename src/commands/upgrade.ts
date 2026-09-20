@@ -22,7 +22,7 @@ import {
   writeInstallManifest,
 } from "../utils/install-manifest.js";
 import { resolvePlatformMeta } from "../utils/platform-paths.js";
-import { writeRuntimeScaffold } from "../utils/runtime-scaffold.js";
+import { runtimeToolUpdates, writeRuntimeScaffold } from "../utils/runtime-scaffold.js";
 import { cleanSessionRuntime } from "../utils/session.js";
 import {
   hasLegacyWorkflowState,
@@ -137,10 +137,11 @@ export async function upgrade(opts: UpgradeOptions): Promise<void> {
     "Will overwrite managed skills, hooks, agents, templates, and generated main-constraint regions.",
     "Will remove retired files that still match the previous install manifest and preserve locally modified copies.",
     "Will update project-init task to recommend ec-init re-run for version adaptation.",
-    "Will migrate behavior config to schema 5 while preserving project/session TDD settings and frozen task baselines.",
-    "Will prune expired session bindings without explicit TDD settings and orphan acceptance snapshots in each upgraded target while preserving tasks, memory, spec, and project knowledge.",
+    "Will migrate behavior config to schema 6 while preserving project/session unit test settings and frozen task baselines.",
+    "Will preserve runtime tools used by active UT/TDD tasks; run upgrade after those tasks finish to refresh the tools.",
+    "Will prune expired session bindings without explicit unit test settings and orphan acceptance snapshots in each upgraded target while preserving tasks, memory, spec, and project knowledge.",
     "Will migrate active REVIEW/VERIFICATION tasks to QUALITY, retire active read-only task types as CLOSED, and preserve their artifacts and history.",
-    "Will migrate legacy workflow/TDD task metadata; memory content, spec, and project knowledge files remain untouched.",
+    "Will migrate legacy workflow/unit test task metadata; memory content, spec, and project knowledge files remain untouched.",
   ].join("\n");
 
   if (opts.dryRun) {
@@ -161,7 +162,9 @@ export async function upgrade(opts: UpgradeOptions): Promise<void> {
 
   for (const { target, config } of pending) {
     const previousManifest = await readInstallManifest(target.dir);
-    const sessionCleanup = await cleanSessionRuntime(target.dir, { preserveTddSettings: true });
+    const sessionCleanup = await cleanSessionRuntime(target.dir, {
+      preserveUnitTestSettings: true,
+    });
     if (sessionCleanup.sessionsRemoved > 0 || sessionCleanup.acceptanceSnapshotsRemoved > 0) {
       console.log(
         chalk.yellow(
@@ -250,7 +253,8 @@ async function resolvePendingUpgradeTargets(
       (relation === 0 &&
         (installedVersion !== VERSION ||
           (await needsHookConfigRefresh(target, config)) ||
-          (await hasLegacyWorkflowState(target.dir))))
+          (await hasLegacyWorkflowState(target.dir)) ||
+          (await runtimeToolUpdates(target.dir)).length > 0))
     ) {
       pending.push({ target, config });
     }

@@ -1166,7 +1166,7 @@ describe("Canonical Spec v1 runtime integration", () => {
       { id: "U1", repo_id: "R1", files: ["order-domain/src/main/java/com/example/order/OrderEventPublisher.java"] },
       { id: "U2", repo_id: "R2", files: ["notification-app/src/main/java/com/example/notification/OrderEventConsumer.java"] },
     ] };
-    const task = { spec_source: {}, tdd_enabled: true, repo_paths: { R1: fixture.repoA, R2: fixture.repoB } };
+    const task = { spec_source: {}, unit_test_mode: "tdd", repo_paths: { R1: fixture.repoA, R2: fixture.repoB } };
     const script = [
       "import json,pathlib,sys",
       `sys.path.insert(0, ${JSON.stringify(path.dirname(stateApiPath()))})`,
@@ -2117,8 +2117,8 @@ describe("Canonical Spec v1 runtime integration", () => {
     const task = JSON.parse(await readFile(taskPath, "utf8"));
     task.status = "QUALITY";
     task.workflow_mode = "fast";
-    task.tdd_enabled = false;
-    task.tdd_coverage_threshold = 90;
+    task.unit_test_mode = "none";
+    task.ut_coverage_threshold = 90;
     task.stage_history.push({
       stage: "QUALITY",
       agent: "codex",
@@ -3032,7 +3032,7 @@ describe("Canonical Spec v1 runtime integration", () => {
     const task = JSON.parse(await readFile(taskPath, "utf8"));
     task.status = "QUALITY";
     task.workflow_mode = "strict";
-    task.tdd_enabled = false;
+    task.unit_test_mode = "none";
     await writeFile(taskPath, JSON.stringify(task, null, 2), "utf8");
     const fingerprints = JSON.parse(
       runState([
@@ -3501,7 +3501,7 @@ describe("Canonical Spec v1 runtime integration", () => {
     const task = JSON.parse(await readFile(taskPath, "utf8"));
     task.status = "QUALITY";
     task.workflow_mode = "fast";
-    task.tdd_enabled = false;
+    task.unit_test_mode = "none";
     await writeFile(taskPath, JSON.stringify(task, null, 2), "utf8");
 
     const fingerprints = JSON.parse(
@@ -3674,7 +3674,7 @@ describe("Canonical Spec v1 runtime integration", () => {
     const task = JSON.parse(await readFile(taskPath, "utf8"));
     task.status = "QUALITY";
     task.workflow_mode = "standard";
-    task.tdd_enabled = false;
+    task.unit_test_mode = "none";
     await writeFile(taskPath, JSON.stringify(task, null, 2), "utf8");
     const fingerprints = JSON.parse(
       runState(["evidence-fingerprints", "--task-id", taskId, "--agent", "codex"]),

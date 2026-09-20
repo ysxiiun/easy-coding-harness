@@ -255,7 +255,7 @@ def input_spec(root, task, plan, check):
                            "tests" if builds_module else "tests/fixtures"):
                 if (base / config).is_dir():
                     paths.add(config)
-    if task.get("tdd_enabled") is True:
+    if task.get("unit_test_mode") in {"ut", "tdd"}:
         for directory in {str(root.resolve()), *repositories}:
             manifest = Path(directory) / ".easy-coding/tdd/readiness.json"
             if manifest.is_file():

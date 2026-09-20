@@ -212,12 +212,18 @@ INIT ─自动→ ANALYSIS → IMPLEMENT → QUALITY → MEMORY ─自动→ COM
   机械最低模式优先 Fast：Fast 允许单个实际修改仓库、最多三个内聚 Unit、
   最多 8 个文件且没有明确高风险/宽契约；Strict 则必须同时命中明确高风险与真实复杂度。
   Canonical/supermodule 的未修改仓库元数据不参与定级。
-- **Java TDD 模式**：session 覆盖优先于项目 `behavior.tdd_enabled`，默认关闭；覆盖率阈值默认 90，可配置 1..100。开启入口必须先验证 `ec-tdd-init` readiness，不存在“先开启、稍后初始化”。专用 `tdd-init` 代码任务始终冻结 TDD 关闭，只建设 JUnit/JaCoCo/GitLab changed-line coverage 基础设施，不补存量业务单测或要求全量覆盖。后续业务任务进入 IMPLEMENT 时原子冻结 baseline 与阈值，以配置阈值作为新增/修改生产代码行门禁，不为凑满 100% 扩大测试范围；QUALITY 对每个实际修改仓库（Canonical 下每个 source task）同时要求通过的本地单测证据与本地 changed-line coverage 证据。GitLab TEST stage 继续复用同一脚本，但远程 pipeline URL、job identity 与成功状态不进入 Harness 验收；beta.1/beta.2 的历史 GitLab coverage 记录保留并在新门禁中忽略。
-- **TDD 就绪与配置保护**：readiness 的 SHA-256 是初始化历史，不要求当前 POM、CI 或工具
+- **Java 单测策略**：`unit_test_mode` 为 `none | ut | tdd`，默认 `none`，会话覆盖优先于项目。
+  UT/TDD 共用 `ut_coverage_threshold`（默认 90，1..100）、JaCoCo 改动行门禁和现有
+  `ec-tdd-init` readiness。两者在 IMPLEMENT 入口冻结策略、baseline 与阈值，QUALITY 要求
+  本地单测通过和改动行覆盖率达标。UT 不要求测试先行、额外过程文档或独立 TDD 审查；TDD
+  保留生命周期与审查维度。一次测试同时提供测试和覆盖率证据，不提高最低执行深度。
+  schema 6 原位迁移旧开关与阈值，保留任务进度；字段改名不改变原有证据序列化语义。
+  GitLab TEST stage 复用同一脚本，远程 pipeline 不作为任务验收依赖。
+- **UT/TDD 就绪与配置保护**：readiness 的 SHA-256 是初始化历史，不要求当前 POM、CI 或工具
   与快照一致。缺少凭据为 `needs_init`，必要本地入口或参数损坏为 `needs_repair`；初始化
   另检查完整 CI 契约。当前构建和工具内容同时绑定实施、验收契约及各仓库指纹，变化后
   必须重新验证，不能继承旧测试/覆盖率。升级保留项目/session 开关、阈值和任务冻结基线，
-  升级清理也保留带有显式 TDD 配置的 session。
+  升级清理也保留带有显式单测策略或阈值配置的 session。
 - **共享 Canonical 执行投影**：Canonical Spec 的静态设计和机器执行区分层管理。Harness
   用 design revision + `design_sha256` 绑定本地计划，只把跨应用必须消费的 Task、Step、
   dependency 状态投影到 `EDS:EXECUTION`；详细 result/review/verify 仍保留在本地
@@ -641,13 +647,13 @@ Claude Code 同样将 session 初始化限定在 `SessionStart`；Qoder 没有�
 |-------|--------|
 | ec-workflow | 阶段流转 + 任务发现/恢复 |
 | ec-task-management | 任务查看、创建、选择、恢复与交接 |
-| ec-config | 只读配置面板 + 项目/session Approval、Workflow、TDD 与阈值配置 |
-| ec-tdd-init | TDD 关闭态下初始化/刷新 Java changed-line coverage 基础设施 |
+| ec-config | 只读配置面板 + 项目/session Approval、Workflow、单测策略与阈值配置 |
+| ec-tdd-init | 为 UT/TDD 初始化/刷新 Java changed-line coverage 基础设施 |
 | ec-lite | 显式切换 Lite Direct；只执行方案确认与最小实现，不创建 Harness 任务 |
 | ec-task-close | 任务中断与关闭（确认意图 → 记录原因 → 清理状态） |
 | ec-no-harness | 当前 session 旁路 Easy Coding；保留任务、Lite 状态与其他 skills/hooks |
 
-`ec-task-management` 只拥有任务生命周期；模式配置从该 skill 迁移到 `ec-config`。`ec-config` 裸唤起只读，展示项目/session/生效值、任务冻结值与 readiness，只有用户明确选择且 readiness 通过后才调用状态 API 开启 session TDD，项目配置统一引导至 `easy-coding config`。`ec-tdd-init` 使用强制 TDD 关闭的专用代码任务消除 CI 初始化循环依赖，完成后仍由用户显式开启 TDD。
+`ec-task-management` 只拥有任务生命周期；模式配置从该 skill 迁移到 `ec-config`。`ec-config` 裸唤起只读，展示项目/session/生效值、任务冻结值与 readiness，只有用户明确选择且 readiness 通过后才调用状态 API 选择 session UT/TDD，项目配置统一引导至 `easy-coding config`。`ec-tdd-init` 使用强制策略为 none 的专用代码任务消除 CI 初始化循环依赖，完成后仍由用户显式选择 UT/TDD。
 
 ec-task-close 的关键设计：CLOSED 是终态，**不执行记忆流程**——未完成任务的记忆是脏数据。
 

@@ -30,6 +30,8 @@ describe("session", () => {
       { tdd_enabled: true, tdd_coverage_threshold: 96 },
       { tdd_enabled: false },
       { tdd_coverage_threshold: 87 },
+      { unit_test_mode: "ut", ut_coverage_threshold: 93 },
+      { unit_test_mode: "none" },
       {},
     ];
     for (const [index, settings] of sessions.entries()) {
@@ -37,9 +39,9 @@ describe("session", () => {
         current_task: null, created_at: "2020-01-01T00:00:00Z", ...settings,
       }));
     }
-    const cleaned = await cleanSessionRuntime(tempDir, { preserveTddSettings: true, maxSessions: 0 });
+    const cleaned = await cleanSessionRuntime(tempDir, { preserveUnitTestSettings: true, maxSessions: 0 });
     expect(cleaned.sessionsRemoved).toBe(1);
-    for (const [index, settings] of sessions.slice(0, 3).entries()) {
+    for (const [index, settings] of sessions.slice(0, -1).entries()) {
       expect(JSON.parse(await readFile(getSessionFilePath(tempDir, `tdd-${index}`), "utf8")))
         .toMatchObject(settings);
     }

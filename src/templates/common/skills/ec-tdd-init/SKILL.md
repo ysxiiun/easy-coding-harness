@@ -1,11 +1,11 @@
 ---
 name: ec-tdd-init
-description: Initialize or refresh Java changed-line TDD coverage infrastructure before TDD can be enabled.
+description: Initialize or refresh Java changed-line TDD coverage infrastructure before UT or TDD can be enabled.
 ---
 
 # ec-tdd-init — Java changed-line gate initialization
 
-Communicate in the user's language. This skill owns TDD infrastructure readiness, not historical
+Communicate in the user's language. This skill owns shared UT/TDD infrastructure readiness, not historical
 test-debt cleanup. It must never bulk-generate tests for existing business code, require
 repository-wide coverage, or modify production behavior merely to raise coverage.
 
@@ -14,12 +14,12 @@ repository-wide coverage, or modify production behavior merely to raise coverage
 The only legal order is:
 
 ```text
-TDD off -> initialize infrastructure -> readiness ready -> user explicitly enables TDD
+unit_test_mode=none -> initialize infrastructure -> readiness ready -> user selects UT or TDD
 ```
 
 Run this skill as a dedicated code task with `type=tdd-init`. The state API always freezes that
-task with `tdd_enabled=false`, even when a legacy project/session setting or a suspended task has
-TDD enabled. Never offer "enable now and initialize later". Never enable TDD automatically after
+task with `unit_test_mode=none`, even when a legacy project/session setting or a suspended task has
+UT or TDD enabled. Never offer "enable now and initialize later". Never enable UT/TDD automatically after
 initialization.
 
 ## Read-only preflight
@@ -31,7 +31,7 @@ python3 .easy-coding/tools/easy_coding_tdd_readiness.py --cwd . check --include-
 ```
 
 If it returns `ready`, report the recorded build/CI contract and stop without creating a task.
-The user may then use `ec-config` or `easy-coding config` to enable TDD.
+The user may then use `ec-config` or `easy-coding config` to select UT or TDD.
 
 If it returns `needs_init` or `needs_repair`, inspect only the reported infrastructure needed
 to form a confirmed initialization or repair plan:
@@ -102,5 +102,5 @@ reinitialization. Daily `check` validates local entry points and task-variable c
 return `needs_init`; damaged receipts or required entries return `needs_repair`. Repair the
 reported entry, repeat applicable tests, and preserve the user's TDD settings.
 
-After completion, report the unchanged TDD setting and provide the explicit project/session
+After completion, report the unchanged unit test strategy and provide the explicit project/session
 enable route when it is off. Do not treat readiness as consent to change it.

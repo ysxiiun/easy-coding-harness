@@ -13,7 +13,7 @@ panel and available actions, but do not mutate a session without an explicit cho
 Call the state API snapshot and show:
 
 - current task, stage, last Agent, and pending transition;
-- task `concrete_workflow_mode` and frozen TDD state when present;
+- task `concrete_workflow_mode` and frozen unit test strategy when present;
 - harness enabled/disabled and Lite Direct state;
 - active and resumable tasks.
 - for Canonical-backed tasks: source locator/path mode, Spec ID/design revision/design digest,
@@ -22,7 +22,7 @@ Call the state API snapshot and show:
   pending confirmed Spec change.
 
 Mode inspection and configuration belongs to `ec-config`. If the user asks to change Approval,
-Workflow, TDD, or the TDD coverage threshold, route there and do not mutate those fields here.
+Workflow, unit test strategy, or the shared coverage threshold, route there and do not mutate those fields here.
 
 ## Task actions
 

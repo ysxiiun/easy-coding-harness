@@ -11,6 +11,7 @@ export type TaskStatus = "PENDING" | Stage;
 export type ApprovalMode = "approve" | "guard" | "confirm" | "auto";
 export type ConfiguredWorkflowMode = "adaptive" | "fast" | "standard" | "strict";
 export type WorkflowMode = Exclude<ConfiguredWorkflowMode, "adaptive">;
+export type UnitTestMode = "none" | "ut" | "tdd";
 export type WorkflowModeSource = "project" | "session" | "adaptive" | "user" | "migration";
 export type WorkflowAgentIdentity = "claude-code" | "codex" | "qoder";
 export type WorkflowActorIdentity =
@@ -145,8 +146,8 @@ export interface SessionFile {
   last_agent?: WorkflowAgentIdentity;
   approval_mode?: ApprovalMode;
   workflow_mode?: ConfiguredWorkflowMode;
-  tdd_enabled?: boolean;
-  tdd_coverage_threshold?: number;
+  unit_test_mode?: UnitTestMode;
+  ut_coverage_threshold?: number;
   /** Pre-0.9 session compatibility; migrated on first write. */
   confirm_mode?: ApprovalMode | "lite";
   workflow_mode_legacy_confirm_override?: boolean;
@@ -336,8 +337,8 @@ export interface TaskJson {
   quality_checkpoint?: QualityCheckpoint;
   /** Pre-1.0 compatibility; migrated to quality_checkpoint on upgrade. */
   verification_checkpoint?: VerificationCheckpoint;
-  tdd_enabled?: boolean;
-  tdd_coverage_threshold?: number;
+  unit_test_mode?: UnitTestMode;
+  ut_coverage_threshold?: number;
   tdd_confirmed_at?: string;
   tdd_confirmed_by?: WorkflowActorIdentity;
   tdd_baselines?: Record<string, string>;

@@ -11,7 +11,8 @@ import type { AgentPlatform } from "../types/platform.js";
 import type { Stage, TaskJson, TaskStatus, WorkflowAgentIdentity } from "../types/task.js";
 import {
   type ConfiguredWorkflowMode,
-  DEFAULT_TDD_COVERAGE_THRESHOLD,
+  DEFAULT_UT_COVERAGE_THRESHOLD,
+  migrateUnitTestSettings,
   readConfigYaml,
   resolveLegacyBehavior,
 } from "./config-yaml.js";
@@ -378,9 +379,10 @@ function migrateTaskWorkflowState(task: Record<string, unknown>): boolean {
     task.workflow_mode_legacy = true;
     changed = true;
   }
-  if (isActive && taskType !== "project-init" && typeof task.tdd_enabled !== "boolean") {
-    task.tdd_enabled = false;
-    task.tdd_coverage_threshold ??= DEFAULT_TDD_COVERAGE_THRESHOLD;
+  changed = migrateUnitTestSettings(task) || changed;
+  if (isActive && taskType !== "project-init" && task.unit_test_mode === undefined) {
+    task.unit_test_mode = "none";
+    task.ut_coverage_threshold ??= DEFAULT_UT_COVERAGE_THRESHOLD;
     task.tdd_confirmed_at = new Date().toISOString();
     task.tdd_confirmed_by = "upgrade-migration";
     changed = true;
@@ -391,6 +393,7 @@ function migrateTaskWorkflowState(task: Record<string, unknown>): boolean {
 
 function migrateSessionBehavior(session: Record<string, unknown>): boolean {
   let changed = migrateAgentFields(session, ["agent", "last_agent"]);
+  changed = migrateUnitTestSettings(session) || changed;
   const legacyMode = session.confirm_mode;
   const legacyLite = legacyMode === "lite";
   if (!["approve", "guard", "confirm", "auto"].includes(String(session.approval_mode ?? ""))) {
@@ -530,6 +533,8 @@ export async function hasLegacyWorkflowState(cwd: string): Promise<boolean> {
       hasLegacyTaskAgentIdentities(task) ||
       isLegacyStage(task.status) ||
       "verification_checkpoint" in task ||
+      "tdd_enabled" in task ||
+      "tdd_coverage_threshold" in task ||
       (!["PENDING", "COMPLETE", "CLOSED"].includes(String(task.status ?? "")) &&
         ["analysis", "doc", "report"].includes(String(task.type ?? "").toLowerCase())) ||
       (!["PENDING", "COMPLETE", "CLOSED"].includes(String(task.status ?? "")) &&
@@ -557,7 +562,9 @@ export async function hasLegacyWorkflowState(cwd: string): Promise<boolean> {
         return migrated !== undefined && migrated !== session[field];
       }) ||
       isLegacyStage(session.last_seen_stage) ||
-      "confirm_mode" in session
+      "confirm_mode" in session ||
+      "tdd_enabled" in session ||
+      "tdd_coverage_threshold" in session
     ) {
       return true;
     }

@@ -63,12 +63,12 @@ confirmation before a minimal mutation, creates no task/QUALITY/MEMORY artifacts
 until the user invokes it again. If a task is active, the user chooses whether to cancel startup,
 close the task, or clear only the session task pointer before Lite starts.
 
-Java TDD is a third independent, default-off control managed by `ec-config`. Session overrides
-project configuration; ANALYSIS freezes enabled state and the 1..100 changed-line threshold
-(default 90) on entry to IMPLEMENT. Disabled TDD changes no ordinary workflow test depth. Enabled
-TDD adds lifecycle evidence, a TDD review dimension, passed local unit-test evidence, and a local
-JaCoCo diff gate. `ec-tdd-init` still generates the equivalent GitLab TEST-stage job, but remote
-pipeline execution and status are not Harness acceptance dependencies.
+Java unit tests use an independent `unit_test_mode: none|ut|tdd` managed by `ec-config`.
+Session values override project defaults. Both UT and TDD freeze the shared `ut_coverage_threshold`
+(default 90) and repository baseline on entry to IMPLEMENT, and require passed local unit tests
+plus JaCoCo changed-line coverage. UT has no test-first or separate TDD-review requirement; TDD
+adds lifecycle evidence and its review dimension. Both reuse `ec-tdd-init` infrastructure.
+Remote GitLab execution is not a task acceptance gate.
 
 The active task pointer lives in `sessions/{agent}-{session-id}.json` (with an agent-prefixed PPID fallback only
 when a hook payload has no logical session ID);

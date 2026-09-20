@@ -34,7 +34,7 @@ export interface SessionCleanupOptions {
   attachedRetentionMs?: number;
   maxSessions?: number;
   reserveSlots?: number;
-  preserveTddSettings?: boolean;
+  preserveUnitTestSettings?: boolean;
 }
 
 export interface SessionCleanupResult {
@@ -160,9 +160,14 @@ export async function cleanSessionRuntime(
   const maxSessions = options.maxSessions ?? MAX_SESSION_FILES;
   const reserveSlots = options.reserveSlots ?? 0;
   const candidates = (await listSessionCleanupCandidates(cwd)).filter((candidate) => {
-    if (!options.preserveTddSettings) return true;
+    if (!options.preserveUnitTestSettings) return true;
     const session = parseSessionFile(candidate.content);
-    return !session || !("tdd_enabled" in session || "tdd_coverage_threshold" in session);
+    return (
+      !session ||
+      !["unit_test_mode", "ut_coverage_threshold", "tdd_enabled", "tdd_coverage_threshold"].some(
+        (key) => key in session,
+      )
+    );
   });
   const removed = new Set<string>();
 

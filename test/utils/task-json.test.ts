@@ -194,7 +194,7 @@ describe("task-json", () => {
         workflow_mode_confirmed_by: "Codex with Easy Coding",
         workflow_mode_proposal: { proposed_by: "Codex with Easy Coding" },
         workflow_mode_escalations: [{ raised_by: "Qoder with Easy Coding" }],
-        tdd_enabled: false,
+        unit_test_mode: "none",
         tdd_confirmed_by: "Codex with Easy Coding",
         verification_checkpoint: { recorded_by: "Codex with Easy Coding" },
         memory_progress: {
@@ -283,7 +283,7 @@ describe("task-json", () => {
           last_agent: "codex",
           stage_history: [],
           workflow_mode: "standard",
-          tdd_enabled: false,
+          unit_test_mode: "none",
           quality_checkpoint: fixture.quality,
           verification_checkpoint: fixture.legacy,
         }),
@@ -558,8 +558,8 @@ describe("task-json", () => {
     expect(task).not.toHaveProperty("workflow_mode_legacy");
     expect(task.tdd_baselines).toEqual({ project: "stale-custom-value" });
     expect(task).toMatchObject({
-      tdd_enabled: false,
-      tdd_coverage_threshold: 90,
+      unit_test_mode: "none",
+      ut_coverage_threshold: 90,
       tdd_confirmed_by: "upgrade-migration",
     });
 
@@ -629,7 +629,7 @@ describe("task-json", () => {
     ]);
     expect(task).not.toHaveProperty("verification_checkpoint");
     expect(task).not.toHaveProperty("workflow_mode");
-    expect(task).not.toHaveProperty("tdd_enabled");
+    expect(task).not.toHaveProperty("unit_test_mode");
 
     const session = JSON.parse(await readFile(sessionPath, "utf8"));
     expect(session).toMatchObject({

@@ -1,6 +1,6 @@
 ---
 name: ec-config
-description: Inspect and configure Easy Coding project/session Approval, Workflow, and Java TDD modes.
+description: Inspect and configure Easy Coding project/session Approval, Workflow, and Java unit test strategies.
 ---
 
 # ec-config — mode configuration
@@ -10,68 +10,59 @@ and available actions. Never mutate project or session settings without an expli
 
 ## Configuration panel
 
-Call `snapshot` and show project, session, effective, and frozen task values for:
+Call `snapshot` and show project, session, effective, and frozen task values for `approval_mode`,
+the mechanically calculated workflow mode (read-only), `unit_test_mode`, and `ut_coverage_threshold`.
+Use `project_unit_test_mode`, `session_unit_test_mode`, `effective_unit_test_mode`, their threshold
+counterparts, `task_unit_test_mode`, `task_tdd_baselines`, and `unit_test_readiness_status` directly.
+When readiness is `not_checked`, report it as not checked; do not scan infrastructure merely to
+populate the panel. Inspect readiness when the user requests it or selects UT/TDD.
 
-- `approval_mode`;
-- the mechanically calculated workflow mode (read-only);
-- `tdd_enabled` and `tdd_coverage_threshold`.
+Precedence is `session override > project config > defaults`. Defaults are Approval `guard`,
+Workflow `adaptive`, unit test strategy `none`, and shared changed-line coverage threshold 90%.
+The strategies are:
 
-Use the returned fields directly, including `project_tdd_enabled`, `session_tdd_enabled`,
-`effective_tdd_enabled`, their threshold counterparts, `task_tdd_enabled`, and the task's
-per-repository `task_tdd_baselines` frozen state. When `tdd_readiness_status=not_checked` because
-TDD is off, explicitly run the read-only readiness command below before showing readiness:
+- `none`: ordinary task-required verification, with no additional coverage gate.
+- `ut`: passed local unit tests and changed-production-line JaCoCo coverage at the threshold.
+  No test-first order, RED/GREEN history, refactor cycle, or separate TDD review is required.
+- `tdd`: test-first development plus the same local test and coverage gates; retain TDD lifecycle
+  evidence and the TDD review dimension.
 
-```bash
-python3 .easy-coding/tools/easy_coding_tdd_readiness.py --cwd . check
-```
-
-This explicit configuration-panel check is the only disabled-mode readiness scan; ordinary hooks
-must not inspect build or CI files while TDD is off.
-
-Explain precedence as `session override > project config > defaults`. Defaults are Approval
-`guard`, Workflow `adaptive`, TDD disabled, and TDD changed-line coverage threshold 90%. An active
-task freezes its effective TDD values when ANALYSIS advances to IMPLEMENT; later project/session
-changes affect future tasks and ANALYSIS only.
+UT/TDD currently apply to Java code tasks. Neither strategy raises the mechanical workflow depth.
+ANALYSIS -> IMPLEMENT freezes strategy, threshold, and repository baselines; later project/session
+changes affect future tasks and ANALYSIS only. `none` preserves the threshold for later use.
 
 Approval semantics stay independent from verification depth: `approve` waits at each
 non-mechanical edge, `guard` waits at ANALYSIS -> IMPLEMENT and QUALITY -> MEMORY, `confirm`
-waits only for the plan, and `auto` advances legal green edges immediately. Every mode temporarily
-pauses only when code changes after the frozen QUALITY checkpoint, because the user must see
-and accept that exact new diff; this exception does not convert `auto` into `guard`.
+waits only for the plan, and `auto` advances legal green edges immediately. A new code diff after
+the QUALITY checkpoint requires acceptance of that exact diff without changing the approval mode.
 
 ## Project configuration
 
-Use `easy-coding config` for project settings. The CLI confirms one atomic update of Approval,
-TDD, and (when enabled) the threshold. Execution depth is calculated automatically. The threshold must be an integer from 1 to 100.
-Enabling TDD is rejected atomically unless `ec-tdd-init` readiness is currently `ready`.
+Use `easy-coding config`. The CLI confirms an atomic update of Approval, unit test strategy, and
+its shared threshold (integer 1..100). Execution depth remains calculated automatically.
 
 ## Session configuration
 
 After explicit user selection, use the current logical session file:
 
 ```bash
-# approval
 {{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py set-approval-mode --mode approve|guard|confirm|auto --agent <agent-id> --session-file <P>
 {{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py clear-approval-mode --agent <agent-id> --session-file <P>
 
-# TDD; omitting threshold preserves an existing session threshold, otherwise project/default 90 applies
-{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py set-tdd --enabled true|false [--threshold 1..100] --agent <agent-id> --session-file <P>
-{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py clear-tdd --agent <agent-id> --session-file <P>
+# Omitting threshold preserves the session threshold or inherits project/default 90.
+{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py set-unit-test-mode --mode none|ut|tdd [--threshold 1..100] --agent <agent-id> --session-file <P>
+{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py clear-unit-test-mode --agent <agent-id> --session-file <P>
 ```
 
-Turning TDD off must preserve the existing Fast/Standard/Strict test depth exactly: do not inspect
-CI, request JaCoCo, add TDD artifacts, run coverage commands, or strengthen acceptance criteria.
-When TDD is on, explain that it applies only to Java code tasks and activates RED/GREEN/REFACTOR,
-TDD review, a passed local unit-test gate, and local changed-line JaCoCo coverage. `ec-tdd-init`
-still generates the GitLab TEST-stage job, but Harness does not wait for or record remote pipeline
-results as acceptance evidence.
+Selecting UT/TDD requires ready infrastructure. Reuse `ec-tdd-init` and its existing readiness
+receipt for both strategies. Route `needs_init` to initialization and `needs_repair` to the reported
+repair, preserving existing settings. Normal build-file changes do not require reinitialization.
+The shared gate measures changed production lines, not historical repository-wide coverage.
+GitLab automation may reuse it, but remote pipelines are not Harness acceptance dependencies.
 
-Before any project/session enable action, require `tdd_readiness_status=ready`. If it is not ready,
-route `needs_init` to `ec-tdd-init` and `needs_repair` to the reported repair. Preserve existing
-settings on failure; never offer or persist "enable now, initialize later". Normal build-file
-changes do not require initialization, and a CLI upgrade must preserve project/session TDD values.
-Readiness means infrastructure can measure future changed production lines. It does not certify
-repository-wide coverage and does not require tests for unchanged historical code.
+Run related unit tests once with coverage collection, and reuse that execution for both test and
+coverage evidence. Inputs unchanged means reuse; only rerun affected checks after relevant changes.
+Test assertions stay in ordinary review for UT. Do not add a separate UT review or workflow stage.
 
-Execution depth always equals the current mechanical minimum. Legacy workflow_mode settings
-remain readable but do not raise it. Do not offer mode choices or recommend changing to Lite.
+Execution depth always equals the current mechanical minimum. Legacy workflow settings do not
+raise it. Do not offer execution-depth choices or recommend changing to Lite.

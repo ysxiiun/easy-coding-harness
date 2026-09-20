@@ -174,6 +174,37 @@ class ScopedEvidenceTest(unittest.TestCase):
             snapshot = state.snapshot_state(self.root, ".easy-coding/sessions/test.json")
         self.assertEqual("test", snapshot["current_task"])
 
+    def test_unit_test_migration_preserves_frozen_settings_and_existing_fingerprints(self):
+        for enabled in (False, True):
+            with self.subTest(enabled=enabled):
+                contract = {"tdd_enabled": enabled, "tdd_coverage_threshold": 93,
+                            "tdd_baselines": {"project": self.git("rev-parse", "HEAD").decode().strip()}}
+                task = {**self.task, **contract, "quality_checkpoint": {"accepted": True}}
+                expected = state.digest(contract)
+                self.assertTrue(state.migrate_unit_test_settings(task))
+                self.assertEqual("tdd" if enabled else "none", task["unit_test_mode"])
+                self.assertEqual(93, task["ut_coverage_threshold"])
+                self.assertEqual(expected, state.behavior_config_fingerprint(self.root, task))
+                self.assertEqual({"accepted": True}, task["quality_checkpoint"])
+                self.assertFalse(state.migrate_unit_test_settings(task))
+        inherited = {"current_task": "test"}
+        self.assertFalse(state.migrate_unit_test_settings(inherited))
+        self.assertNotIn("unit_test_mode", inherited)
+
+    def test_ut_compact_analysis_freezes_baseline_without_tdd_process_artifacts(self):
+        self.task.update(status="ANALYSIS", workflow_mode="fast")
+        self.write(".easy-coding/tasks/test/task.json", json.dumps(self.task))
+        self.write(".easy-coding/tasks/test/dev-spec.md", "<!-- easy-coding:compact -->\ndecision_status: closed\n")
+        session = {"unit_test_mode": "ut", "ut_coverage_threshold": 93}
+        with patch.object(state, "require_tdd_readiness"):
+            state.validate_analysis_readiness(self.root, "test", session)
+            state.freeze_unit_test_mode(self.root, session, "test", self.task, "codex")
+        self.assertEqual("ut", self.task["unit_test_mode"])
+        self.assertEqual(93, self.task["ut_coverage_threshold"])
+        self.assertEqual({"project": self.git("rev-parse", "HEAD").decode().strip()}, self.task["tdd_baselines"])
+        self.assertEqual("fast", state.calculate_workflow_floor(self.root, "test")[0])
+        self.assertFalse((self.root / ".easy-coding/tasks/test/test-strategy.md").exists())
+
     def test_unit_failure_is_not_hidden_by_another_units_pass(self):
         fingerprints = state.evidence_fingerprints(self.root, "test")
         common = {**fingerprints, "quality_attempt": 1, "timestamp": state.now_iso(),

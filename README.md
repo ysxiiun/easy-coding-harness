@@ -74,7 +74,7 @@ INIT --[always auto]--> ANALYSIS -> IMPLEMENT -> QUALITY -> MEMORY --[always aut
                  +-- replan ---+          +--- repair ---+
 approval --[approve / guard / confirm / auto]--> transition wait policy
 workflow --[adaptive => fast / standard / strict]--> stage execution depth
-tdd --[off by default / Java changed-line gate]--> optional test discipline
+unit_test_mode --[none / ut / tdd]--> optional Java test strategy
 any stage --[user abort via ec-task-close]--> CLOSED
 ```
 
@@ -92,7 +92,7 @@ any stage --[user abort via ec-task-close]--> CLOSED
   并在 Dev-Spec 中记录唯一的 `decision_status: closed`。会话只展示核心方案、验收摘要、
   Workflow Mode 与主要风险；完整 `dev-spec.md` 通过绝对本地链接或路径按需查看。原生选择
   返回或迁移调用结束后的最终消息会重复紧凑方案回执与完整入口，避免前置过程消息折叠后丢失。
-- Java TDD 默认关闭；优先级为 session 覆盖 > 项目配置 > `false/90%`。首次开启前必须运行 `ec-tdd-init`，只建设 JUnit/JaCoCo/GitLab 增量覆盖率基础设施，不补存量业务单测；readiness 通过后才允许显式开启。开启后在 ANALYSIS → IMPLEMENT 冻结开关、baseline 与阈值，只验收本任务新增/修改生产代码行，执行 RED/GREEN/REFACTOR（纯重构使用 characterization GREEN → GREEN），并要求本地单测通过、本地差异覆盖率达到冻结阈值。GitLab TEST-stage job 仍会生成，但远程 pipeline 结果不属于 Harness 验收证据，也不会触发中间提交推送。关闭时普通任务不扫描 CI/JaCoCo、不增加命令或提高原工作流验收深度。
+- Java 单测策略由 `unit_test_mode: none | ut | tdd` 选择，默认 `none`，会话覆盖优先于项目配置。UT 要求本地单测通过及改动行覆盖率达标；TDD 在此基础上要求测试先行与 TDD 审查。两者共用 `ut_coverage_threshold`（默认 90，范围 1..100）和现有 `ec-tdd-init`/JaCoCo 基础设施。进入 IMPLEMENT 时冻结策略、baseline 与阈值，只验收本任务修改的生产代码；一次测试同时生成测试及覆盖率证据。UT 无额外过程文档或独立审查，三种策略均不提高机械执行深度。远程 CI 不作为验收条件；`none` 保留普通任务需要的验证，不附加覆盖率工作。
 - 所有修改任务都进入 QUALITY；纯对话分析、解释、报告和只读 review 保持 Ready，不创建任务。文档或配置一旦写入仓库，仍走完整状态机。
 - `QUALITY` 同时编排只读 Review Gate 与 Verification Gate。Fast 使用主 Agent 聚焦自审和最小定向验证，Standard 使用一个独立 reviewer 与受影响检查，Strict 使用至少两个独立维度并只对实际修改仓库运行完整适用检查。两个 Gate 绑定同一候选指纹和 attempt，必须完成或明确取消后才形成一次 Repair Bundle；代码/测试缺陷回 IMPLEMENT，契约歧义优先回 ANALYSIS并保留同轮其他缺陷，环境问题留在 QUALITY 重试；候选漂移会审计为 cancelled 并强制先回 IMPLEMENT。
 - 修复仅刷新受影响检查；运行时引用输入未变化的历史证据，保留来源与执行时间，Agent 不重写通过记录。
@@ -158,7 +158,7 @@ Dev-Spec 继续走原有整文分析流程。
 | `easy-coding add-agent` | 给同版本已接入项目追加 Claude Code、Codex 或 Qoder 支持；版本不一致时先执行 upgrade |
 | `easy-coding upgrade` | CLI 升级后同步项目内生成文件，生成区覆盖，用户资产保留；supermodule 父仓会同步升级已初始化子仓 |
 | `easy-coding update` | 更新全局 CLI 到最新发布版 |
-| `easy-coding config` | 交互修改当前项目的 Approval、Workflow、Java TDD 与覆盖率阈值；开启 TDD 前要求 readiness |
+| `easy-coding config` | 交互修改当前项目的 Approval、Workflow、Java 单测策略与共享覆盖率阈值；选择 UT/TDD 前要求 readiness |
 | `easy-coding status` | 查看已安装平台、harness 版本、当前任务状态 |
 | `easy-coding clear` | 移除 harness 安装物，保留 tasks、spec、memory、project.yaml 等用户资产；supermodule 父仓支持交互选择、`--submodules` 和 `--no-submodules` |
 
@@ -175,8 +175,8 @@ Dev-Spec 继续走原有整文分析流程。
 | `ec-quality` | 编排 Review/Verification 双门、证据复用和一次性 Repair Bundle |
 | `ec-memory` | 写短期记忆，并在超过阈值时沉淀长期记忆 |
 | `ec-task-management` | 任务面板：查看、创建、选择、恢复、交接任务 |
-| `ec-config` | 只读查看或显式修改项目/session 的 Approval、Workflow、TDD 与阈值 |
-| `ec-tdd-init` | 在 TDD 关闭态初始化/刷新 Java changed-line coverage 基础设施，不补存量单测 |
+| `ec-config` | 只读查看或显式修改项目/session 的 Approval、Workflow、单测策略与阈值 |
+| `ec-tdd-init` | 为 UT/TDD 初始化/刷新 Java changed-line coverage 基础设施，不补存量单测 |
 | `ec-task-close` | 用户主动中断任务并关闭 |
 | `ec-no-harness` | 当前会话仅旁路 Easy Coding Harness，使用原生 Agent 能力 |
 | `ec-lite` | 用户显式启停的极简直达模式：一次方案确认后最小实现，不创建任务/QUALITY/MEMORY |
@@ -214,19 +214,20 @@ easy-coding upgrade
 `behavior.approval_mode` 与 `behavior.workflow_mode`；旧 `lite` 映射为 `guard + fast`。
 项目级模式用 `easy-coding config` 修改（要求
 项目 Harness 与 CLI 版本完全一致，否则先执行 `easy-coding upgrade` 或更新 CLI）；当前
-session 临时覆盖统一通过 `ec-config` 对话修改。当前配置 schema 为 5；升级保留项目和
-session 的 TDD 开关、阈值及继承关系，也保留任务已经冻结的基线。支持 TDD 的 schema 4
-迁移保留用户配置；readiness 缺失或损坏只报告问题，不自动关闭 TDD。TDD 业务任务只依赖本地
+session 临时覆盖统一通过 `ec-config` 对话修改。当前配置 schema 为 6；升级将旧
+`tdd_enabled` 映射为 `unit_test_mode`（true→tdd、false→none），将旧阈值迁移为
+`ut_coverage_threshold`。保留项目/session 继承关系、任务冻结基线和执行进度；readiness
+缺失或损坏只报告问题，不重置策略。UT/TDD 业务任务只依赖本地
 单测与本地差异覆盖率，历史远程 CI 证据保留但不再参与验收。已经冻结的活动任务合同
 不会被静默改写。0.10.0-beta.4 起，仍停在 ANALYSIS 的旧任务必须补齐决策闭环后才能
 进入 IMPLEMENT；已经进入后续阶段的任务不受影响。
 
 session GC 只在创建新逻辑会话前和实际升级时触发：无任务绑定的会话保留 7 天、仍绑定
 任务的会话保留 30 天，并按最近活动时间将根目录 JSON 控制在 100 个以内。活动任务仍在
-引用的 acceptance 验收快照会被保留；升级时带有显式 TDD 配置的 session 不参与清理。
+引用的 acceptance 验收快照会被保留；升级时带有显式单测策略或阈值配置的 session 不参与清理。
 任务、记忆、Spec 和项目知识不参与清理。
 
-TDD 凭据中的文件摘要是初始化历史。POM 版本、依赖、插件、CI 或托管工具变化无需重新
+UT/TDD 共用凭据中的文件摘要是初始化历史。POM 版本、依赖、插件、CI 或托管工具变化无需重新
 初始化；本轮构建与工具变化会使旧验收证据失效。日常 readiness 只检查必要本地入口和
 参数契约；缺少凭据为 `needs_init`，已有凭据或入口损坏为 `needs_repair`。实际单测与
 增量覆盖率仍须通过。`ec-tdd-init` 的完整校验包含 GitLab CI。

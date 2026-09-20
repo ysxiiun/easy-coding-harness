@@ -1,4 +1,4 @@
-import { execSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -622,11 +622,11 @@ describe("upgrade command", () => {
     expect(await readFile(memoryPath, "utf8")).toBe("memory must stay byte-identical\n");
   });
 
-  it("migrates legacy confirmation fields to schema 5 with default-off TDD", async () => {
+  it("migrates legacy confirmation fields to schema 6 with the none strategy", async () => {
     await init({ agent: "codex" });
     const configPath = path.join(tempDir, ".easy-coding", "config.yaml");
     const legacyConfig = (await readFile(configPath, "utf8"))
-      .replace("version: 3", "version: 1")
+      .replace("version: 6", "version: 1")
       .replace(
         "approval_mode: guard\n  workflow_mode: adaptive",
         "strict_confirm: false\n  auto_mode: true",
@@ -637,64 +637,147 @@ describe("upgrade command", () => {
     await upgrade({ yes: true });
 
     const migrated = await readFile(configPath, "utf8");
-    expect(migrated).toContain("version: 5");
+    expect(migrated).toContain("version: 6");
     expect(migrated).toContain("approval_mode: auto");
     expect(migrated).toContain("workflow_mode: adaptive");
-    expect(migrated).toContain("tdd_enabled: false");
-    expect(migrated).toContain("tdd_coverage_threshold: 90");
+    expect(migrated).toContain("unit_test_mode: none");
+    expect(migrated).toContain("ut_coverage_threshold: 90");
     expect(migrated).not.toContain("strict_confirm");
     expect(migrated).not.toContain("auto_mode");
   });
 
-  it.each([4, 5])("preserves schema %s TDD settings, receipts and frozen tasks during upgrade", async (schema) => {
-    await init({ agent: "codex" });
-    const configPath = path.join(tempDir, ".easy-coding", "config.yaml");
-    const beta1 = (await readFile(configPath, "utf8"))
-      .replace("version: 5", `version: ${schema}`)
-      .replace(`harness_version: ${VERSION}`, "harness_version: 0.10.0-beta.1")
-      .replace("tdd_enabled: false", "tdd_enabled: true")
-      .replace("tdd_coverage_threshold: 90", "tdd_coverage_threshold: 95");
-    await writeFile(configPath, beta1, "utf8");
-    const sessionPath = path.join(tempDir, ".easy-coding", "sessions", "beta1.json");
-    await mkdir(path.dirname(sessionPath), { recursive: true });
-    await writeFile(
-      sessionPath,
-      JSON.stringify({ current_task: null, tdd_enabled: true, tdd_coverage_threshold: 95, last_active_at: "2020-01-01T00:00:00Z" }),
-      "utf8",
-    );
+  it.each([4, 5])(
+    "preserves schema %s TDD settings, receipts and frozen tasks during upgrade",
+    async (schema) => {
+      await init({ agent: "codex" });
+      const configPath = path.join(tempDir, ".easy-coding", "config.yaml");
+      const beta1 = (await readFile(configPath, "utf8"))
+        .replace("version: 6", `version: ${schema}`)
+        .replace(`harness_version: ${VERSION}`, "harness_version: 0.10.0-beta.1")
+        .replace("unit_test_mode: none", "tdd_enabled: true")
+        .replace("ut_coverage_threshold: 90", "tdd_coverage_threshold: 95");
+      await writeFile(configPath, beta1, "utf8");
+      const sessionPath = path.join(tempDir, ".easy-coding", "sessions", "beta1.json");
+      await mkdir(path.dirname(sessionPath), { recursive: true });
+      await writeFile(
+        sessionPath,
+        JSON.stringify({
+          current_task: null,
+          tdd_enabled: true,
+          tdd_coverage_threshold: 95,
+          last_active_at: "2020-01-01T00:00:00Z",
+        }),
+        "utf8",
+      );
 
-    const frozen = {
-      type: "feature", status: "IMPLEMENT", workflow_mode: "standard", last_agent: "codex",
-      tdd_enabled: true, tdd_coverage_threshold: 97, tdd_baselines: { project: "a".repeat(40) },
-      tdd_confirmed_by: "codex", tdd_confirmed_at: "2026-01-01T00:00:00Z",
-    };
-    const taskPath = path.join(tempDir, ".easy-coding", "tasks", "frozen-tdd", "task.json");
-    await mkdir(path.dirname(taskPath), { recursive: true });
-    await writeFile(taskPath, JSON.stringify(frozen));
-    const receiptPath = path.join(tempDir, ".easy-coding", "tdd", "readiness.json");
-    const receipt = "{\"schema\":\"easy-coding/tdd-readiness-v1\",\"generated_by\":\"user\"}\n";
-    if (schema === 5) {
-      await mkdir(path.dirname(receiptPath), { recursive: true });
-      await writeFile(receiptPath, receipt);
-    }
-    await writeFile(path.join(tempDir, "pom.xml"), "<project>user build</project>\n");
-    await writeFile(path.join(tempDir, ".gitlab-ci.yml"), "# user CI\n");
+      const frozen = {
+        type: "feature",
+        status: "QUALITY",
+        workflow_mode: "standard",
+        last_agent: "codex",
+        tdd_enabled: true,
+        tdd_coverage_threshold: 97,
+        tdd_baselines: { project: "a".repeat(40) },
+        tdd_confirmed_by: "codex",
+        tdd_confirmed_at: "2026-01-01T00:00:00Z",
+      };
+      const taskPath = path.join(tempDir, ".easy-coding", "tasks", "frozen-tdd", "task.json");
+      await mkdir(path.dirname(taskPath), { recursive: true });
+      await writeFile(taskPath, JSON.stringify(frozen));
+      const receiptPath = path.join(tempDir, ".easy-coding", "tdd", "readiness.json");
+      const receipt = JSON.stringify({
+        schema: "easy-coding/tdd-readiness-v1",
+        generated_by: "user",
+        tool_files: [{ path: ".easy-coding/tools/easy_coding_java_coverage.py" }],
+      });
+      if (schema === 5) {
+        await mkdir(path.dirname(receiptPath), { recursive: true });
+        await writeFile(receiptPath, receipt);
+      }
+      await writeFile(path.join(tempDir, "pom.xml"), "<project>user build</project>\n");
+      await writeFile(path.join(tempDir, ".gitlab-ci.yml"), "# user CI\n");
 
-    await upgrade({ yes: true });
+      const toolPath = path.join(tempDir, ".easy-coding/tools/easy_coding_java_coverage.py");
+      const currentTool = await readFile(toolPath, "utf8");
+      const oldTool = currentTool.replaceAll("ut_coverage_threshold", "tdd_coverage_threshold");
+      await writeFile(toolPath, oldTool);
+      await writeFile(
+        path.join(path.dirname(taskPath), "execution.jsonl"),
+        JSON.stringify({
+          type: "plan",
+          strategy: "sequential",
+          units: [
+            {
+              id: "unit",
+              title: "unit",
+              type: "backend",
+              depends_on: [],
+              files: ["pom.xml"],
+              input_files: [],
+              local_baseline: ["existing build"],
+              contracts: ["preserve build"],
+              acceptance_criteria: ["tests pass"],
+              risks: [],
+            },
+          ],
+        }) + "\n",
+      );
+      execFileSync("git", ["init", "-q"], { cwd: tempDir });
+      const fingerprints = () =>
+        execFileSync(
+          pythonCmd,
+          [
+            "-B",
+            "-c",
+            [
+              "import json,sys",
+              "from pathlib import Path",
+              "sys.path.insert(0, '.codex/hooks')",
+              "import easy_coding_state as state",
+              "root = Path.cwd()",
+              "task = state.load_task(root, 'frozen-tdd')",
+              "state.migrate_unit_test_settings(task)",
+              "state.load_task = lambda *_: task",
+              "print(json.dumps(state.evidence_fingerprints(root, 'frozen-tdd'), sort_keys=True))",
+            ].join("\n"),
+          ],
+          { cwd: tempDir, encoding: "utf8" },
+        );
+      const beforeFingerprints = fingerprints();
 
-    const migrated = await readFile(configPath, "utf8");
-    expect(migrated).toContain("version: 5");
-    expect(migrated).toContain("tdd_enabled: true");
-    expect(migrated).toContain("tdd_coverage_threshold: 95");
-    expect(JSON.parse(await readFile(sessionPath, "utf8"))).toMatchObject({
-      tdd_enabled: true,
-      tdd_coverage_threshold: 95,
-    });
-    expect(JSON.parse(await readFile(taskPath, "utf8"))).toMatchObject(frozen);
-    if (schema === 5) expect(await readFile(receiptPath, "utf8")).toBe(receipt);
-    expect(await readFile(path.join(tempDir, "pom.xml"), "utf8")).toBe("<project>user build</project>\n");
-    expect(await readFile(path.join(tempDir, ".gitlab-ci.yml"), "utf8")).toBe("# user CI\n");
-  });
+      await upgrade({ yes: true });
+
+      const migrated = await readFile(configPath, "utf8");
+      expect(migrated).toContain("version: 6");
+      expect(migrated).toContain("unit_test_mode: tdd");
+      expect(migrated).toContain("ut_coverage_threshold: 95");
+      expect(JSON.parse(await readFile(sessionPath, "utf8"))).toMatchObject({
+        unit_test_mode: "tdd",
+        ut_coverage_threshold: 95,
+      });
+      const migratedTask = JSON.parse(await readFile(taskPath, "utf8"));
+      const { tdd_enabled, tdd_coverage_threshold, ...unchanged } = frozen;
+      expect(migratedTask).toMatchObject({
+        ...unchanged,
+        unit_test_mode: tdd_enabled ? "tdd" : "none",
+        ut_coverage_threshold: tdd_coverage_threshold,
+      });
+      expect(migratedTask).not.toHaveProperty("tdd_enabled");
+      expect(migratedTask).not.toHaveProperty("tdd_coverage_threshold");
+      if (schema === 5) expect(await readFile(receiptPath, "utf8")).toBe(receipt);
+      expect(await readFile(path.join(tempDir, "pom.xml"), "utf8")).toBe(
+        "<project>user build</project>\n",
+      );
+      expect(await readFile(path.join(tempDir, ".gitlab-ci.yml"), "utf8")).toBe("# user CI\n");
+      expect(await readFile(toolPath, "utf8")).toBe(oldTool);
+      expect(fingerprints()).toBe(beforeFingerprints);
+      await upgrade({ yes: true });
+      expect(await readFile(toolPath, "utf8")).toBe(oldTool);
+      await writeFile(taskPath, JSON.stringify({ ...migratedTask, status: "COMPLETE" }));
+      await upgrade({ yes: true });
+      expect(await readFile(toolPath, "utf8")).toBe(currentTool);
+    },
+  );
 
   it("migrates lite to guard approval and fast workflow", async () => {
     await init({ agent: "codex" });
@@ -755,7 +838,7 @@ describe("upgrade command", () => {
           ],
           workflow_mode: "standard",
           workflow_mode_confirmed_by: "Codex with Easy Coding",
-          tdd_enabled: false,
+          unit_test_mode: "none",
           tdd_confirmed_by: "Codex with Easy Coding",
         },
         null,
@@ -877,8 +960,8 @@ describe("upgrade command", () => {
             },
           ],
           workflow_mode: "standard",
-          tdd_enabled: false,
-          tdd_coverage_threshold: 90,
+          unit_test_mode: "none",
+          ut_coverage_threshold: 90,
           verification_checkpoint: {
             snapshot_file: ".easy-coding/sessions/acceptance/active.json",
           },

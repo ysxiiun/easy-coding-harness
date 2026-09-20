@@ -440,7 +440,7 @@
         <p class="tagline">给 AI 编程套上一套工作流规范——让它有章可循，而不是全凭 agent 当时的发挥。</p>
         <div class="chip-row">
           <span class="chip">固定阶段状态机</span>
-          <span class="chip">Approval + Workflow + 可选 Java TDD</span>
+          <span class="chip">Approval + Workflow + Java UT/TDD</span>
           <span class="chip">子代理隔离上下文</span>
           <span class="chip">项目记忆分层</span>
           <span class="chip">一份模板 · 三平台</span>
@@ -448,7 +448,7 @@
         </div>
         <div class="meta">
           <span>来源：<code>docs/introduction.md</code></span>
-          <span>版本：<code>1.1.0-beta.0</code></span>
+          <span>版本：<code>1.1.0-beta.1</code></span>
           <span>适配：Claude Code · Codex · Qoder</span>
         </div>
       </header>
@@ -499,7 +499,7 @@
             <div class="idea-card">
               <div class="num">2</div>
               <h3>人机共创，关键节点设硬门控</h3>
-              <p><code>approval_mode</code> 控制状态边是否等待，<code>workflow_mode</code> 控制状态内执行深度。ANALYSIS 闭合影响技术路线、接口、模型、状态、范围和验收的问题；Canonical Spec 只消费 selected task 与直接依赖，未修改仓库和 supermodule 子项目不参与定级。执行深度直接采用本轮改动的机械最低模式，历史 Strict 不构成下限；单仓、最多三个内聚 Unit、最多 8 个文件的低风险局部修改优先 Fast，只有明确高风险与真实复杂度同时存在才进入 Strict。非 TDD 的 IMPLEMENT 只负责编码；QUALITY 按每项检查的实际输入复用证据，合并测试只运行一次；局部纠正保留未受影响进度，不因阶段或 Spec revision 变化重复验证。TDD 的 RED/GREEN/REFACTOR 是唯一测试例外。编码贴合最近邻风格，坚持最小修改，避免冗余校验、投机抽象、碎片方法和无意义常量；核心 Java 新增或实质修改的方法与字段使用多行 Javadoc，但接口已有完整 Javadoc 且实现无额外语义时不重复编写，特殊实现行为和项目硬规则仍须说明。普通单行说明使用 <code>//</code>。纯只读请求保持 Ready。用户还可显式启用 <code>ec-lite</code>，以一次紧凑方案确认直接完成极简修改，不创建任务、QUALITY 或 MEMORY。</p>
+              <p><code>approval_mode</code> 控制状态边是否等待，<code>workflow_mode</code> 控制状态内执行深度。ANALYSIS 闭合影响技术路线、接口、模型、状态、范围和验收的问题；Canonical Spec 只消费 selected task 与直接依赖，未修改仓库和 supermodule 子项目不参与定级。执行深度直接采用本轮改动的机械最低模式，历史 Strict 不构成下限；单仓、最多三个内聚 Unit、最多 8 个文件的低风险局部修改优先 Fast，只有明确高风险与真实复杂度同时存在才进入 Strict。非 TDD 的 IMPLEMENT 只负责编码；QUALITY 按每项检查的实际输入复用证据，合并测试只运行一次；局部纠正保留未受影响进度，不因阶段或 Spec revision 变化重复验证。单测策略为 none、UT、TDD；UT 要求本地单测通过及改动行覆盖率达标，TDD 额外保留 RED/GREEN/REFACTOR。UT/TDD 共用 ut_coverage_threshold，不增加执行阶段。编码贴合最近邻风格，坚持最小修改，避免冗余校验、投机抽象、碎片方法和无意义常量；核心 Java 新增或实质修改的方法与字段使用多行 Javadoc，但接口已有完整 Javadoc 且实现无额外语义时不重复编写，特殊实现行为和项目硬规则仍须说明。普通单行说明使用 <code>//</code>。纯只读请求保持 Ready。用户还可显式启用 <code>ec-lite</code>，以一次紧凑方案确认直接完成极简修改，不创建任务、QUALITY 或 MEMORY。</p>
             </div>
             <div class="idea-card">
               <div class="num">3</div>
@@ -646,7 +646,7 @@ easy-coding init --agent=claude-code,codex,qoder  # 指定多个平台</code></p
                 <tr><td><code>easy-coding add-agent</code></td><td>给同版本已接入项目追加平台支持；版本不一致时先 upgrade</td></tr>
                 <tr><td><code>easy-coding upgrade</code></td><td>CLI 升级后同步项目内生成文件，用户资产保留</td></tr>
                 <tr><td><code>easy-coding update</code></td><td>更新全局 CLI 到最新发布版</td></tr>
-                <tr><td><code>easy-coding config</code></td><td>交互修改 Approval、Workflow、Java TDD 与覆盖率阈值</td></tr>
+                <tr><td><code>easy-coding config</code></td><td>交互修改 Approval、Workflow、Java 单测策略与共享覆盖率阈值</td></tr>
                 <tr><td><code>easy-coding status</code></td><td>查看已安装平台、harness 版本、确认模式与当前任务状态</td></tr>
                 <tr><td><code>easy-coding clear</code></td><td>移除 harness 安装物，保留 tasks、spec、memory 等用户资产</td></tr>
               </tbody>

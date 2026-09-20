@@ -125,8 +125,8 @@ WIDE_WORKFLOW_CONTRACT_PATTERN = re.compile(
 )
 DEFAULT_APPROVAL_MODE = "guard"
 DEFAULT_WORKFLOW_MODE = "adaptive"
-DEFAULT_TDD_ENABLED = False
-DEFAULT_TDD_COVERAGE_THRESHOLD = 90
+DEFAULT_UNIT_TEST_MODE = "none"
+DEFAULT_UT_COVERAGE_THRESHOLD = 90
 TDD_READINESS_SCHEMA = "easy-coding/tdd-readiness-v1"
 TDD_READINESS_SCOPE = "changed-production-lines"
 TDD_READINESS_PATH = Path(".easy-coding/tdd/readiness.json")
@@ -458,7 +458,7 @@ def read_memory_config(root: Path) -> dict[str, int]:
     return config
 
 
-def parse_tdd_threshold(value: object, source: str) -> int:
+def parse_ut_threshold(value: object, source: str) -> int:
     if isinstance(value, bool):
         raise StateError(f"Invalid {source}: expected an integer from 1 to 100.")
     try:
@@ -470,18 +470,13 @@ def parse_tdd_threshold(value: object, source: str) -> int:
     return threshold
 
 
-def parse_yaml_bool(value: str | None, source: str) -> bool:
-    if value is None:
-        return DEFAULT_TDD_ENABLED
-    normalized = value.lower()
-    if normalized in {"true", "yes", "on"}:
-        return True
-    if normalized in {"false", "no", "off"}:
-        return False
-    raise StateError(f"Invalid {source}: expected true or false.")
+def parse_unit_test_mode(value: object, source: str) -> str:
+    if not isinstance(value, str) or value not in {"none", "ut", "tdd"}:
+        raise StateError(f"Invalid {source}: expected none, ut, or tdd.")
+    return str(value)
 
 
-def read_project_behavior(root: Path) -> tuple[str, str, bool, int]:
+def read_project_behavior(root: Path) -> tuple[str, str, str, int]:
     path = root / ".easy-coding" / "config.yaml"
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
@@ -489,8 +484,8 @@ def read_project_behavior(root: Path) -> tuple[str, str, bool, int]:
         return (
             DEFAULT_APPROVAL_MODE,
             DEFAULT_WORKFLOW_MODE,
-            DEFAULT_TDD_ENABLED,
-            DEFAULT_TDD_COVERAGE_THRESHOLD,
+            DEFAULT_UNIT_TEST_MODE,
+            DEFAULT_UT_COVERAGE_THRESHOLD,
         )
 
     in_behavior = False
@@ -542,16 +537,20 @@ def read_project_behavior(root: Path) -> tuple[str, str, bool, int]:
             "Invalid behavior.workflow_mode in .easy-coding/config.yaml: "
             "expected adaptive, fast, standard, or strict."
         )
-    if schema_version >= 4:
-        tdd_enabled = parse_yaml_bool(behavior.get("tdd_enabled"), "behavior.tdd_enabled")
-        tdd_threshold = parse_tdd_threshold(
-            behavior.get("tdd_coverage_threshold", DEFAULT_TDD_COVERAGE_THRESHOLD),
-            "behavior.tdd_coverage_threshold",
+    if schema_version >= 6:
+        unit_test_mode = parse_unit_test_mode(
+            behavior.get("unit_test_mode", DEFAULT_UNIT_TEST_MODE), "behavior.unit_test_mode"
+        )
+        threshold = parse_ut_threshold(
+            behavior.get("ut_coverage_threshold", DEFAULT_UT_COVERAGE_THRESHOLD),
+            "behavior.ut_coverage_threshold",
         )
     else:
-        tdd_enabled = DEFAULT_TDD_ENABLED
-        tdd_threshold = DEFAULT_TDD_COVERAGE_THRESHOLD
-    return approval_mode, workflow_mode, tdd_enabled, tdd_threshold
+        if schema_version >= 4:
+            raise StateError("Run easy-coding upgrade to migrate unit-test settings to schema 6.")
+        unit_test_mode = DEFAULT_UNIT_TEST_MODE
+        threshold = DEFAULT_UT_COVERAGE_THRESHOLD
+    return approval_mode, workflow_mode, unit_test_mode, threshold
 
 
 def safe_tdd_report_pattern(value: object) -> bool:
@@ -723,13 +722,13 @@ def require_tdd_readiness(root: Path) -> None:
 
 def resolve_behavior(
     root: Path, session: dict
-) -> tuple[str, str | None, str, str, str | None, str, bool, bool | None, bool, int, int | None, int]:
-    project_approval, project_workflow, project_tdd, project_threshold = read_project_behavior(root)
+) -> tuple[str, str | None, str, str, str | None, str, str, str | None, str, int, int | None, int]:
+    project_approval, project_workflow, project_unit_test, project_threshold = read_project_behavior(root)
     legacy = session.get("confirm_mode")
     session_approval = session.get("approval_mode")
     session_workflow = session.get("workflow_mode")
-    session_tdd = session.get("tdd_enabled")
-    session_threshold = session.get("tdd_coverage_threshold")
+    session_unit_test = session.get("unit_test_mode")
+    session_threshold = session.get("ut_coverage_threshold")
     if session_approval is None:
         if legacy == "lite":
             session_approval = "guard"
@@ -748,11 +747,11 @@ def resolve_behavior(
         raise StateError(
             "Invalid session workflow_mode: expected adaptive, fast, standard, or strict."
         )
-    if session_tdd is not None and not isinstance(session_tdd, bool):
-        raise StateError("Invalid session tdd_enabled: expected true or false.")
+    if session_unit_test is not None:
+        session_unit_test = parse_unit_test_mode(session_unit_test, "session unit_test_mode")
     if session_threshold is not None:
-        session_threshold = parse_tdd_threshold(
-            session_threshold, "session tdd_coverage_threshold"
+        session_threshold = parse_ut_threshold(
+            session_threshold, "session ut_coverage_threshold"
         )
     return (
         project_approval,
@@ -761,9 +760,9 @@ def resolve_behavior(
         project_workflow,
         str(session_workflow) if session_workflow else None,
         str(session_workflow or project_workflow),
-        project_tdd,
-        session_tdd,
-        session_tdd if session_tdd is not None else project_tdd,
+        project_unit_test,
+        session_unit_test,
+        session_unit_test if session_unit_test is not None else project_unit_test,
         project_threshold,
         session_threshold,
         session_threshold if session_threshold is not None else project_threshold,
@@ -775,7 +774,22 @@ def resolve_approval_mode(root: Path, session: dict) -> tuple[str, str | None, s
     return behavior[0], behavior[1], behavior[2]
 
 
+def migrate_unit_test_settings(record: dict) -> bool:
+    changed = False
+    if "tdd_enabled" in record:
+        enabled = record.pop("tdd_enabled")
+        if "unit_test_mode" not in record and isinstance(enabled, bool):
+            record["unit_test_mode"] = "tdd" if enabled else "none"
+        changed = True
+    if "tdd_coverage_threshold" in record:
+        threshold = record.pop("tdd_coverage_threshold")
+        record.setdefault("ut_coverage_threshold", threshold)
+        changed = True
+    return changed
+
+
 def materialize_legacy_session_behavior(session: dict) -> None:
+    migrate_unit_test_settings(session)
     legacy = session.get("confirm_mode")
     if legacy == "lite":
         session.setdefault("approval_mode", "guard")
@@ -1264,7 +1278,7 @@ def normalize_legacy_stage(stage: object) -> object:
 def normalize_legacy_task(task: dict) -> bool:
     """Normalize legacy task state without touching artifacts outside task.json."""
     legacy_status = str(task.get("status") or "")
-    changed = False
+    changed = migrate_unit_test_settings(task)
 
     for field in ("created_by", "last_agent"):
         normalized_agent = canonical_agent_identity(
@@ -2889,7 +2903,7 @@ def tdd_baseline_marker_reasons(
 def contains_tdd_threshold(content: str, threshold: int) -> bool:
     return re.search(
         rf"(?<!\d){threshold}\s*%|--threshold(?:\s+|=){threshold}(?!\d)|"
-        rf"tdd_coverage_threshold\s*[:=]\s*{threshold}(?!\d)",
+        rf"ut_coverage_threshold\s*[:=]\s*{threshold}(?!\d)",
         content,
         re.IGNORECASE,
     ) is not None
@@ -3286,11 +3300,22 @@ def canonical_repository_fingerprints(root: Path, task_id: str, task: dict) -> d
     }
 
 
+def unit_test_contract(task: dict) -> dict:
+    mode = task.get("unit_test_mode")
+    # 旧证据的序列化键保持不变，配置字段改名不触发全局失效；UT 单独标识。
+    contract = {
+        "tdd_enabled": None if mode is None else mode != "none",
+        "tdd_coverage_threshold": task.get("ut_coverage_threshold"),
+        "tdd_baselines": task.get("tdd_baselines"),
+    }
+    if mode == "ut":
+        contract["unit_test_mode"] = "ut"
+    return contract
+
+
 def behavior_config_fingerprint(root: Path, task: dict | None = None) -> str:
     # 审批方式、记忆策略等配置不影响已经执行的测试。
-    return digest({key: (task or {}).get(key) for key in (
-        "tdd_enabled", "tdd_coverage_threshold", "tdd_baselines"
-    )})
+    return digest(unit_test_contract(task or {}))
 
 
 def evidence_fingerprints(root: Path, task_id: str) -> dict[str, str]:
@@ -4205,12 +4230,10 @@ def verification_contract_fingerprint(root: Path, task_id: str, task: dict) -> s
     source = task.get("spec_source") if isinstance(task.get("spec_source"), dict) else {}
     contract = {
         "workflow_mode": task.get("workflow_mode"),
-        "tdd_enabled": task.get("tdd_enabled"),
-        "tdd_coverage_threshold": task.get("tdd_coverage_threshold"),
-        "tdd_baselines": task.get("tdd_baselines"),
+        **unit_test_contract(task),
         **({"tdd_infrastructure": tdd_infrastructure_fingerprint(
             {root.resolve(), *task_repository_roots(root, task, plan)}
-        )} if task.get("tdd_enabled") is True else {}),
+        )} if task.get("unit_test_mode") in {"ut", "tdd"} else {}),
         "plan": plan,
         "canonical": {
             "schema": source.get("schema"),
@@ -5134,7 +5157,7 @@ def validate_review_readiness(
         raise StateError(
             "QUALITY cannot advance while a review dimension is not passed or has error findings."
         )
-    if task.get("tdd_enabled") is True:
+    if task.get("unit_test_mode") == "tdd":
         if is_spec_task:
             missing_tdd_reviews = sorted(
                 source_task_id
@@ -5206,7 +5229,7 @@ def validate_verification_readiness(
             and is_non_empty_string(record.get("check"))
         ):
             if (
-                task.get("tdd_enabled") is True
+                task.get("unit_test_mode") in {"ut", "tdd"}
                 and record.get("check_type") == "coverage"
                 and record.get("coverage_scope") == "gitlab"
             ):
@@ -5309,13 +5332,13 @@ def validate_verification_readiness(
                 "TDD initialization cannot advance to MEMORY until readiness passes: "
                 + "; ".join(str(reason) for reason in readiness["reasons"])
             )
-    if task.get("tdd_enabled") is not True and any(
+    if task.get("unit_test_mode") not in {"ut", "tdd"} and any(
         record.get("check_type") == "coverage" for record in latest_by_check.values()
     ):
         raise StateError(
-            "Coverage verification evidence is not allowed when the frozen TDD mode is off."
+            "Coverage verification evidence is not allowed when the frozen unit test mode is none."
         )
-    if task.get("tdd_enabled") is True:
+    if task.get("unit_test_mode") in {"ut", "tdd"}:
         require_tdd_readiness(root)
         test_records = [
             record
@@ -5330,7 +5353,7 @@ def validate_verification_readiness(
         ]
         if not coverage_records:
             raise StateError(
-                "TDD verification requires changed-production-line JaCoCo coverage evidence."
+                "Unit test verification requires changed-production-line JaCoCo coverage evidence."
             )
         if is_spec_task:
             tested_source_tasks = {
@@ -5341,7 +5364,7 @@ def validate_verification_readiness(
             )
             if missing_test_tasks:
                 raise StateError(
-                    "TDD Canonical verification requires local unit-test evidence for every selected source task: "
+                    "Unit test Canonical verification requires local unit-test evidence for every selected source task: "
                     + ", ".join(missing_test_tasks)
                 )
             covered_source_tasks = {
@@ -5352,33 +5375,33 @@ def validate_verification_readiness(
             )
             if missing_coverage_tasks:
                 raise StateError(
-                    "TDD Canonical verification requires separate coverage evidence for every selected source task: "
+                    "Unit test Canonical verification requires separate coverage evidence for every selected source task: "
                     + ", ".join(missing_coverage_tasks)
                 )
         elif not test_records:
             raise StateError(
-                "TDD verification requires passed local unit-test evidence."
+                "Unit test verification requires passed local unit-test evidence."
             )
         for record in coverage_records:
             scope = str(record.get("coverage_scope") or "")
             if scope != "local":
                 raise StateError(
-                    "TDD coverage evidence must identify coverage_scope as local."
+                    "Unit test coverage evidence must identify coverage_scope as local."
                 )
-        expected_threshold = task.get("tdd_coverage_threshold")
+        expected_threshold = task.get("ut_coverage_threshold")
         expected_baselines = task.get("tdd_baselines")
         if (
             type(expected_threshold) is not int
             or expected_threshold < 1
             or expected_threshold > 100
         ):
-            raise StateError("TDD task is missing a valid frozen coverage threshold.")
+            raise StateError("Unit test task is missing a valid frozen coverage threshold.")
         if not isinstance(expected_baselines, dict) or not expected_baselines:
-            raise StateError("TDD task is missing frozen Git baselines.")
+            raise StateError("Unit test task is missing frozen Git baselines.")
         for record in coverage_records:
             coverage = record.get("coverage")
             if not isinstance(coverage, dict):
-                raise StateError("TDD coverage evidence must include the coverage result object.")
+                raise StateError("Unit test coverage evidence must include the coverage result object.")
             total = coverage.get("total_lines")
             covered = coverage.get("covered_lines")
             percentage = coverage.get("percentage")
@@ -5414,7 +5437,7 @@ def validate_verification_readiness(
                 )
             ):
                 raise StateError(
-                    "TDD coverage evidence must preserve the exact gate command, baseline, counts, percentage, frozen threshold, reports, and report fingerprint."
+                    "Unit test coverage evidence must preserve the exact gate command, baseline, counts, percentage, frozen threshold, reports, and report fingerprint."
                 )
             if total == 0:
                 if record.get("applicable") is not False or record.get("passed") is not True:
@@ -5423,7 +5446,7 @@ def validate_verification_readiness(
                     )
             elif abs(percentage - round(covered * 100.0 / total, 2)) > 0.01:
                 raise StateError(
-                    "TDD coverage evidence percentage does not match covered/total counts."
+                    "Unit test coverage evidence percentage does not match covered/total counts."
                 )
             elif (
                 record.get("applicable") is False
@@ -5431,7 +5454,7 @@ def validate_verification_readiness(
                 or percentage < threshold
             ):
                 raise StateError(
-                    f"TDD changed-line coverage must meet the frozen {threshold}% threshold."
+                    f"Unit test changed-line coverage must meet the frozen {threshold}% threshold."
                 )
     if task.get("workflow_mode") == "strict":
         if is_spec_task:
@@ -5643,7 +5666,7 @@ def quality_repair_failures_for_window(
             "implementation_fingerprint"
         ) == implementation and record.get("config_fingerprint") == config:
             if (
-                task.get("tdd_enabled") is True
+                task.get("unit_test_mode") in {"ut", "tdd"}
                 and record.get("check_type") == "coverage"
                 and record.get("coverage_scope") == "gitlab"
             ):
@@ -6408,10 +6431,18 @@ def validate_analysis_readiness(
     test_strategy = task_dir / "test-strategy.md"
     reasons: list[str] = []
     behavior = resolve_behavior(root, session or default_session())
-    tdd_enabled = behavior[8] if task_type != TDD_INIT_TASK_TYPE else False
+    unit_test_mode = behavior[8] if task_type != TDD_INIT_TASK_TYPE else "none"
     tdd_threshold = behavior[11]
 
-    if dev_spec.is_file() and not tdd_enabled:
+    if unit_test_mode == "ut":
+        require_tdd_readiness(root)
+        plan = latest_execution_plan(root, task_id) or {}
+        if not any(str(file).endswith(".java") for unit in plan.get("units", []) for file in unit.get("files", [])):
+            reasons.append("UT is enabled but the confirmed implementation scope has no Java source")
+        if reasons:
+            raise StateError("; ".join(reasons))
+
+    if dev_spec.is_file() and unit_test_mode != "tdd":
         compact = dev_spec.read_text(encoding="utf-8")
         if compact.startswith("<!-- easy-coding:compact -->"):
             mode, _ = calculate_workflow_floor(root, task_id)
@@ -6527,7 +6558,7 @@ def validate_analysis_readiness(
     plan_is_valid = has_valid_execution_plan(root, task_id)
     if not plan_is_valid:
         reasons.append("execution.jsonl has no valid plan record")
-    if tdd_enabled:
+    if unit_test_mode == "tdd":
         readiness = tdd_readiness(root)
         if readiness["status"] != "ready":
             reasons.append(
@@ -6590,6 +6621,8 @@ def validate_analysis_readiness(
                     dev_spec_content, strategy_content, baselines
                 )
             )
+    elif unit_test_mode == "ut":
+        pass
     elif task_type == TDD_INIT_TASK_TYPE:
         try:
             strategy_content = test_strategy.read_text(encoding="utf-8")
@@ -6939,12 +6972,12 @@ def snapshot_state(
         project_workflow_mode,
         session_workflow_mode,
         configured_workflow_mode,
-        project_tdd_enabled,
-        session_tdd_enabled,
-        effective_tdd_enabled,
-        project_tdd_coverage_threshold,
-        session_tdd_coverage_threshold,
-        effective_tdd_coverage_threshold,
+        project_unit_test_mode,
+        session_unit_test_mode,
+        effective_unit_test_mode,
+        project_ut_coverage_threshold,
+        session_ut_coverage_threshold,
+        effective_ut_coverage_threshold,
     ) = resolve_behavior(root, resolved_session)
     concrete_workflow_mode = None
     if task:
@@ -6952,26 +6985,26 @@ def snapshot_state(
         proposal = task.get("workflow_mode_proposal")
         if concrete_workflow_mode is None and isinstance(proposal, dict):
             concrete_workflow_mode = proposal.get("selected_mode")
-    task_tdd_enabled = task.get("tdd_enabled") if task else None
-    task_tdd_coverage_threshold = task.get("tdd_coverage_threshold") if task else None
-    frozen_tdd = bool(
+    task_unit_test_mode = task.get("unit_test_mode") if task else None
+    task_ut_coverage_threshold = task.get("ut_coverage_threshold") if task else None
+    frozen_unit_test = bool(
         task
         and status not in {"ANALYSIS", "INIT"}
-        and isinstance(task_tdd_enabled, bool)
+        and task_unit_test_mode in {"none", "ut", "tdd"}
     )
     is_tdd_init = bool(
         task and str(task.get("type") or "").strip().lower() == TDD_INIT_TASK_TYPE
     )
-    displayed_tdd_enabled = (
-        False if is_tdd_init else task_tdd_enabled if frozen_tdd else effective_tdd_enabled
+    displayed_unit_test_mode = (
+        "none" if is_tdd_init else task_unit_test_mode if frozen_unit_test else effective_unit_test_mode
     )
-    displayed_tdd_threshold = (
-        task_tdd_coverage_threshold
-        if frozen_tdd and isinstance(task_tdd_coverage_threshold, int)
-        else effective_tdd_coverage_threshold
+    displayed_ut_threshold = (
+        task_ut_coverage_threshold
+        if frozen_unit_test and isinstance(task_ut_coverage_threshold, int)
+        else effective_ut_coverage_threshold
     )
     should_check_readiness = bool(
-        effective_tdd_enabled or task_tdd_enabled is True or is_tdd_init
+        effective_unit_test_mode in {"ut", "tdd"} or task_unit_test_mode in {"ut", "tdd"} or is_tdd_init
     )
     readiness = (
         tdd_readiness(root)
@@ -6998,19 +7031,19 @@ def snapshot_state(
         "session_workflow_mode": session_workflow_mode,
         "configured_workflow_mode": configured_workflow_mode,
         "concrete_workflow_mode": concrete_workflow_mode,
-        "project_tdd_enabled": project_tdd_enabled,
-        "session_tdd_enabled": session_tdd_enabled,
-        "effective_tdd_enabled": effective_tdd_enabled,
-        "project_tdd_coverage_threshold": project_tdd_coverage_threshold,
-        "session_tdd_coverage_threshold": session_tdd_coverage_threshold,
-        "effective_tdd_coverage_threshold": effective_tdd_coverage_threshold,
-        "task_tdd_enabled": task_tdd_enabled,
-        "task_tdd_coverage_threshold": task_tdd_coverage_threshold,
+        "project_unit_test_mode": project_unit_test_mode,
+        "session_unit_test_mode": session_unit_test_mode,
+        "effective_unit_test_mode": effective_unit_test_mode,
+        "project_ut_coverage_threshold": project_ut_coverage_threshold,
+        "session_ut_coverage_threshold": session_ut_coverage_threshold,
+        "effective_ut_coverage_threshold": effective_ut_coverage_threshold,
+        "task_unit_test_mode": task_unit_test_mode,
+        "task_ut_coverage_threshold": task_ut_coverage_threshold,
         "task_tdd_baselines": task.get("tdd_baselines") if task else None,
-        "displayed_tdd_enabled": displayed_tdd_enabled,
-        "displayed_tdd_coverage_threshold": displayed_tdd_threshold,
-        "tdd_readiness_status": readiness["status"],
-        "tdd_readiness_reasons": readiness["reasons"],
+        "displayed_unit_test_mode": displayed_unit_test_mode,
+        "displayed_ut_coverage_threshold": displayed_ut_threshold,
+        "unit_test_readiness_status": readiness["status"],
+        "unit_test_readiness_reasons": readiness["reasons"],
         "spec_summary": spec_task_summary(task),
         # Compatibility output aliases for pre-0.9 clients.
         "project_confirm_mode": project_approval_mode,
@@ -7043,8 +7076,8 @@ def build_status_line(
     approval = str(state["effective_approval_mode"]).capitalize()
     workflow = str(state["concrete_workflow_mode"] or state["configured_workflow_mode"]).capitalize()
     status_brand = f"> **Easy Coding** · **Approval: {approval}** · **Workflow: {workflow}**"
-    if state["displayed_tdd_enabled"] is True:
-        status_brand += " · **TDD**"
+    if state["displayed_unit_test_mode"] in {"ut", "tdd"}:
+        status_brand += f" · **{state['displayed_unit_test_mode'].upper()}**"
     task_id = state["current_task"]
     if task_id:
         status = str(state["status"])
@@ -7089,10 +7122,10 @@ def build_machine_breadcrumbs(
     ]
     if state.get("concrete_workflow_mode"):
         lines.append(f"[easy-coding:workflow-mode:{state['concrete_workflow_mode']}]")
-    if state.get("displayed_tdd_enabled") is True:
-        lines.append("[easy-coding:tdd:enabled]")
+    if state.get("displayed_unit_test_mode") in {"ut", "tdd"}:
+        lines.append(f"[easy-coding:unit-test-mode:{state['displayed_unit_test_mode']}]")
         lines.append(
-            f"[easy-coding:tdd-coverage-threshold:{state['displayed_tdd_coverage_threshold']}]"
+            f"[easy-coding:ut-coverage-threshold:{state['displayed_ut_coverage_threshold']}]"
         )
 
     if task_id:
@@ -7422,42 +7455,43 @@ def clear_session_workflow_mode(
     return snapshot
 
 
-def set_session_tdd(
+def set_session_unit_test_mode(
     root: Path,
-    enabled: bool,
+    mode: str,
     agent: str,
     threshold: int | None = None,
     session_file: str | Path | None = None,
 ) -> dict:
-    if enabled:
+    mode = parse_unit_test_mode(mode, "session unit_test_mode")
+    if mode != "none":
         require_tdd_readiness(root)
     session = ensure_session(root, session_file)
     materialize_legacy_session_behavior(session)
-    session["tdd_enabled"] = enabled
+    session["unit_test_mode"] = mode
     if threshold is not None:
-        session["tdd_coverage_threshold"] = parse_tdd_threshold(
-            threshold, "session tdd_coverage_threshold"
+        session["ut_coverage_threshold"] = parse_ut_threshold(
+            threshold, "session ut_coverage_threshold"
         )
     session["last_agent"] = agent
     write_session(root, session, session_file)
     snapshot = snapshot_state(root, session_file, session)
-    snapshot["action"] = "set-tdd"
+    snapshot["action"] = "set-unit-test-mode"
     return snapshot
 
 
-def clear_session_tdd(
+def clear_session_unit_test_mode(
     root: Path,
     agent: str,
     session_file: str | Path | None = None,
 ) -> dict:
     session = ensure_session(root, session_file)
     materialize_legacy_session_behavior(session)
-    session.pop("tdd_enabled", None)
-    session.pop("tdd_coverage_threshold", None)
+    session.pop("unit_test_mode", None)
+    session.pop("ut_coverage_threshold", None)
     session["last_agent"] = agent
     write_session(root, session, session_file)
     snapshot = snapshot_state(root, session_file, session)
-    snapshot["action"] = "clear-tdd"
+    snapshot["action"] = "clear-unit-test-mode"
     return snapshot
 
 
@@ -9711,35 +9745,36 @@ def freeze_workflow_mode(
     task["workflow_mode_confirmed_by"] = agent
 
 
-def freeze_tdd_mode(
+def freeze_unit_test_mode(
     root: Path, session: dict, task_id: str, task: dict, agent: str
 ) -> None:
     behavior = resolve_behavior(root, session)
     task_type = str(task.get("type") or "").strip().lower()
-    task["tdd_enabled"] = (
-        behavior[8] if task_type != TDD_INIT_TASK_TYPE else False
+    task["unit_test_mode"] = (
+        behavior[8] if task_type != TDD_INIT_TASK_TYPE else "none"
     )
-    task["tdd_coverage_threshold"] = behavior[11]
-    if task["tdd_enabled"] is True:
+    task["ut_coverage_threshold"] = behavior[11]
+    if task["unit_test_mode"] in {"ut", "tdd"}:
         require_tdd_readiness(root)
         plan = latest_execution_plan(root, task_id)
         if plan is None:
-            raise StateError("Cannot freeze TDD baseline without a valid execution plan.")
+            raise StateError("Cannot freeze unit test baseline without a valid execution plan.")
         baselines = {
             key: git_head_sha(repository)
             for key, repository in tdd_repositories(root, task, plan).items()
         }
-        task_dir = task_json_path(root, task_id).parent
-        try:
-            dev_spec_content = (task_dir / "dev-spec.md").read_text(encoding="utf-8")
-            strategy_content = (task_dir / "test-strategy.md").read_text(encoding="utf-8")
-        except OSError as error:
-            raise StateError("Cannot freeze TDD without readable analysis artifacts.") from error
-        marker_reasons = tdd_baseline_marker_reasons(
-            dev_spec_content, strategy_content, baselines
-        )
-        if marker_reasons:
-            raise StateError("; ".join(marker_reasons))
+        if task["unit_test_mode"] == "tdd":
+            task_dir = task_json_path(root, task_id).parent
+            try:
+                dev_spec_content = (task_dir / "dev-spec.md").read_text(encoding="utf-8")
+                strategy_content = (task_dir / "test-strategy.md").read_text(encoding="utf-8")
+            except OSError as error:
+                raise StateError("Cannot freeze TDD without readable analysis artifacts.") from error
+            marker_reasons = tdd_baseline_marker_reasons(
+                dev_spec_content, strategy_content, baselines
+            )
+            if marker_reasons:
+                raise StateError("; ".join(marker_reasons))
         task["tdd_baselines"] = baselines
     else:
         task.pop("tdd_baselines", None)
@@ -9899,7 +9934,7 @@ def apply_transition(
         validate_analysis_readiness(root, resolved_task_id, session)
         if task.get("workflow_mode_legacy") is not True:
             freeze_workflow_mode(root, session, resolved_task_id, task, agent)
-        freeze_tdd_mode(root, session, resolved_task_id, task, agent)
+        freeze_unit_test_mode(root, session, resolved_task_id, task, agent)
     repair_source_task_ids: set[str] | None = None
     quality_exit_outcome: str | None = None
     if previous == "QUALITY" and stage in {"IMPLEMENT", "ANALYSIS"}:
@@ -10611,13 +10646,13 @@ def main() -> int:
     clear_workflow_mode_parser = subcommands.add_parser("clear-workflow-mode", parents=[common])
     clear_workflow_mode_parser.add_argument("--agent", required=True)
 
-    set_tdd_parser = subcommands.add_parser("set-tdd", parents=[common])
-    set_tdd_parser.add_argument("--enabled", required=True, choices=["true", "false"])
-    set_tdd_parser.add_argument("--threshold", type=int)
-    set_tdd_parser.add_argument("--agent", required=True)
+    set_unit_test_parser = subcommands.add_parser("set-unit-test-mode", parents=[common])
+    set_unit_test_parser.add_argument("--mode", required=True, choices=["none", "ut", "tdd"])
+    set_unit_test_parser.add_argument("--threshold", type=int)
+    set_unit_test_parser.add_argument("--agent", required=True)
 
-    clear_tdd_parser = subcommands.add_parser("clear-tdd", parents=[common])
-    clear_tdd_parser.add_argument("--agent", required=True)
+    clear_unit_test_parser = subcommands.add_parser("clear-unit-test-mode", parents=[common])
+    clear_unit_test_parser.add_argument("--agent", required=True)
 
     # Compatibility aliases for pre-0.9 callers.
     set_confirm_mode_parser = subcommands.add_parser("set-confirm-mode", parents=[common])
@@ -11128,13 +11163,13 @@ def main() -> int:
                     session_file,
                 )
             )
-        elif command == "set-tdd":
+        elif command == "set-unit-test-mode":
             emit(
                 attach_status_context(
                     root,
-                    set_session_tdd(
+                    set_session_unit_test_mode(
                         root,
-                        args.enabled == "true",
+                        args.mode,
                         agent,
                         args.threshold,
                         session_file,
@@ -11143,11 +11178,11 @@ def main() -> int:
                     session_file,
                 )
             )
-        elif command == "clear-tdd":
+        elif command == "clear-unit-test-mode":
             emit(
                 attach_status_context(
                     root,
-                    clear_session_tdd(root, agent, session_file),
+                    clear_session_unit_test_mode(root, agent, session_file),
                     agent,
                     session_file,
                 )

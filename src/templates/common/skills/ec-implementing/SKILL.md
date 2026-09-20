@@ -15,12 +15,13 @@ or claim. On session resume or after design sync, call `resume-spec-context --ag
 handoff summaries and derived plans cannot substitute for this context. A blocked context or
 pending `spec_change` stops implementation until the original source is repaired/synchronized.
 
-If frozen `task.tdd_enabled` is not `true`, IMPLEMENT writes production and planned test code but
+If frozen `task.unit_test_mode` is `none` or `ut`, IMPLEMENT writes production and planned test code but
 does not run lint, typecheck, test, build, or coverage commands. Deterministic execution belongs
 to QUALITY's Verification Gate. TDD is the only exception because RED/GREEN/REFACTOR commands are
 part of the implementation method; current-fingerprint green evidence may be reused by QUALITY.
+UT writes the necessary tests here and runs them once with coverage in QUALITY, with no TDD lifecycle.
 
-When frozen TDD is enabled, every feature/bug unit must capture a meaningful failing unit test
+When frozen `task.unit_test_mode` is `tdd`, every feature/bug unit must capture a meaningful failing unit test
 before production code (RED) and the smallest passing implementation (GREEN). Refactor only
 when a concrete improvement is needed; unchanged GREEN inputs do not require another run.
 Pure refactors instead capture a passing characterization test before the change and rerun it
@@ -134,7 +135,7 @@ Sub-agents never dispatch other sub-agents or read `.easy-coding` workflow asset
 # Task Card
 ## Identity       Easy Coding implementation unit
 ## Workflow Mode  {fast|standard|strict}
-## TDD            {off | on, frozen changed-line threshold N%}
+## Unit Tests     {none | ut | tdd; shared changed-line threshold N%}
 ## Task           {unit description}
 ## Source Spec    {spec_id@revision + sha256 | NONE}
 ## Source Task    {source_task_id | NONE}

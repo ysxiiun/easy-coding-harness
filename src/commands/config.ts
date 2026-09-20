@@ -3,12 +3,13 @@ import { cancel, confirm, outro, select, text } from "@clack/prompts";
 import chalk from "chalk";
 import { CONFIG_FILE, EASY_CODING_DIR } from "../constants/paths.js";
 import { VERSION } from "../constants/version.js";
+import type { UnitTestMode } from "../types/task.js";
 import { renderBanner } from "../ui/banner.js";
 import { compareVersions } from "../utils/compare-versions.js";
 import {
   type ApprovalMode,
   type ConfiguredWorkflowMode,
-  isTddCoverageThreshold,
+  isUtCoverageThreshold,
   readConfigYaml,
   resolveLegacyBehavior,
   setBehaviorModes,
@@ -76,48 +77,49 @@ export async function config(): Promise<void> {
 
   const workflowMode: ConfiguredWorkflowMode = "adaptive";
 
-  const tddEnabled = await select<boolean>({
-    message: `Enable Java TDD for this project (current: ${current.tddEnabled ? "enabled" : "disabled"})`,
-    initialValue: current.tddEnabled,
+  const unitTestMode = await select<UnitTestMode>({
+    message: `Select Java unit test strategy (current: ${current.unitTestMode})`,
+    initialValue: current.unitTestMode,
     options: [
-      { value: false, label: "disabled — preserve current test depth (default)" },
-      { value: true, label: "enabled — require TDD evidence and changed-line coverage" },
+      { value: "none", label: "none — preserve task-required verification (default)" },
+      { value: "ut", label: "UT — passing unit tests and changed-line coverage" },
+      { value: "tdd", label: "TDD — test-first development and changed-line coverage" },
     ],
   });
-  if (typeof tddEnabled === "symbol") {
+  if (typeof unitTestMode === "symbol") {
     cancel("Configuration cancelled.");
     return;
   }
 
-  if (tddEnabled) {
+  if (unitTestMode !== "none") {
     const readiness = await inspectTddReadiness(process.cwd());
     if (readiness.status !== "ready") {
       cancel(
-        `TDD was not enabled. ${readiness.status === "needs_init" ? "Run ec-tdd-init first" : "Repair TDD readiness"}: ${readiness.reasons.join("; ")}. No project modes were changed.`,
+        `Unit test strategy was not enabled. ${readiness.status === "needs_init" ? "Run ec-tdd-init first" : "Repair coverage readiness"}: ${readiness.reasons.join("; ")}. No project modes were changed.`,
       );
       return;
     }
   }
 
-  let tddCoverageThreshold = current.tddCoverageThreshold;
-  if (tddEnabled) {
+  let utCoverageThreshold = current.utCoverageThreshold;
+  if (unitTestMode !== "none") {
     const thresholdInput = await text({
       message: "Minimum changed-production-line coverage percentage",
-      initialValue: String(current.tddCoverageThreshold),
+      initialValue: String(current.utCoverageThreshold),
       validate(value) {
         const parsed = Number(value);
-        return isTddCoverageThreshold(parsed) ? undefined : "Enter an integer from 1 to 100.";
+        return isUtCoverageThreshold(parsed) ? undefined : "Enter an integer from 1 to 100.";
       },
     });
     if (typeof thresholdInput === "symbol") {
       cancel("Configuration cancelled.");
       return;
     }
-    tddCoverageThreshold = Number(thresholdInput);
+    utCoverageThreshold = Number(thresholdInput);
   }
 
   const shouldSave = await confirm({
-    message: `Set approval=${approvalMode}, workflow=${workflowMode}, TDD=${tddEnabled ? `enabled (${tddCoverageThreshold}%)` : "disabled"}?`,
+    message: `Set approval=${approvalMode}, workflow=${workflowMode}, unit-test=${unitTestMode}${unitTestMode === "none" ? "" : ` (${utCoverageThreshold}%)`}?`,
     initialValue: true,
   });
   if (typeof shouldSave === "symbol" || !shouldSave) {
@@ -125,20 +127,20 @@ export async function config(): Promise<void> {
     return;
   }
 
-  if (tddEnabled) {
+  if (unitTestMode !== "none") {
     const readiness = await inspectTddReadiness(process.cwd());
     if (readiness.status !== "ready") {
       cancel(
-        `TDD was not enabled because readiness changed before save: ${readiness.reasons.join("; ")}. No project modes were changed.`,
+        `Unit test strategy was not enabled because readiness changed before save: ${readiness.reasons.join("; ")}. No project modes were changed.`,
       );
       return;
     }
   }
 
-  await setBehaviorModes(configPath, approvalMode, workflowMode, tddEnabled, tddCoverageThreshold);
+  await setBehaviorModes(configPath, approvalMode, workflowMode, unitTestMode, utCoverageThreshold);
   outro(
     chalk.green(
-      `Project modes updated: approval=${approvalMode}, workflow=${workflowMode}, TDD=${tddEnabled ? `${tddCoverageThreshold}%` : "off"}.`,
+      `Project modes updated: approval=${approvalMode}, workflow=${workflowMode}, unit-test=${unitTestMode}${unitTestMode === "none" ? "" : ` (${utCoverageThreshold}%)`}.`,
     ),
   );
 }

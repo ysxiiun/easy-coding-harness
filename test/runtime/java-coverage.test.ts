@@ -90,11 +90,11 @@ describe("Java changed-line coverage gate", () => {
     expect(output.report_sha256).toMatch(/^[0-9a-f]{64}$/);
   });
 
-  it("reads the schema-4 project threshold from the Git root when repo points to a subdirectory", async () => {
+  it("reads the schema-6 project threshold from the Git root when repo points to a subdirectory", async () => {
     await mkdir(path.join(tempDir, ".easy-coding"), { recursive: true });
     await writeFile(
       path.join(tempDir, ".easy-coding", "config.yaml"),
-      "version: 4\nbehavior:\n  tdd_coverage_threshold: 95\n",
+      "version: 6\nbehavior:\n  ut_coverage_threshold: 95\n",
       "utf8",
     );
     const report = await writeJacoco(1);

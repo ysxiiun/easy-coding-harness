@@ -179,13 +179,13 @@ Agent 会创建任务并进入 INIT；INIT 工作完成后自动进入 ANALYSIS�
 任务都进入 QUALITY；任何模式都不会跳过方案、质量或记忆检查点。Confirm 只在
 ANALYSIS → IMPLEMENT 等待一次，之后的自动推进仍必须先通过对应检查点。
 
-Java TDD 默认关闭，关闭时状态栏和测试深度保持不变。首次开启前运行 `ec-tdd-init`，只
-初始化 JUnit/JaCoCo/GitLab changed-line coverage 基础设施，不补存量业务单测，也不要求
-全量覆盖率；readiness 通过后才允许显式开启。开启后状态栏在 Workflow 后显示
-`· **TDD**`，ANALYSIS → IMPLEMENT 冻结 baseline 与覆盖率阈值（默认 90，可配置
-1..100），只验收本任务新增/修改生产代码行，并要求 RED/GREEN/REFACTOR、TDD review、
-本地单测通过及本地 JaCoCo 差异覆盖率达到冻结阈值。GitLab TEST-stage job 仍由
-`ec-tdd-init` 生成，但 Harness 不等待远程 pipeline，也不要求为取得 CI 证据而中间提交推送。
+Java 单测接入策略为 `unit_test_mode: none | ut | tdd`，默认 `none`。UT 要求单测通过与
+本次修改生产代码的覆盖率达标，不要求测试先行、RED/GREEN 记录或独立 TDD 审查；TDD
+额外保留测试驱动开发过程。两者共用 `ut_coverage_threshold`，默认 90，范围 1..100。
+首次使用 UT/TDD 前通过现有 `ec-tdd-init` 准备 JUnit/JaCoCo 覆盖率基础设施；已有 readiness
+直接复用。ANALYSIS → IMPLEMENT 冻结策略、baseline 与阈值；状态栏显示 `· **UT**` 或
+`· **TDD**`，`none` 不显示附加标记。一次相关单测运行同时生成测试和覆盖率证据，未变化
+输入直接复用，不为凑 100% 扩大范围，也不等待远程 GitLab pipeline。
 
 #### 2. 需求分析（ANALYSIS）
 
@@ -377,20 +377,20 @@ $ec-task-management     （Codex）
 $ec-config     （Codex）
 ```
 
-裸唤起只读展示项目/session/生效/任务冻结的 Approval、Workflow、TDD 与阈值。显式选择后
+裸唤起只读展示项目/session/生效/任务冻结的 Approval、Workflow、单测策略与阈值。显式选择后
 可设置或清除 session 覆盖；项目级配置使用 `easy-coding config`。readiness 未通过时，
 项目级和 session 级开启都会拒绝写入，不支持“先开启、稍后初始化”。
 
-### 初始化 Java TDD 基础设施
+### 初始化 Java UT/TDD 覆盖率基础设施
 
 ```text
 /ec-tdd-init     （Claude Code / Qoder）
 $ec-tdd-init     （Codex）
 ```
 
-该 skill 创建专用 `tdd-init` 代码任务，任务自身始终以 TDD 关闭态运行，因此可以安全修改
+该 skill 创建专用 `tdd-init` 代码任务，任务自身始终以 `unit_test_mode=none` 运行，因此可以安全修改
 构建和 GitLab CI 配置。它只让未来任务能够按各自 baseline 计算增量覆盖率，不生成历史
-业务单测；完成后保留原 TDD 配置，尚未开启时通过 `ec-config` 显式开启。生成的远程 job
+业务单测；完成后保留原单测策略，通过 `ec-config` 显式选择 UT 或 TDD。生成的远程 job
 属于项目 CI 自动化能力，不是 Harness 业务任务的验收依赖。
 
 普通 POM 版本、依赖、插件和 CI 变更无需重新初始化。readiness 缺少凭据时提示
@@ -517,15 +517,18 @@ easy-coding upgrade
 - **覆盖**：Skills、Hooks、子代理定义、平台配置、主约束文件生成区域
 - **原位迁移**：config.yaml 更新 `harness_version`；旧确认设置迁移为
   `behavior.approval_mode` 与 `behavior.workflow_mode`，其中 lite 映射为 guard + fast；
-  schema 4→5 保留项目/session TDD 开关、阈值和继承关系，readiness 异常不重置配置；
-  旧 task/session 状态元数据继续幂等迁移，已冻结活动任务合同不被静默改写
+  schema 4/5→6 将旧 TDD 开关迁移为 `unit_test_mode`，旧阈值迁移为
+  `ut_coverage_threshold`，保留项目/session 继承关系，readiness 异常不重置配置；
+  旧 task/session 状态元数据继续幂等迁移，已冻结活动任务合同不被静默改写。
+  活动 UT/TDD 任务使用的本地覆盖率工具保持原内容，避免让已有证据失效；任务结束后再次
+  运行 `easy-coding upgrade` 会补齐工具更新，覆盖率命令继续使用任务冻结的显式 `--threshold`
 - **有界清理**：实际升级会清理过期 session 和确定性孤儿 acceptance 快照；`--dry-run`
-  不删除，活动验收证据与任务资产保持不变，带有显式 TDD 配置的 session 不参与升级清理
+  不删除，活动验收证据与任务资产保持不变，带有显式单测策略或阈值配置的 session 不参与升级清理
 - **内容保留**：任务 dev-spec / execution / test-strategy、memory 内容、SOUL.md、RULES.md、ABSTRACT.md 等用户资产不被覆盖
 
 ### easy-coding config
 
-交互修改当前项目的审批模式、工作流模式、Java TDD 与覆盖率阈值；readiness 未通过时
+交互修改当前项目的审批模式、工作流模式、Java 单测策略与共享覆盖率阈值；readiness 未通过时
 开启操作整体取消，不会部分写入其他模式：
 
 ```bash
@@ -557,8 +560,8 @@ easy-coding status
 | `ec-quality` | Review/Verification 双门与一次性修复汇总 | ec-workflow 自动派发 |
 | `ec-memory` | 记忆归档 | ec-workflow 自动派发 |
 | `ec-task-management` | 任务面板 | 查看/创建/选择/恢复/交接任务 |
-| `ec-config` | 模式配置面板 | 查看或修改 Approval、Workflow、TDD 与阈值 |
-| `ec-tdd-init` | Java TDD 基础设施初始化或修复 | 首次开启 TDD 前或必要入口损坏时 |
+| `ec-config` | 模式配置面板 | 查看或修改 Approval、Workflow、单测策略与阈值 |
+| `ec-tdd-init` | Java UT/TDD 覆盖率基础设施初始化或修复 | 首次选择 UT/TDD 前或必要入口损坏时 |
 | `ec-task-close` | 中断任务 | 取消当前任务 |
 | `ec-no-harness` | 当前 session 旁路 Harness | 临时使用原生 Agent 能力 |
 | `ec-lite` | 用户显式启停的极简直达模式 | 明确的极简修改 |
