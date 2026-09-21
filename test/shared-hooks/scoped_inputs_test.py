@@ -17,6 +17,10 @@ class ScopedEvidenceTest(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
+        self.home = self.root / "home"
+        home_patch = patch.object(Path, "home", return_value=self.home)
+        home_patch.start()
+        self.addCleanup(home_patch.stop)
         self.git("init", "-q")
         self.git("config", "user.email", "fixture@example.invalid")
         self.git("config", "user.name", "fixture")
@@ -53,6 +57,155 @@ class ScopedEvidenceTest(unittest.TestCase):
     def snapshot(self, check=None):
         with inputs.evidence_operation():
             return inputs.capture(inputs.input_spec(self.root, self.task, self.plan, check or self.check))
+
+    def quality_repair(self, approval="guard", cooperate="default"):
+        self.task.update(status="QUALITY", workflow_mode="fast")
+        self.write(".easy-coding/tasks/test/task.json", json.dumps(self.task))
+        self.write(".easy-coding/sessions/test.json", json.dumps({
+            "current_task": "test", "approval_mode": approval, "cooperate_mode": cooperate}))
+        return state.begin_correction(self.root, "test", self.task,
+                                      ["a/src/main/java/Value.java"], "Restore the accepted result", [], "codex")["quality_repair"]
+
+    def test_behavior_layers_override_each_field_without_creating_local_file(self):
+        self.write(".easy-coding/config.yaml", "version: 6\nbehavior:\n  approval_mode: approve\n  cooperate_mode: dispatch\n  unit_test_mode: tdd\n  ut_coverage_threshold: 92\n")
+        self.assertEqual("project", state.behavior_layers(self.root, {})["cooperate_mode"]["source"])
+        self.assertFalse(self.home.exists())
+        self.write("home/.easy-coding/config.yaml", "behavior:\n  approval_mode: auto\n  unit_test_mode: ut\n  ut_coverage_threshold: 95\n")
+        session = {"cooperate_mode": "default", "unit_test_mode": "none"}
+        self.assertEqual({
+            "approval_mode": {"value": "auto", "source": "local"},
+            "cooperate_mode": {"value": "default", "source": "session"},
+            "unit_test_mode": {"value": "none", "source": "session"},
+            "ut_coverage_threshold": {"value": 95, "source": "local"},
+        }, state.behavior_layers(self.root, session))
+        behavior = state.resolve_behavior(self.root, session)
+        self.assertEqual(("auto", "none", 95), (behavior[2], behavior[8], behavior[11]))
+
+    def test_unsupported_local_yaml_is_explicit_instead_of_silently_ignored(self):
+        self.write("home/.easy-coding/config.yaml", "behavior: { cooperate_mode: dispatch }\n")
+        with self.assertRaisesRegex(state.StateError, "indented YAML mapping"):
+            state.behavior_layers(self.root, {})
+
+    def test_incomplete_canonical_repair_bundle_is_rejected_before_authorization(self):
+        repair = self.quality_repair()
+        task = state.load_task(self.root, "test")
+        task["spec_source"] = {"spec_id": "fixture"}
+        self.write(".easy-coding/tasks/test/task.json", json.dumps(task))
+        with patch.object(state, "require_spec_context"), patch.object(state, "implementation_fingerprint", return_value=repair["implementation_fingerprint"]), patch.object(state, "latest_execution_plan", return_value=self.plan), patch.object(state, "prepare_canonical_repair_transition", return_value=(task, {"R1-T1", "R2-T1"})):
+            with self.assertRaisesRegex(state.StateError, "cover all failed Canonical source tasks"):
+                state.start_quality_repair(self.root, repair["repair_id"], "current", True, "codex", "test", ".easy-coding/sessions/test.json")
+        self.assertNotIn("approved_at", state.load_task(self.root, "test")["quality_repair"])
+        self.assertEqual("QUALITY", state.load_task(self.root, "test")["status"])
+
+    def test_dispatch_repair_confirms_once_and_returns_to_coordinator_in_quality(self):
+        for approval in ("approve", "guard", "confirm", "auto"):
+            with self.subTest(approval=approval):
+                repair = self.quality_repair(approval, "dispatch")
+                args = (self.root, repair["repair_id"], "other", False, "codex", "test", ".easy-coding/sessions/test.json")
+                with self.assertRaisesRegex(state.StateError, "scope and executor once"):
+                    state.start_quality_repair(*args)
+                dispatched = state.start_quality_repair(*args[:3], True, *args[4:])
+                self.assertEqual("repair", dispatched["handoff"]["next_action"])
+                self.assertEqual("QUALITY", dispatched["handoff"]["stage"])
+                # 已授权接力不因接手方的默认模式不同而再次审批。
+                claimed = state.claim_task(self.root, "test", "qoder", ".easy-coding/sessions/worker.json")
+                self.assertEqual("repair", claimed["continuation"]["next_action"])
+                count = len(state.execution_records(self.root, "test"))
+                state.start_quality_repair(self.root, repair["repair_id"], "other", False, "qoder",
+                                           "test", ".easy-coding/sessions/worker.json")
+                self.assertFalse(state.claim_task(self.root, "test", "qoder", ".easy-coding/sessions/worker.json")["claim_recorded"])
+                self.assertEqual(count, len(state.execution_records(self.root, "test")))
+                self.write("a/src/main/java/Value.java", f"class Value {{ int repair{approval}; }}")
+                task = state.load_task(self.root, "test")
+                prepared = state.prepare_check(self.root, "test", task, self.check, "qoder")
+                state.record_check(self.root, "test", task, prepared["prepared_id"], {"passed": True, "exit_code": 0}, "qoder")
+                completed = state.complete_quality_repair(self.root, repair["repair_id"], "qoder", "test", ".easy-coding/sessions/worker.json")
+                self.assertEqual("quality", completed["handoff"]["next_action"])
+                returned = state.claim_task(self.root, "test", "codex", ".easy-coding/sessions/test.json")
+                self.assertEqual("QUALITY", returned["status"])
+                self.assertEqual([], returned["task"]["stage_history"])
+                self.assertTrue(state.prepare_check(self.root, "test", returned["task"], self.check, "codex")["reusable"])
+
+    def test_default_direct_repair_reuses_unaffected_evidence_and_rejects_scope_expansion(self):
+        other = {**self.check, "unit_id": "b", "command": "mvn -pl b test"}
+        prepared = state.prepare_check(self.root, "test", self.task, other, "codex")
+        state.record_check(self.root, "test", self.task, prepared["prepared_id"], {"passed": True, "exit_code": 0}, "codex")
+        repair = self.quality_repair()
+        with self.assertRaisesRegex(state.StateError, "requires cooperate_mode dispatch"):
+            state.start_quality_repair(self.root, repair["repair_id"], "other", True, "codex", "test", ".easy-coding/sessions/test.json")
+        state.start_quality_repair(self.root, repair["repair_id"], "current", False, "codex", "test", ".easy-coding/sessions/test.json")
+        self.write("b/src/main/java/Value.java", "class Value { int outOfScope; }")
+        with self.assertRaisesRegex(state.StateError, "outside the approved bundle"):
+            state.complete_quality_repair(self.root, repair["repair_id"], "codex", "test", ".easy-coding/sessions/test.json")
+        self.write("b/src/main/java/Value.java", "class Value {}")
+        self.write("a/src/main/java/Value.java", "class Value { int fixed; }")
+        completed = state.complete_quality_repair(self.root, repair["repair_id"], "codex", "test", ".easy-coding/sessions/test.json")
+        self.assertEqual("QUALITY", completed["status"])
+        self.assertTrue(state.prepare_check(self.root, "test", completed["task"], other, "codex")["reusable"])
+        context = state.ensure_quality_attempt_context(self.root, "test", completed["task"], "codex", persist=True)
+        self.assertGreater(context["attempt"], 0)
+        self.assertNotIn("continuation", state.load_task(self.root, "test"))
+
+    def test_renaming_or_argv_formatting_reuses_pass_but_command_changes_do_not(self):
+        prepared = state.prepare_check(self.root, "test", self.task, self.check, "codex")
+        state.record_check(self.root, "test", self.task, prepared["prepared_id"], {"passed": True, "exit_code": 0}, "codex")
+        renamed = {**self.check, "check": "more descriptive label", "command": 'mvn  -pl "a" -Dtest=FirstTest test'}
+        self.assertTrue(state.prepare_check(self.root, "test", self.task, renamed, "codex")["reusable"])
+        changed = {**renamed, "command": "mvn -pl a -DskipTests test"}
+        self.assertFalse(state.prepare_check(self.root, "test", self.task, changed, "codex")["reusable"])
+        self.assertNotEqual(inputs.command_identity('echo "$VALUE"'), inputs.command_identity("echo '$VALUE'"))
+        state.record_check(self.root, "test", self.task, prepared["prepared_id"], {"passed": False, "exit_code": 1}, "codex")
+        self.assertFalse(state.prepare_check(self.root, "test", self.task, renamed, "codex")["reusable"])
+
+    def test_renamed_successful_retry_clears_the_same_commands_failed_gate(self):
+        self.task.update(status="QUALITY", workflow_mode="fast")
+        self.write(".easy-coding/tasks/test/task.json", json.dumps(self.task))
+        descriptors = [
+            ({"type": "review", "dimension": "correctness"}, {"passed": True, "reviewer": "codex", "findings": []}),
+            ({"type": "verify", "check": "old label", "check_type": "test", "command": "mvn test"},
+             {"passed": False, "exit_code": 1, "failure_classes": ["environment"]}),
+            ({"type": "verify", "check": "new label", "check_type": "test", "command": "mvn  test"},
+             {"passed": True, "exit_code": 0}),
+        ]
+        for descriptor, result in descriptors:
+            task = state.load_task(self.root, "test")
+            prepared = state.prepare_check(self.root, "test", task, descriptor, "codex")
+            state.record_check(self.root, "test", task, prepared["prepared_id"], result, "codex")
+        task = state.load_task(self.root, "test")
+        state.validate_verification_readiness(self.root, "test", task)
+        self.assertEqual("passed", state.finalize_quality_attempt(self.root, "test", task, "passed", "codex")["outcome"])
+
+    def test_operation_shares_log_plan_and_snapshot_and_sees_appends(self):
+        with inputs.evidence_operation(), patch.object(state, "_execution_records", wraps=state._execution_records) as reads, patch.object(state, "_latest_execution_plan", wraps=state._latest_execution_plan) as plans:
+            state.latest_execution_plan(self.root, "test")
+            state.latest_execution_plan(self.root, "test")
+            state.latest_handoff_record(self.root, "test")
+            state.pending_handoff_record(self.root, "test")
+            state.append_execution_record(self.root, "test", {"type": "handoff", "summary": "reuse"})
+            self.assertEqual("reuse", state.latest_handoff_record(self.root, "test")["summary"])
+            self.assertEqual(1, reads.call_count)
+            self.assertEqual(1, plans.call_count)
+            state.append_execution_record(self.root, "test", self.plan)
+            state.latest_execution_plan(self.root, "test")
+            self.assertEqual(2, plans.call_count)
+        snapshot = state.snapshot_state(self.root, ".easy-coding/sessions/test.json")
+        with patch.object(state, "snapshot_state", side_effect=AssertionError("duplicate snapshot")):
+            state.attach_status_context(self.root, snapshot, "codex", ".easy-coding/sessions/test.json")
+
+    def test_cli_batches_checks_and_reuses_existing_evidence(self):
+        def cli(command, option, payload):
+            result = subprocess.check_output([sys.executable, "-B", str(Path(state.__file__)), command,
+                option, json.dumps(payload), "--cwd", str(self.root), "--agent", "codex",
+                "--session-file", ".easy-coding/sessions/test.json"],
+                env={**os.environ, "HOME": str(self.home)}, text=True)
+            return json.loads(result)
+        descriptors = [self.check, {**self.check, "unit_id": "b", "command": "mvn -pl b test"}]
+        prepared = cli("prepare-check", "--record", descriptors)
+        self.assertEqual(2, len(prepared))
+        recorded = cli("record-check", "--result", [{"prepared_id": item["prepared_id"],
+            "result": {"passed": True, "exit_code": 0}} for item in prepared])
+        self.assertTrue(all(item["recorded"] for item in recorded))
+        self.assertTrue(all(item["reusable"] for item in cli("prepare-check", "--record", descriptors)))
 
     def test_test_change_invalidates_compiling_module_but_preserves_production_review(self):
         test = self.snapshot()

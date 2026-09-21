@@ -40,6 +40,24 @@ def memo(key, compute):
     return cache[key]
 
 
+def invalidate_memo(key):
+    cache = _operation.get()
+    if cache is not None:
+        cache.pop(key, None)
+
+
+def cached_memo(key):
+    cache = _operation.get()
+    return cache.get(key) if cache is not None else None
+
+
+def command_identity(command):
+    # Shell 展开和重定向受引号影响；只归一化普通 argv 命令，避免错误复用。
+    if re.search(r"[\$`\\\n;|&<>*?\[\]{}~#]", command):
+        return command
+    return tuple(shlex.split(command))
+
+
 def digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False,
                                      separators=(",", ":")).encode()).hexdigest()

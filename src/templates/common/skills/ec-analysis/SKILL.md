@@ -6,7 +6,8 @@ description: ANALYSIS-stage skill. Produces the confirmed dev-spec, execution pl
 # ec-analysis — progressive analysis and mode selection
 
 This stage is read-only for project source. Its outputs are task artifacts only:
-`dev-spec.md`, `execution.jsonl` plan, and `test-strategy.md` for code tasks.
+`dev-spec.md`, `execution.jsonl` plan, and `test-strategy.md` when required by the concrete mode.
+Compact Fast keeps checks in the existing plan.
 
 Communicate with the user in the user's language.
 
@@ -24,7 +25,8 @@ Communicate with the user in the user's language.
 Load context only for the current change and its direct dependencies. Reuse existing findings;
 without new evidence, do not repeat discovery or expand into unrelated modules.
 
-For a task with `task.json.spec_source`, use `resume-spec-context` against the stored source, exact
+For a task with `task.json.spec_source`, reuse the returned/current-session consumption closure.
+Only if missing or changed, use `resume-spec-context` against the stored source, exact
 `selected_spec_tasks`, and only their stored `task.repo_paths` bindings. Schema, Spec ID, design
 revision, and `design_sha256` must still match. A changed `document_sha256` with the same design is
 normal shared progress; refresh `execution_revision` without invalidating plan/QUALITY

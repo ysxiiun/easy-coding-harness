@@ -148,6 +148,194 @@ describe("Canonical Spec v1 runtime integration", () => {
     expect(inspected.execution.tasks.find((item: { task_id: string }) => item.task_id === "R1-T1").status).toBe("implemented");
   });
 
+  it("repairs a Canonical task inside QUALITY with a stable repair writeback key", async () => {
+    const fixture = await writeCanonicalFixture();
+    initializeSpecExecution(fixture.specPath);
+    const id = "quality-inline";
+    const created = JSON.parse(
+      runState([
+        "create-task-from-spec",
+        "--spec",
+        fixture.specPath,
+        "--spec-task",
+        "R1-T1",
+        "--task-id",
+        id,
+        "--type",
+        "feature",
+        "--title",
+        "Inline repair",
+        "--repo-path",
+        `R1=${fixture.repoA}`,
+        "--agent",
+        "codex",
+      ]),
+    );
+    const dir = path.join(tempDir, ".easy-coding/tasks", id);
+    const file = "order-domain/src/main/java/com/example/order/OrderEventPublisher.java";
+    const plan = {
+      type: "plan",
+      strategy: "single",
+      spec_design_sha256: created.task.spec_source.design_sha256,
+      units: [
+        {
+          id: "U1",
+          title: "publisher",
+          type: "backend",
+          files: [file],
+          depends_on: [],
+          local_baseline: [file],
+          repo_id: "R1",
+          source_task_id: "R1-T1",
+          source_step_ids: ["S1"],
+          symbols: ["OrderEventPublisher#publish"],
+          test_commands: ["mvn -Dtest=OrderEventPublisherTest test"],
+        },
+      ],
+    };
+    await writeFile(path.join(dir, "execution.jsonl"), `${JSON.stringify(plan)}\n`);
+    await writeFile(
+      path.join(dir, "task.json"),
+      JSON.stringify({
+        ...created.task,
+        status: "QUALITY",
+        workflow_mode: "fast",
+        unit_test_mode: "none",
+      }),
+    );
+    const writeTask = (status: string, key: string, evidence?: object) =>
+      runState([
+        "writeback-spec-task",
+        "--spec-task",
+        "R1-T1",
+        "--status",
+        status,
+        "--summary",
+        status,
+        "--idempotency-key",
+        key,
+        "--agent",
+        "codex",
+        ...(evidence ? ["--evidence", JSON.stringify(evidence)] : []),
+      ]);
+    const writeStep = (key: string) =>
+      runState([
+        "writeback-spec-step",
+        "--spec-task",
+        "R1-T1",
+        "--step",
+        "S1",
+        "--status",
+        "completed",
+        "--summary",
+        "Publisher implemented",
+        "--evidence",
+        JSON.stringify({ kind: "test", status: "passed", test_id: "T1", ref: "test:publisher" }),
+        "--idempotency-key",
+        key,
+        "--agent",
+        "codex",
+      ]);
+    writeTask("in_progress", `${id}:start`);
+    writeStep(`${id}:step`);
+    writeTask("implemented", `${id}:implemented`);
+    const prepared = JSON.parse(
+      runState([
+        "prepare-check",
+        "--record",
+        JSON.stringify({ type: "review", unit_id: "U1", dimension: "correctness" }),
+        "--agent",
+        "codex",
+      ]),
+    );
+    runState([
+      "record-check",
+      "--prepared-id",
+      prepared.prepared_id,
+      "--result",
+      JSON.stringify({
+        passed: false,
+        reviewer: "reviewer",
+        findings: [{ severity: "error", file, line: 2, issue: "Missing publish behavior" }],
+        failure_classes: ["code-defect"],
+      }),
+      "--agent",
+      "codex",
+    ]);
+    const finalized = JSON.parse(
+      runState([
+        "finalize-quality",
+        "--outcome",
+        "repair",
+        "--review-gate",
+        "failed",
+        "--verification-gate",
+        "cancelled",
+        "--failure-class",
+        "code-defect",
+        "--summary",
+        "Publisher needs repair",
+        "--agent",
+        "codex",
+      ]),
+    );
+    const quality = finalized.quality;
+    writeTask(
+      "blocked",
+      `${id}:R1-T1:${quality.implementation_fingerprint}:quality-${quality.attempt}:blocked`,
+      {
+        kind: "review",
+        status: "failed",
+        ref: `execution.jsonl#quality-attempt=${quality.attempt};implementation=${quality.implementation_fingerprint};source-task=R1-T1;kind=review`,
+      },
+    );
+    const bundle = JSON.parse(
+      runState([
+        "begin-correction",
+        "--file",
+        file,
+        "--summary",
+        "Implement accepted publisher behavior",
+        "--agent",
+        "codex",
+      ]),
+    );
+    const start = [
+      "start-quality-repair",
+      "--repair-id",
+      bundle.quality_repair.repair_id,
+      "--executor",
+      "current",
+      "--confirmed",
+      "--agent",
+      "codex",
+    ];
+    expect(JSON.parse(runState(start)).status).toBe("QUALITY");
+    const log = await readFile(path.join(dir, "execution.jsonl"), "utf8");
+    runState(start);
+    expect(await readFile(path.join(dir, "execution.jsonl"), "utf8")).toBe(log);
+    expect(log).toContain(`quality-repair:${bundle.quality_repair.repair_id}:start`);
+    await writeFile(
+      path.join(fixture.repoA, file),
+      "package com.example.order;\npublic interface OrderEventPublisher { void publish(); }\n",
+    );
+    writeStep(`${id}:repair-step`);
+    writeTask("implemented", `${id}:repair-implemented`);
+    const completed = JSON.parse(
+      runState([
+        "complete-quality-repair",
+        "--repair-id",
+        bundle.quality_repair.repair_id,
+        "--agent",
+        "codex",
+      ]),
+    );
+    expect(completed.status).toBe("QUALITY");
+    expect(completed.task.spec_source.revision).toBe(1);
+    expect(completed.task.stage_history).toEqual(created.task.stage_history);
+    expect(completed.task).not.toHaveProperty("canonical_repair_transition");
+  });
+
   it.each([
     ["codex", ".codex"], ["claude-code", ".claude"], ["qoder", ".qoder"],
   ])("restores external selected Spec context and pending changes after takeover by %s", async (agent, directory) => {
@@ -185,7 +373,23 @@ describe("Canonical Spec v1 runtime integration", () => {
     expect(claim.spec_context.consumption.selected_task_ids).toEqual(["R1-T1"]);
     expect(claim.spec_context.consumption.scopes).toHaveLength(1);
     expect(JSON.stringify(claim.spec_context.consumption)).toContain("OrderEventPublisher");
-    const begun = call(["begin-spec-change", "--affected-task", "R1-T1", "--summary", "Confirmed reliability change"]);
+    const returned = installed("codex", ".codex", "codex-old", [
+        "claim-task",
+        "--task-id",
+        "handoff-spec",
+      ]);
+      expect(returned.status, returned.stderr).toBe(0);
+      expect(JSON.parse(returned.stdout).spec_context).toMatchObject({
+        status: "ready",
+        reused: true,
+      });
+      expect(JSON.parse(returned.stdout).spec_context).not.toHaveProperty("consumption");
+      expect(JSON.parse(returned.stdout).task.spec_contexts).toHaveProperty(
+        ".easy-coding/sessions/codex-old.json",
+      );
+      const workerAgain = call(["claim-task", "--task-id", "handoff-spec"]);
+      expect(JSON.parse(workerAgain.stdout).spec_context.reused).toBe(true);
+      const begun = call(["begin-spec-change", "--affected-task", "R1-T1", "--summary", "Confirmed reliability change"]);
     expect(begun.status, begun.stderr).toBe(0);
     expect(JSON.parse(begun.stdout).task.spec_change).toMatchObject({ revision: 1, affected_task_ids: ["R1-T1"] });
     const pendingClaim = installed("codex", ".codex", "codex-resumed", ["claim-task", "--task-id", "handoff-spec"]);
@@ -2187,6 +2391,7 @@ describe("Canonical Spec v1 runtime integration", () => {
     const unloaded = JSON.parse(await readFile(taskPath, "utf8"));
     const sessionFile = unloaded.spec_context.session_file;
     delete unloaded.spec_context;
+    delete unloaded.spec_contexts;
     await writeFile(taskPath, JSON.stringify(unloaded, null, 2));
     const protectedFiles = [taskPath, executionPath, fixture.specPath];
     const beforeRejected = await Promise.all(protectedFiles.map((file) => readFile(file, "utf8")));
@@ -3939,6 +4144,7 @@ describe("Canonical Spec v1 runtime integration", () => {
           "--summary", "Confirmed change before result writeback", "--agent", "codex"]);
       } else {
         delete before.spec_context;
+        delete before.spec_contexts;
         await writeFile(taskPath, JSON.stringify(before, null, 2));
       }
       const paths = [taskPath, path.join(taskDir, "execution.jsonl"), fixture.specPath];

@@ -6,15 +6,17 @@ description: QUALITY-stage skill. Freezes one candidate, runs independent Review
 # ec-quality — one candidate, two read-only gates
 
 Use only while the current task is in `QUALITY`. Communicate in the user's language. QUALITY
-does not modify source, tests, configuration, plans, or task scope.
+keeps Review and Verification read-only while permitting approved bounded repairs between checks.
+Ordinary fixes stay in QUALITY; changed requirements/contracts or a replaced implementation plan
+return to ANALYSIS/IMPLEMENT. Bug severity or line count alone does not decide the route.
 
 ## Candidate freeze
 
 For Canonical-backed tasks, load the current session's bound selection through `resume-spec-context`
-when resuming. Pass that original consumption closure to both gates and compare selected contracts,
+only when the current session lacks that context or the design changed. Pass that original consumption closure to both gates and compare selected contracts,
 changes, Steps and Tests against the candidate. Pending `spec_change` blocks QUALITY acceptance
 until the source revision is synchronized. Bounded corrections refresh only their affected Unit
-mappings and continue IMPLEMENT; substantive expansion returns to ANALYSIS.
+mappings and retain the current stage; substantive expansion returns to ANALYSIS.
 
 Call `evidence-fingerprints` once to obtain the runtime-owned attempt and candidate. The runtime
 owns signatures and prior-evidence references. Never calculate historical fingerprints, import
@@ -59,7 +61,8 @@ meaningless remaining check when a concrete blocker is found. Aggregate the repa
 
 ### Standard
 
-- Dispatch one independent reviewer.
+- Use one independent reviewer. A coordinator who did not author the candidate can provide this
+  review after another Agent implemented it; do not launch a duplicate reviewer merely for form.
 - Run affected lint/typecheck/test plus every must-test command from `test-strategy.md`.
 - Run Review and Verification in parallel when their inputs are already frozen.
 
@@ -108,7 +111,7 @@ blocking record also carries a `failure_classes` array; do not defer classificat
 
 ## Verification Gate
 
-Run only the commands selected by the mode and `test-strategy.md`. Record real exit status and
+Run only commands selected by the mode and the existing plan/test strategy. Record real exit status and
 current implementation/config fingerprints plus the active `quality_attempt` using the existing
 `type:"verify"` contract. Do not run a command inside Review Gate, and do not fix a failure inside
 Verification Gate. A failed applicable check also carries its structured `failure_classes` array.
@@ -129,7 +132,7 @@ Wait for both gates, then aggregate all blocking results once. Classify each ite
 
 If code or tests need edits, create one concise Repair Bundle containing every in-scope blocking
 item, affected files, required verification, and evidence that may be reused. After both Gates are
-terminal, finalize the decision before transitioning once to IMPLEMENT:
+terminal, finalize the decision, then prepare the bounded repair while remaining in QUALITY:
 
 ```bash
 {{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py finalize-quality \
@@ -152,10 +155,39 @@ review/verify record first, then write each affected source task `blocked` throu
 use the exact idempotency key `<H>:<S>:<F>:quality-<A>:blocked`. Add one failed evidence object for
 each affected Gate kind with ref
 `execution.jsonl#quality-attempt=<A>;implementation=<F>;source-task=<S>;kind=review|verify`.
-Only after every blocked writeback is acknowledged may the task return to IMPLEMENT; the state API
-rejects a writeback from another run, attempt, fingerprint, or evidence window. Entering IMPLEMENT
-reopens only those blocked source tasks as a new `in_progress` attempt, while unaffected implemented
-tasks keep their shared conclusion.
+After blocked writeback is acknowledged, start the approved repair. The runtime reopens only those
+source tasks with a repair-specific idempotency key, keeping local status QUALITY and unaffected
+source progress. Record affected Step/result completion and source `implemented` before completing
+the repair. Reuse the existing writer and ledger, never copy a second implementation plan.
+
+Use `begin-correction --file <existing-unit-file> --summary <bundle>` to prepare one `quality_repair`.
+In dispatch mode, present this complete bundle once with choices: current Agent, another Agent,
+or defer/revise. This human dispatch decision remains under every approval mode; Approve shares
+the same decision. The user may explicitly authorize current-Agent execution. Default mode uses
+its existing approval policy for local repair, with no handoff inside the stage.
+
+```bash
+{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py start-quality-repair \
+  --repair-id <id> --executor current|other [--confirmed] --agent <agent-id> --session-file <P>
+```
+
+Pass `--confirmed` only for a real user decision on this bundle. For other-Agent execution the call
+also writes the handoff. The recipient claims the task and directly repairs the approved files;
+it must not ask again or return to IMPLEMENT. Bounded code and necessary tests follow the existing
+unit test strategy, including TDD lifecycle checks only when TDD is frozen. The recipient finishes:
+
+```bash
+{{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py complete-quality-repair \
+  --repair-id <id> --agent <agent-id> --session-file <P>
+```
+
+This returns other-Agent repairs to the coordinator for delta review/verification. No quality gate
+may pass while the repair is pending. Scope/contract changes must be resolved rather than silently
+included in the accepted bundle. Repeated starts/completions reuse the existing repair ID.
+
+`prepare-check --record` also accepts an array. `record-check --result` accepts an array of
+`{prepared_id,result}` to register the results of those prepared checks. Each check keeps its own
+inputs and real result; batching shares runtime reads, not unrelated evidence.
 
 After repair, choose the minimum honest evidence refresh:
 

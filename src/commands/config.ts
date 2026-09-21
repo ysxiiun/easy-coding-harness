@@ -3,22 +3,54 @@ import { cancel, confirm, outro, select, text } from "@clack/prompts";
 import chalk from "chalk";
 import { CONFIG_FILE, EASY_CODING_DIR } from "../constants/paths.js";
 import { VERSION } from "../constants/version.js";
-import type { UnitTestMode } from "../types/task.js";
+import type { CooperateMode, UnitTestMode } from "../types/task.js";
 import { renderBanner } from "../ui/banner.js";
 import { compareVersions } from "../utils/compare-versions.js";
 import {
+  APPROVAL_MODES,
   type ApprovalMode,
+  BEHAVIOR_KEYS,
+  type BehaviorSettings,
+  COOPERATE_MODES,
   type ConfiguredWorkflowMode,
+  UNIT_TEST_MODES,
   isUtCoverageThreshold,
+  localConfigPath,
   readConfigYaml,
+  readLocalBehavior,
   resolveLegacyBehavior,
   setBehaviorModes,
+  validateBehaviorValue,
+  writeBehaviorOverrides,
 } from "../utils/config-yaml.js";
 import { pathExists } from "../utils/file-writer.js";
 import { inspectTddReadiness } from "../utils/tdd-readiness.js";
 
-export async function config(): Promise<void> {
+interface ConfigOptions {
+  scope?: string;
+  approvalMode?: string;
+  cooperateMode?: string;
+  unitTestMode?: string;
+  utCoverageThreshold?: string;
+  reset?: string;
+  yes?: boolean;
+}
+
+export async function config(options: ConfigOptions = {}): Promise<void> {
   renderBanner();
+  const scope = options.scope ?? "project";
+  if (scope !== "project" && scope !== "local")
+    throw new Error("Config scope must be project or local.");
+  const explicit =
+    options.approvalMode !== undefined ||
+    options.cooperateMode !== undefined ||
+    options.unitTestMode !== undefined ||
+    options.utCoverageThreshold !== undefined ||
+    options.reset !== undefined;
+  if (scope === "local") {
+    await configureOverrides(localConfigPath(), scope, options, explicit);
+    return;
+  }
 
   const configPath = path.join(process.cwd(), EASY_CODING_DIR, CONFIG_FILE);
   if (!(await pathExists(configPath))) {
@@ -41,6 +73,11 @@ export async function config(): Promise<void> {
     throw new Error(
       `Project harness ${projectConfig.harness_version} does not exactly match CLI ${VERSION}. Upgrade the harness or update the CLI before changing config.`,
     );
+  }
+
+  if (explicit) {
+    await configureOverrides(configPath, scope, options, true);
+    return;
   }
 
   const current = resolveLegacyBehavior(projectConfig);
@@ -118,8 +155,24 @@ export async function config(): Promise<void> {
     utCoverageThreshold = Number(thresholdInput);
   }
 
+  const cooperateMode = await select<CooperateMode>({
+    message: `Select project cooperation (current: ${projectConfig.behavior.cooperate_mode ?? "default"})`,
+    initialValue: projectConfig.behavior.cooperate_mode ?? "default",
+    options: [
+      { value: "default", label: "default — hand off at stage boundaries" },
+      {
+        value: "dispatch",
+        label: "dispatch — manually hand off implementation and QUALITY repairs",
+      },
+    ],
+  });
+  if (typeof cooperateMode === "symbol") {
+    cancel("Configuration cancelled.");
+    return;
+  }
+
   const shouldSave = await confirm({
-    message: `Set approval=${approvalMode}, workflow=${workflowMode}, unit-test=${unitTestMode}${unitTestMode === "none" ? "" : ` (${utCoverageThreshold}%)`}?`,
+    message: `Set approval=${approvalMode}, cooperate=${cooperateMode}, unit-test=${unitTestMode}${unitTestMode === "none" ? "" : ` (${utCoverageThreshold}%)`}?`,
     initialValue: true,
   });
   if (typeof shouldSave === "symbol" || !shouldSave) {
@@ -137,10 +190,111 @@ export async function config(): Promise<void> {
     }
   }
 
-  await setBehaviorModes(configPath, approvalMode, workflowMode, unitTestMode, utCoverageThreshold);
+  await setBehaviorModes(
+    configPath,
+    approvalMode,
+    workflowMode,
+    unitTestMode,
+    utCoverageThreshold,
+    cooperateMode,
+  );
   outro(
     chalk.green(
       `Project modes updated: approval=${approvalMode}, workflow=${workflowMode}, unit-test=${unitTestMode}${unitTestMode === "none" ? "" : ` (${utCoverageThreshold}%)`}.`,
     ),
   );
+}
+
+async function configureOverrides(
+  filePath: string,
+  scope: string,
+  options: ConfigOptions,
+  explicit: boolean,
+): Promise<void> {
+  const changes: Partial<Record<keyof BehaviorSettings, unknown>> = {};
+  const flags = {
+    approval_mode: options.approvalMode,
+    cooperate_mode: options.cooperateMode,
+    unit_test_mode: options.unitTestMode,
+    ut_coverage_threshold: options.utCoverageThreshold,
+  };
+  for (const key of BEHAVIOR_KEYS) {
+    if (flags[key] !== undefined)
+      changes[key] = key === "ut_coverage_threshold" ? Number(flags[key]) : flags[key];
+  }
+  if (options.reset) {
+    if (!BEHAVIOR_KEYS.includes(options.reset as keyof BehaviorSettings))
+      throw new Error("Unknown behavior field to reset.");
+    changes[options.reset as keyof BehaviorSettings] = null;
+  }
+  if (!explicit) {
+    const local = await readLocalBehavior();
+    const key = await select<keyof BehaviorSettings>({
+      message: "Select local override to edit",
+      options: BEHAVIOR_KEYS.map((value) => ({
+        value,
+        label: `${value}: ${local[value] ?? "inherit project"}`,
+      })),
+    });
+    if (typeof key === "symbol") {
+      cancel("Configuration cancelled.");
+      return;
+    }
+    if (key === "ut_coverage_threshold") {
+      const value = await text({
+        message: "Coverage threshold 1..100, or inherit",
+        initialValue: String(local[key] ?? "inherit"),
+        validate: (value) =>
+          value === "inherit" || isUtCoverageThreshold(Number(value))
+            ? undefined
+            : "Enter 1..100 or inherit.",
+      });
+      if (typeof value === "symbol") {
+        cancel("Configuration cancelled.");
+        return;
+      }
+      changes[key] = value === "inherit" ? null : Number(value);
+    } else {
+      const values =
+        key === "approval_mode"
+          ? APPROVAL_MODES
+          : key === "cooperate_mode"
+            ? COOPERATE_MODES
+            : UNIT_TEST_MODES;
+      const value = await select({
+        message: `Set local ${key}`,
+        initialValue: local[key] ?? "inherit",
+        options: [
+          { value: "inherit", label: "inherit — use project setting" },
+          ...values.map((value) => ({ value, label: value })),
+        ],
+      });
+      if (typeof value === "symbol") {
+        cancel("Configuration cancelled.");
+        return;
+      }
+      changes[key] = value === "inherit" ? null : value;
+    }
+  }
+  for (const key of BEHAVIOR_KEYS) {
+    if (changes[key] !== undefined && changes[key] !== null)
+      validateBehaviorValue(key, changes[key]);
+  }
+  if (!options.yes) {
+    const accepted = await confirm({
+      message: `Save ${scope} overrides ${JSON.stringify(changes)}?`,
+      initialValue: true,
+    });
+    if (accepted !== true) {
+      cancel("Configuration cancelled.");
+      return;
+    }
+  }
+  if (scope === "project" && changes.unit_test_mode && changes.unit_test_mode !== "none") {
+    const readiness = await inspectTddReadiness(process.cwd());
+    if (readiness.status !== "ready")
+      throw new Error(`Unit test readiness: ${readiness.status}. ${readiness.reasons.join("; ")}`);
+  }
+  await writeBehaviorOverrides(filePath, changes);
+  outro(chalk.green(`${scope} behavior overrides saved: ${filePath}`));
 }

@@ -1,21 +1,129 @@
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import YAML, { isScalar, isSeq, parseDocument } from "yaml";
 import type { AgentPlatform } from "../types/platform.js";
 import type { SupermoduleConfig } from "../types/supermodule.js";
-import type { UnitTestMode } from "../types/task.js";
+import type { CooperateMode, UnitTestMode } from "../types/task.js";
 import { writeTextFile } from "./file-writer.js";
 
 export const CONFIG_SCHEMA_VERSION = 6;
 export const DEFAULT_UT_COVERAGE_THRESHOLD = 90;
 export const UNIT_TEST_MODES = ["none", "ut", "tdd"] as const;
 export const APPROVAL_MODES = ["approve", "guard", "confirm", "auto"] as const;
+export const COOPERATE_MODES = ["default", "dispatch"] as const;
 export const CONFIGURED_WORKFLOW_MODES = ["adaptive", "fast", "standard", "strict"] as const;
 export const CONCRETE_WORKFLOW_MODES = ["fast", "standard", "strict"] as const;
 export type ApprovalMode = (typeof APPROVAL_MODES)[number];
 export type ConfiguredWorkflowMode = (typeof CONFIGURED_WORKFLOW_MODES)[number];
 export type ConcreteWorkflowMode = (typeof CONCRETE_WORKFLOW_MODES)[number];
 export type LegacyConfirmMode = ApprovalMode | "lite";
+
+export interface BehaviorSettings {
+  approval_mode: ApprovalMode;
+  cooperate_mode: CooperateMode;
+  unit_test_mode: UnitTestMode;
+  ut_coverage_threshold: number;
+}
+
+export const BEHAVIOR_DEFAULTS: BehaviorSettings = {
+  approval_mode: "guard",
+  cooperate_mode: "default",
+  unit_test_mode: "none",
+  ut_coverage_threshold: DEFAULT_UT_COVERAGE_THRESHOLD,
+};
+export const BEHAVIOR_KEYS = Object.keys(BEHAVIOR_DEFAULTS) as Array<keyof BehaviorSettings>;
+
+export function localConfigPath(): string {
+  return path.join(os.homedir(), ".easy-coding", "config.yaml");
+}
+
+export function validateBehaviorValue(key: keyof BehaviorSettings, value: unknown): void {
+  const valid =
+    key === "approval_mode"
+      ? isApprovalMode(value)
+      : key === "cooperate_mode"
+        ? COOPERATE_MODES.includes(value as CooperateMode)
+        : key === "unit_test_mode"
+          ? isUnitTestMode(value)
+          : isUtCoverageThreshold(value);
+  if (!valid) throw new Error(`Invalid behavior.${key}: ${String(value)}`);
+}
+
+export async function readLocalBehavior(): Promise<Partial<BehaviorSettings>> {
+  let content: string;
+  try {
+    content = await readFile(localConfigPath(), "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
+    throw error;
+  }
+  const settings = YAML.parse(content)?.behavior ?? {};
+  for (const key of BEHAVIOR_KEYS) {
+    if (settings[key] !== undefined) validateBehaviorValue(key, settings[key]);
+  }
+  return Object.fromEntries(
+    BEHAVIOR_KEYS.filter((key) => settings[key] !== undefined).map((key) => [key, settings[key]]),
+  );
+}
+
+export function resolveBehaviorSettings(
+  project: Partial<BehaviorSettings>,
+  local: Partial<BehaviorSettings> = {},
+  session: Partial<BehaviorSettings> = {},
+): { values: BehaviorSettings; sources: Record<keyof BehaviorSettings, string> } {
+  const values = { ...BEHAVIOR_DEFAULTS };
+  const sources = {} as Record<keyof BehaviorSettings, string>;
+  for (const key of BEHAVIOR_KEYS) {
+    const layer =
+      session[key] !== undefined
+        ? "session"
+        : local[key] !== undefined
+          ? "local"
+          : project[key] !== undefined
+            ? "project"
+            : "default";
+    const value =
+      layer === "session"
+        ? session[key]
+        : layer === "local"
+          ? local[key]
+          : layer === "project"
+            ? project[key]
+            : BEHAVIOR_DEFAULTS[key];
+    validateBehaviorValue(key, value);
+    Object.assign(values, { [key]: value });
+    sources[key] = layer;
+  }
+  return { values, sources };
+}
+
+/** 只写用户选择的覆盖项；null 恢复继承，读取和取消操作不创建本地文件。 */
+export async function writeBehaviorOverrides(
+  filePath: string,
+  changes: Partial<Record<keyof BehaviorSettings, unknown>>,
+): Promise<void> {
+  let content = "";
+  try {
+    content = await readFile(filePath, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  const document = parseDocument(content);
+  for (const key of BEHAVIOR_KEYS) {
+    const value = changes[key];
+    if (value === undefined) continue;
+    if (value === null) {
+      if (document.hasIn(["behavior", key])) document.deleteIn(["behavior", key]);
+    } else {
+      validateBehaviorValue(key, value);
+      document.setIn(["behavior", key], value);
+    }
+  }
+  if (!content && !document.has("behavior")) return;
+  await writeTextFile(filePath, document.toString());
+}
 
 export interface EasyCodingConfig {
   version: number;
@@ -35,6 +143,7 @@ export interface EasyCodingConfig {
   };
   behavior: {
     approval_mode: ApprovalMode;
+    cooperate_mode?: CooperateMode;
     workflow_mode: ConfiguredWorkflowMode;
     unit_test_mode: UnitTestMode;
     ut_coverage_threshold: number;
@@ -71,6 +180,7 @@ export function createDefaultConfig(params: {
       workflow_mode: "adaptive",
       unit_test_mode: "none",
       ut_coverage_threshold: DEFAULT_UT_COVERAGE_THRESHOLD,
+      cooperate_mode: "default",
     },
   };
   if (params.supermodule) {
@@ -217,6 +327,7 @@ export async function setBehaviorModes(
   workflowMode: ConfiguredWorkflowMode,
   unitTestMode?: UnitTestMode,
   utCoverageThreshold?: number,
+  cooperateMode?: CooperateMode,
 ): Promise<EasyCodingConfig> {
   if (unitTestMode !== undefined && !isUnitTestMode(unitTestMode)) {
     throw new Error("Unit test mode must be none, ut, or tdd.");
@@ -245,6 +356,7 @@ export async function setBehaviorModes(
     behavior.workflow_mode = workflowMode;
     behavior.unit_test_mode = unitTestMode ?? resolvedBehavior.unitTestMode;
     behavior.ut_coverage_threshold = utCoverageThreshold ?? resolvedBehavior.utCoverageThreshold;
+    behavior.cooperate_mode = cooperateMode ?? legacyBehavior.cooperate_mode ?? "default";
     config.behavior = behavior as EasyCodingConfig["behavior"];
     config.version = CONFIG_SCHEMA_VERSION;
   });

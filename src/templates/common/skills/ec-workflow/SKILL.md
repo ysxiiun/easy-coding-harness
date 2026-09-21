@@ -12,8 +12,9 @@ user's language.
 
 ```text
 INIT --auto--> ANALYSIS -> IMPLEMENT -> QUALITY -> MEMORY --auto--> COMPLETE
-                    ^           ^          |
-                    +--replan---+          +---repair-----+
+                    ^                      |
+                    +---- scope/contract replan -----+
+                                  QUALITY -- bounded repair --> QUALITY
 
 any active stage --explicit user abort--> CLOSED
 ```
@@ -27,18 +28,19 @@ Pure conversation, explanation, analysis, and read-only review stay Ready and cr
 - `approval_mode = approve|guard|confirm|auto` controls whether a legal transition waits for a
   user. `confirm` waits only at ANALYSIS -> IMPLEMENT; after that, green QUALITY, MEMORY, and
   COMPLETE transitions advance automatically. `auto` advances every legal green
-  edge. The only additional pause is an exceptional code diff detected after the frozen
+  edge. Dispatch keeps its explicit scope/executor decision; another pause is an exceptional code diff detected after the frozen
   QUALITY acceptance checkpoint; accepting that exact diff does not change the mode.
 - `workflow_mode = adaptive|fast|standard|strict` controls execution cost and assurance depth.
 - `unit_test_mode` independently selects `none`, `ut`, or `tdd`. It defaults to `none`;
   `ut_coverage_threshold` defaults to 90 and accepts integers from 1 to 100.
 
-Approval and unit test strategy retain session-over-project precedence. Execution depth is always the
+Approval, cooperation and unit test settings use session > local > project > defaults, per field.
+Local preferences live in optional `~/.easy-coding/config.yaml`; reads never create it. Execution depth is always the
 mechanically calculated minimum for the current change. Do not recommend, select a higher mode,
 or inherit an old task mode. Persist it once with `propose-workflow-mode --agent <agent-id>
 --session-file <P>`; the runtime calculates and freezes the value.
 
-Unit test strategy uses the same session-over-project precedence and freezes its mode and
+Unit test strategy uses the same three-scope precedence and freezes its mode and
 `ut_coverage_threshold` on ANALYSIS -> IMPLEMENT. UT and TDD share passed local unit tests and
 changed-line coverage, and reuse `ec-tdd-init` readiness. Only TDD requires test-first lifecycle
 and its review dimension. UT keeps ordinary review and compact Fast planning. The `tdd-init`
@@ -126,7 +128,7 @@ or `qoder`. Never use a display or source-author attribution such as `Codex with
    `type=tdd-init` code task only after scope confirmation. Do not reinterpret it as an ordinary
    TDD-enabled feature task and do not require readiness before creating it.
 5. Match the user's intent against `current_task` and the active task list before resuming.
-   If the user names or clearly matches another task, confirm the switch and call
+   If the user explicitly selects another task, that selection authorizes the switch; call
    `claim-task --task-id <id> --agent <agent-id> --session-file <P>`. Do not execute task A
    under task B's request.
    - With no explicit repository-mutation request, stay Ready and answer normally. Ambiguous
@@ -139,7 +141,23 @@ or `qoder`. Never use a display or source-author attribution such as `Codex with
 6. Resume the matched/current task, then load only state-relevant assets. Do not read five full
    memories at every startup; ANALYSIS searches memory metadata and opens relevant entries on
    demand.
-7. If another Agent last owned the task, summarize the stored handoff before continuing.
+7. Honor the returned `continuation` before generic stage dispatch. Summarize the existing handoff,
+   consume its approved scope and references, and stop at `stop_after`. Never create a new task,
+   replan, or ask again to approve already accepted work merely because the Agent changed.
+   `cooperation.coordinator` stays the main Agent/session while `last_agent` tracks the executor.
+   A repeated claim of the same active task does not require another claim record.
+
+## Manual dispatch
+
+`cooperate_mode=default` preserves handoff at stage boundaries. `dispatch` also supports handing
+a QUALITY repair to another Agent without changing stage. The user manually switches Agents.
+At an implementation decision, offer current-Agent execution, handoff, or defer/change once.
+"Confirm and hand off" consumes the existing pending stage approval before writing a handoff;
+"handoff for analysis" alone does not approve implementation. Do not ask again on claim.
+Use `handoff-task --continuation` with `next_action`, existing `unit_ids`, optional `evidence_refs`,
+and `stop_after`. Implement-only handoff uses `next_action:implement, stop_after:IMPLEMENT`;
+on completion return `next_action:quality` to the coordinator. QUALITY repairs follow ec-quality.
+The user can authorize the coordinator to fix a small change directly in either mode.
 
 ## Stage dispatch
 
@@ -158,7 +176,8 @@ clears the pending action so the corrected action can proceed; never overwrite a
 pending action.
 
 Creation and claim return `spec_context.consumption` for the stored selection. Consume it before
-dispatching a stage. After session resume or design sync, call `resume-spec-context --agent
+dispatching a stage. Reuse a matching current-session receipt (`spec_context.reused:true`) and context already loaded.
+If context was lost, the session is new, or design changed, call `resume-spec-context --agent
 <agent-id> --session-file <P>` and consume its returned closure. A blocked context requires
 source repair or design sync; never continue from a handoff summary alone. If `spec_change` is
 pending, resume that confirmed change on the bound original file before implementation/QUALITY.
@@ -211,8 +230,9 @@ acceptance-diff choice and returns to the stage required by the state API.
 For an explicitly confirmed rollback, scope reduction, or bounded correction of an active task,
 call `begin-correction --file <existing-task-file> ... --summary <confirmed-change>
 [--risk <actual-new-risk>] --agent <agent-id> --session-file <P>`. The runtime preserves the plan,
-unaffected Units and evidence, consumes old QUALITY state, and enters IMPLEMENT at the mechanical
-minimum for these files. Do not reconstruct the original task or its documents. Synchronize only
+unaffected Units and evidence. In QUALITY it prepares an in-stage repair bundle; use
+`start-quality-repair` and `complete-quality-repair` without a stage transition. Other active stages
+use IMPLEMENT at the mechanical minimum for these files. Do not reconstruct the original task or its documents. Synchronize only
 conflicting source Spec clauses once when needed; then continue the correction. Never restore an
 entire file over unrelated user edits. A new feature or expanded contract still needs ANALYSIS.
 

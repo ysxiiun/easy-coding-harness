@@ -37,11 +37,14 @@ src/
 
 ```
 INIT ─auto→ ANALYSIS → IMPLEMENT → QUALITY → MEMORY ─auto→ COMPLETE
-          ↑            ↑          │
-          └── replan ───┘          └── repair
+          ↑                       ↺ bounded repair
+          └── requirements/contract replan ──┘
 
 Every repository-mutation task uses this graph. QUALITY owns independent read-only Review and
-Verification gates; Fast, Standard, and Strict change their depth, not the graph. Pure read-only
+Verification gates; approved bounded repairs stay inside QUALITY. `cooperate_mode: dispatch`
+lets users manually hand off implementation or repairs and receive them back for verification.
+Behavior settings resolve per field: session > optional ~/.easy-coding/config.yaml > project > defaults.
+Fast, Standard, and Strict change their depth, not the graph. Pure read-only
 conversation stays Ready and creates no task. `ec-lite` is a separate explicit persistent mode
 that uses proposal confirmation and minimum implementation without Harness task artifacts.
 ```

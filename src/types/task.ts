@@ -139,12 +139,15 @@ export interface MemoryProgress {
   updated_at?: string;
 }
 
+export type CooperateMode = "default" | "dispatch";
+
 export interface SessionFile {
   current_task: string | null;
   created_at: string;
   agent?: WorkflowAgentIdentity;
   last_agent?: WorkflowAgentIdentity;
   approval_mode?: ApprovalMode;
+  cooperate_mode?: CooperateMode;
   workflow_mode?: ConfiguredWorkflowMode;
   unit_test_mode?: UnitTestMode;
   ut_coverage_threshold?: number;
@@ -277,6 +280,34 @@ export interface TaskJson {
   created_by: WorkflowActorIdentity;
   last_agent: WorkflowActorIdentity;
   stage_history: StageHistoryEntry[];
+  /** 协作执行上下文，接手不覆盖主 Agent；不是额外的配置优先级。 */
+  cooperation?: {
+    mode: CooperateMode;
+    coordinator: { agent: string; session_file: string };
+  };
+  continuation?: {
+    next_action: "implement" | "repair" | "quality" | "continue";
+    unit_ids?: string[];
+    evidence_refs?: number[];
+    stop_after?: "IMPLEMENT" | "repair";
+    repair_id?: string;
+  };
+  quality_repair?: {
+    repair_id: string;
+    summary: string;
+    files: string[];
+    unit_ids: string[];
+    quality_attempt: number;
+    implementation_fingerprint: string;
+    inputs: CheckInputSnapshot;
+    authorization?: "explicit-user" | "approval-policy";
+    handed_off?: boolean;
+    execution_start_index?: number;
+    approved_by?: string;
+    approved_at?: string;
+    executor?: "current" | "other";
+    completed_at?: string;
+  };
   correction?: {
     files: string[];
     summary: string;
@@ -360,6 +391,8 @@ export interface TaskJson {
   spec_writeback_progress?: SpecWritebackProgress;
   /** 当前 session 已加载的选中设计范围；完整原稿不复制到任务状态中。 */
   spec_context?: SpecContextReceipt;
+  /** 各会话已消费的设计凭据；只保存身份，不复制原稿。 */
+  spec_contexts?: Record<string, SpecContextReceipt>;
   /** 已确认但尚未同步到 Canonical 原稿的需求变更。 */
   spec_change?: SpecChange;
   init_log?: unknown[];
@@ -591,6 +624,11 @@ export type ExecutionRecord =
       from: WorkflowAgentIdentity;
       stage: Stage;
       summary: string;
+      next_action?: "implement" | "repair" | "quality" | "continue";
+      unit_ids?: string[];
+      evidence_refs?: number[];
+      stop_after?: "IMPLEMENT" | "repair";
+      repair_id?: string;
       timestamp: string;
     }
   | {

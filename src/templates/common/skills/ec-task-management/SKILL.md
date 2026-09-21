@@ -22,7 +22,7 @@ Call the state API snapshot and show:
   pending confirmed Spec change.
 
 Mode inspection and configuration belongs to `ec-config`. If the user asks to change Approval,
-Workflow, unit test strategy, or the shared coverage threshold, route there and do not mutate those fields here.
+Workflow, cooperation, unit test strategy, or the shared coverage threshold, route there and do not mutate those fields here.
 
 ## Task actions
 
@@ -38,8 +38,8 @@ When creating from a Canonical Spec, call `inspect-dev-spec --manifest-only`, di
 task and dependency selection, then call `create-task-from-spec` only after explicit user
 selection. Multiple selected Spec tasks still create one Harness task. Do not call
 `select-dev-spec-scope` during discovery. Creation and claim return the selected consumption
-closure; consume it before stage work. On a resumed session, use `resume-spec-context` with
-the current agent/session. A blocked context allows repair/rebind/sync, but blocks advancement.
+closure; consume it before stage work. On the same session, reuse unchanged context; call `resume-spec-context` only if context is missing
+or invalidated. A new session must consume its selected closure. A blocked context allows repair/rebind/sync, but blocks advancement.
 Initialize missing shared execution before creation. Support `rebind-spec-source` only when the
 new file matches schema + spec_id + design revision + design_sha256 and does not roll execution
 revision backward. A pending writeback is repaired with `reconcile-spec-execution`, never by
@@ -49,3 +49,10 @@ action is cleared with `status:error`; correct its input instead of replaying it
 Confirmed requirement changes use `begin-spec-change` before editing the original source.
 Its summary and affected tasks survive handoff. Finish revision + READY + `sync-spec-design`,
 then reload context and refresh the plan in ANALYSIS. Do not clear a pending change manually.
+
+## Scoped continuation
+
+Display the task coordinator, continuation action/stop point and current repair bundle. A claim
+returns the existing approved work; do not request a second scope approval. The main Agent is not
+replaced by the coding executor. Handoff summaries reference existing plan Units and execution
+indices; never copy a new Spec or reconstruct old verification results.

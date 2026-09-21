@@ -7,10 +7,10 @@ description: IMPLEMENT-stage skill. Executes the confirmed plan with workflow-mo
 
 Use only after ANALYSIS has frozen `task.json.workflow_mode` to `fast`, `standard`, or
 `strict`. Read `dev-spec.md`, the latest `plan` record in `execution.jsonl`, relevant RULES
-and ABSTRACT sections, and `test-strategy.md` for code tasks.
+and ABSTRACT sections. Read `test-strategy.md` when required; compact Fast uses plan checks.
 
 For a Canonical-backed task, consume the ready `spec_context.consumption` returned on creation
-or claim. On session resume or after design sync, call `resume-spec-context --agent <agent-id>
+or claim. Reuse unchanged context on the same session; only if context is missing or design changed, call `resume-spec-context --agent <agent-id>
 --session-file <P>`. The bound source and selected changes/steps/tests govern the implementation;
 handoff summaries and derived plans cannot substitute for this context. A blocked context or
 pending `spec_change` stops implementation until the original source is repaired/synchronized.
@@ -221,3 +221,11 @@ conversation overhead while keeping work observable.
       an existing core Java class, has Javadoc unless it qualifies for the documented-interface
       implementation exception.
 - [ ] The task enters QUALITY, regardless of workflow mode.
+
+## Manual implementation handoff
+
+When `continuation.next_action=implement`, execute only its approved Units. Reuse the original plan,
+commands and results. Honor `stop_after:IMPLEMENT`: record completion and hand back with
+`next_action:quality`, then stop. The receiving coordinator handles the existing stage boundary
+once under the approval policy; the executor never starts quality work by inertia. Users may
+instead choose current-Agent execution. No platform is permanently assigned either role.

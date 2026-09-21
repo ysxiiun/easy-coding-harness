@@ -69,7 +69,14 @@ program
 
 program
   .command("config")
-  .description("Interactively configure project-level harness behavior")
+  .description("Configure project or local harness behavior")
+  .option("--scope <scope>", "project or local", "project")
+  .option("--approval-mode <mode>", "approve, guard, confirm, or auto")
+  .option("--cooperate-mode <mode>", "default or dispatch")
+  .option("--unit-test-mode <mode>", "none, ut, or tdd")
+  .option("--ut-coverage-threshold <percent>", "coverage threshold 1..100")
+  .option("--reset <field>", "Remove an override to restore inheritance")
+  .option("-y, --yes", "Save explicitly selected fields without another prompt")
   .action(withErrorHandling(config));
 
 program

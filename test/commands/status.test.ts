@@ -46,6 +46,7 @@ beforeEach(async () => {
   originalCwd = process.cwd();
   tempDir = await mkdtemp(path.join(os.tmpdir(), "ec-status-command-"));
   process.chdir(tempDir);
+  vi.spyOn(os, "homedir").mockReturnValue(path.join(tempDir, "home"));
   await mkdir(path.join(tempDir, ".easy-coding"), { recursive: true });
   logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 });
@@ -57,6 +58,21 @@ afterEach(async () => {
 });
 
 describe("status command", () => {
+  it("displays local cooperation and a per-session override with their sources", async () => {
+    await writeConfig(VERSION);
+    const dir = path.join(tempDir, "home/.easy-coding");
+    await mkdir(dir, { recursive: true });
+    await writeFile(
+      path.join(dir, "config.yaml"),
+      "behavior:\n  cooperate_mode: dispatch\n  approval_mode: auto\n",
+    );
+    await writeSessionFile(tempDir, { ...createSessionFile(), cooperate_mode: "default" }, "main");
+    await status();
+    expect(output()).toContain("cooperate_mode: dispatch (local)");
+    expect(output()).toContain("cooperate_mode: default (session)");
+    expect(output()).toContain("effective_approval_mode: auto (local)");
+  });
+
   it("reports an exact-version refresh when SemVer precedence is equal", async () => {
     await writeConfig(`${VERSION.split("+", 1)[0]}+fixture`);
 

@@ -12,7 +12,7 @@ Start every work reply with the single Markdown blockquote status line injected 
 then a blank line. Do not render the machine breadcrumbs to the user.
 
 `{approval-mode}` is the effective approval mode and `{workflow-mode}` is the configured or
-task-frozen execution mode; session overrides take precedence over project settings.
+task-frozen execution mode; behavior settings resolve per field: session > optional local ~/.easy-coding/config.yaml > project > defaults.
 When effective/frozen unit_test_mode is `ut` or `tdd`, insert `· **UT**` or `· **TDD**`
 immediately after Workflow. For `none`, omit this segment and preserve the status-line format.
 
@@ -43,17 +43,18 @@ First run `ec-init`; daily work goes through `ec-workflow`.
 
 ## Workflow discipline
 
-- Approval mode is session override > project `behavior.approval_mode` > `guard`; workflow mode
+- Approval mode is session override > local ~/.easy-coding/config.yaml > project `behavior.approval_mode` > `guard`; workflow mode
   is the mechanical minimum for the current actual change. Approval controls waiting;
   workflow controls execution depth. Do not recommend or inflate the calculated mode.
   Confirm approval waits only at ANALYSIS -> IMPLEMENT, then advances green later stages
-  automatically; Auto advances all legal green edges. A new code diff after the QUALITY
-  checkpoint is the only exceptional pause across all modes: show the exact diff, bind acceptance
+  automatically; Auto advances all legal green edges. Dispatch retains the explicit scope/executor
+  decision, merged with any required approval. A new code diff after the QUALITY
+  checkpoint also pauses across all modes: show the exact diff, bind acceptance
   to its digest, and continue without rereview when the user accepts.
   Every mutation task runs QUALITY; no mode changes scope, delivery form, or evidence gates.
-- Unit test strategy is session override > project `behavior.unit_test_mode` > `none`.
+- Unit test strategy is session override > local ~/.easy-coding/config.yaml > project `behavior.unit_test_mode` > `none`.
   Values are `none`, `ut`, and `tdd`; both enabled strategies share `ut_coverage_threshold`
-  (session > project > 90, integer 1..100). ANALYSIS -> IMPLEMENT freezes strategy, threshold,
+  (session > local > project > 90, integer 1..100). ANALYSIS -> IMPLEMENT freezes strategy, threshold,
   and repository baselines. `none` adds no coverage work and retains ordinary task verification.
   UT requires passed local unit tests and changed-production-line coverage, without test-first
   ordering, RED/GREEN artifacts, or a separate TDD review. TDD additionally requires its lifecycle
@@ -113,7 +114,7 @@ First run `ec-init`; daily work goes through `ec-workflow`.
   Runtime progress must use the shared writer with CAS/idempotency and reconciliation; static
   confirmed design changes first use `begin-spec-change`, then revision + READY + `sync-spec-design`.
   Creation/claim returns selected source context; session resume and design sync require
-  `resume-spec-context` before work. Pending changes block implementation/acceptance across agents.
+  `resume-spec-context` only when current-session context is missing or design changed; otherwise reuse it. Pending changes block implementation/acceptance across agents.
   Preserve the original writer actor while retaining the current owner during reconciliation.
   Never hand-edit `EDS:EXECUTION`.
   Selected source tasks remain `implemented` through local QUALITY and become `verified`
@@ -166,3 +167,19 @@ speculative fallback/retry/compatibility logic, or defensive copying.
 
 Add project-specific instructions below this line. The generated region above is managed by
 easy-coding-harness and is replaced on `easy-coding upgrade`.
+
+## Cooperation and bounded QUALITY repair
+
+`cooperate_mode: default | dispatch` is independent of approval and unit-test strategy, with
+session > optional local `~/.easy-coding/config.yaml` > project > default precedence. Reads never
+create local config; ec-config changes only explicitly selected fields and can restore inheritance.
+Default preserves stage-boundary handoff. Dispatch supports manual implementation and QUALITY
+repair handoff; the user can always select current-Agent execution. Preserve the task coordinator,
+use existing plan/evidence references and stop at the handoff's `stop_after`. Never launch another Agent.
+Dispatch requires one user decision on scope and executor, even under Auto; combine any approval
+with that same decision and never ask again on claim. Ordinary repairs stay in QUALITY using
+begin-correction, start-quality-repair and complete-quality-repair. Only changed requirements,
+contracts or a replaced main implementation plan justify returning to ANALYSIS/IMPLEMENT.
+Review and verification remain read-only checks; approved repairs happen between them. Reuse
+unaffected evidence, review the repair delta and run affected checks only. Do not rebuild the plan
+or repeat completed checks because of handoff, stage labels or descriptive check-name changes.

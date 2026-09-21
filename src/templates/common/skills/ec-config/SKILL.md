@@ -1,6 +1,6 @@
 ---
 name: ec-config
-description: Inspect and configure Easy Coding project/session Approval, Workflow, and Java unit test strategies.
+description: Inspect and configure Easy Coding project/session Approval, cooperation, and Java unit test strategies across session, local and project scopes.
 ---
 
 # ec-config — mode configuration
@@ -10,15 +10,17 @@ and available actions. Never mutate project or session settings without an expli
 
 ## Configuration panel
 
-Call `snapshot` and show project, session, effective, and frozen task values for `approval_mode`,
+Call `snapshot` and show project, session, effective, and frozen task values for `approval_mode`, `cooperate_mode`,
 the mechanically calculated workflow mode (read-only), `unit_test_mode`, and `ut_coverage_threshold`.
+Show `behavior_sources`, `local_behavior`, and `effective_cooperate_mode` alongside the current
+task cooperation/continuation so a receiving Agent can distinguish its defaults from accepted work.
 Use `project_unit_test_mode`, `session_unit_test_mode`, `effective_unit_test_mode`, their threshold
 counterparts, `task_unit_test_mode`, `task_tdd_baselines`, and `unit_test_readiness_status` directly.
 When readiness is `not_checked`, report it as not checked; do not scan infrastructure merely to
 populate the panel. Inspect readiness when the user requests it or selects UT/TDD.
 
-Precedence is `session override > project config > defaults`. Defaults are Approval `guard`,
-Workflow `adaptive`, unit test strategy `none`, and shared changed-line coverage threshold 90%.
+Precedence is `session override > ~/.easy-coding/config.yaml > project config > defaults`, per field. Defaults are Approval `guard`,
+Workflow `adaptive`, cooperation `default`, unit test strategy `none`, and shared changed-line coverage threshold 90%.
 The strategies are:
 
 - `none`: ordinary task-required verification, with no additional coverage gate.
@@ -36,6 +38,32 @@ non-mechanical edge, `guard` waits at ANALYSIS -> IMPLEMENT and QUALITY -> MEMOR
 waits only for the plan, and `auto` advances legal green edges immediately. A new code diff after
 the QUALITY checkpoint requires acceptance of that exact diff without changing the approval mode.
 
+## Cooperation and configuration scopes
+
+`cooperate_mode: default | dispatch` selects stage-boundary handoff or manual implementation/repair
+handoff. In dispatch, the coordinator analyzes, verifies and writes memory; the user may choose
+current-Agent execution for any bounded change. Never launch or schedule another Agent.
+One decision approves the displayed scope and its executor. Dispatch requires this human decision
+even under Auto; Approve consumes it as the same approval, not a second dialog. Existing accepted
+handoffs and frozen UT/TDD contracts survive changes to defaults.
+
+The local file is optional. Read-only inspection and init/upgrade never create it. Save only explicit
+keys under `behavior`; resetting a key removes that override. Local settings are preferences across
+projects and platforms, so saving local UT/TDD does not scan or initialize the current project.
+Readiness is checked when a task actually enables that strategy.
+
+After the user chooses scope and values, use these commands (the explicit choice authorizes `--yes`):
+
+```bash
+easy-coding config --scope local --cooperate-mode dispatch --yes
+easy-coding config --scope project --cooperate-mode default --yes
+easy-coding config --scope local --reset cooperate_mode --yes
+```
+
+The same scopes support `--approval-mode`, `--unit-test-mode`, and `--ut-coverage-threshold`.
+For a session, call `set-cooperate-mode --mode default|dispatch` or `clear-cooperate-mode`
+with the current state API, agent and session file. Bare `ec-config` remains read-only.
+
 ## Project configuration
 
 Use `easy-coding config`. The CLI confirms an atomic update of Approval, unit test strategy, and
@@ -49,7 +77,7 @@ After explicit user selection, use the current logical session file:
 {{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py set-approval-mode --mode approve|guard|confirm|auto --agent <agent-id> --session-file <P>
 {{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py clear-approval-mode --agent <agent-id> --session-file <P>
 
-# Omitting threshold preserves the session threshold or inherits project/default 90.
+# Omitting threshold preserves the session threshold or inherits local/project/default 90.
 {{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py set-unit-test-mode --mode none|ut|tdd [--threshold 1..100] --agent <agent-id> --session-file <P>
 {{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py clear-unit-test-mode --agent <agent-id> --session-file <P>
 ```

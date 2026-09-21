@@ -8,6 +8,8 @@ import {
   isApprovalMode,
   isConfiguredWorkflowMode,
   readConfigYaml,
+  readLocalBehavior,
+  resolveBehaviorSettings,
   resolveLegacyBehavior,
 } from "../utils/config-yaml.js";
 import { pathExists } from "../utils/file-writer.js";
@@ -58,14 +60,25 @@ export async function status(): Promise<void> {
     : migratedBehavior.workflowMode;
   const projectUnitTestMode = migratedBehavior.unitTestMode;
   const projectUtCoverageThreshold = migratedBehavior.utCoverageThreshold;
+  const localBehavior = await readLocalBehavior();
+  const projectBehavior = {
+    ...config.behavior,
+    approval_mode: projectApprovalMode,
+    unit_test_mode: projectUnitTestMode,
+    ut_coverage_threshold: projectUtCoverageThreshold,
+  };
+  const effective = resolveBehaviorSettings(projectBehavior, localBehavior);
   const needsCoverage =
-    projectUnitTestMode !== "none" ||
+    effective.values.unit_test_mode !== "none" ||
     sessions.some(({ session }) => ["ut", "tdd"].includes(session.unit_test_mode ?? "none")) ||
     activeTasks.some(({ task }) => ["ut", "tdd"].includes(task.unit_test_mode ?? "none"));
   const readiness = needsCoverage
     ? await inspectTddReadiness(cwd)
     : { status: "not_checked", reasons: [] };
   console.log(`  approval_mode: ${projectApprovalMode}`);
+  console.log(
+    `  cooperate_mode: ${effective.values.cooperate_mode} (${effective.sources.cooperate_mode})`,
+  );
   console.log(`  workflow_mode: ${projectWorkflowMode}`);
   console.log(`  unit_test_mode: ${projectUnitTestMode}`);
   console.log(`  ut_coverage_threshold: ${projectUtCoverageThreshold}`);
@@ -79,11 +92,16 @@ export async function status(): Promise<void> {
   console.log(`  project_workflow_mode: ${projectWorkflowMode}`);
   console.log(`  project_unit_test_mode: ${projectUnitTestMode}`);
   console.log(`  project_ut_coverage_threshold: ${projectUtCoverageThreshold}`);
-  console.log(`  effective_approval_mode: ${projectApprovalMode} (without a session override)`);
-  console.log(`  configured_workflow_mode: ${projectWorkflowMode} (without a session override)`);
-  console.log(`  effective_unit_test_mode: ${projectUnitTestMode} (without a session override)`);
+  for (const [key, value] of Object.entries(localBehavior)) console.log(`  local_${key}: ${value}`);
   console.log(
-    `  effective_ut_coverage_threshold: ${projectUtCoverageThreshold} (without a session override)`,
+    `  effective_approval_mode: ${effective.values.approval_mode} (${effective.sources.approval_mode})`,
+  );
+  console.log(`  configured_workflow_mode: ${projectWorkflowMode} (without a session override)`);
+  console.log(
+    `  effective_unit_test_mode: ${effective.values.unit_test_mode} (${effective.sources.unit_test_mode})`,
+  );
+  console.log(
+    `  effective_ut_coverage_threshold: ${effective.values.ut_coverage_threshold} (${effective.sources.ut_coverage_threshold})`,
   );
   if (sessions.length === 0) {
     console.log("  no session files");
@@ -100,19 +118,26 @@ export async function status(): Promise<void> {
       (legacySessionMode === "lite" ? "fast" : hasLegacySessionMode ? "adaptive" : undefined);
     const sessionUnitTestMode = session.unit_test_mode;
     const sessionUtCoverageThreshold = session.ut_coverage_threshold;
+    const resolved = resolveBehaviorSettings(projectBehavior, localBehavior, {
+      ...session,
+      approval_mode: sessionApprovalMode,
+    });
     console.log(`  - ${key}`);
     console.log(`    agent: ${session.agent ?? "legacy/unknown"}`);
     console.log(`    source: ${session.session_source ?? "legacy"}`);
-    console.log(`    approval_mode: ${sessionApprovalMode ?? "project default"}`);
+    console.log(`    approval_mode: ${sessionApprovalMode ?? "inherit local/project"}`);
     console.log(`    workflow_mode: ${sessionWorkflowMode ?? "project default"}`);
-    console.log(`    unit_test_mode: ${sessionUnitTestMode ?? "project default"}`);
-    console.log(`    ut_coverage_threshold: ${sessionUtCoverageThreshold ?? "project default"}`);
-    console.log(`    effective_approval_mode: ${sessionApprovalMode ?? projectApprovalMode}`);
-    console.log(`    configured_workflow_mode: ${sessionWorkflowMode ?? projectWorkflowMode}`);
-    console.log(`    effective_unit_test_mode: ${sessionUnitTestMode ?? projectUnitTestMode}`);
+    console.log(`    unit_test_mode: ${sessionUnitTestMode ?? "inherit local/project"}`);
     console.log(
-      `    effective_ut_coverage_threshold: ${sessionUtCoverageThreshold ?? projectUtCoverageThreshold}`,
+      `    ut_coverage_threshold: ${sessionUtCoverageThreshold ?? "inherit local/project"}`,
     );
+    console.log(`    effective_approval_mode: ${resolved.values.approval_mode}`);
+    console.log(
+      `    cooperate_mode: ${resolved.values.cooperate_mode} (${resolved.sources.cooperate_mode})`,
+    );
+    console.log(`    configured_workflow_mode: ${sessionWorkflowMode ?? projectWorkflowMode}`);
+    console.log(`    effective_unit_test_mode: ${resolved.values.unit_test_mode}`);
+    console.log(`    effective_ut_coverage_threshold: ${resolved.values.ut_coverage_threshold}`);
     console.log(
       `    harness: ${session.harness_disabled ? "disabled for this session" : "enabled"}`,
     );

@@ -222,7 +222,7 @@ Dev-Spec 入口会保留到同轮下一条最终消息。
 只能用身份一致的 `rebind-spec-source` 修复。确认改变静态任务/契约/范围后，先运行
 `begin-spec-change --affected-task <id> --summary <确认说明> --agent <agent-id>` 登记，再
 将原 Spec revision 恰好加一、恢复 READY 并执行 `sync-spec-design`，禁止手工编辑执行区。
-创建和接手会返回绑定原稿的选中内容；恢复会话或同步完成后运行 `resume-spec-context`
+创建和首次接手返回绑定原稿的选中内容；同一 session 复用未变化的消费凭据，只有上下文丢失或设计同步后才运行 `resume-spec-context`
 重新加载，再更新派生计划。待同步需求跨 Agent 保留，未完成同步时不能继续实施或验收。
 共享写回只有一个 pending 动作槽，不能用新动作覆盖未对账动作；并发 CAS 可重试冲突保留
 现场，而旧设计动作、幂等键载荷冲突和确定性状态错误会终止并释放写槽。repair 仅重开
@@ -270,6 +270,18 @@ Workflow 采用本轮实际修改的机械最低模式。Fast 用于单个实际
 依赖摘要、未使用的 `repo_paths`，以及 supermodule 已登记但未修改的子项目不参与定级；
 风险描述、标题或文件路径中仅出现 `payment`、`schema` 等普通领域词也不会单独触发 Strict。
 
+协作方式独立使用 `cooperate_mode: default | dispatch`，默认 `default`。本机默认开启人工派发：
+
+```bash
+easy-coding config --scope local --cooperate-mode dispatch
+```
+
+本地文件为 `~/.easy-coding/config.yaml`，无需预先创建。配置按字段使用会话 > 本地 > 项目 > 默认值；项目配置用 `--scope project`，会话通过 `ec-config` 设置。审批、协作、单测策略和 `ut_coverage_threshold` 均支持三层覆盖；`--reset <字段>` 恢复继承。本地 UT/TDD 偏好可在项目外保存，实际任务启用时才检查基础设施。
+
+在 dispatch 下，主 Agent 完成分析或汇总 QUALITY 修复项后，一次让用户选择“当前 Agent 执行 / 交给其他 Agent / 暂缓或修改”。这次选择同时承担所需审批；即使 Auto 也保留人工派发选择。选择交接后，用户自行切换 Agent，B 接手已有任务，按交接中的 Unit、证据和停止点执行；完成后交回 A。小改动可直接由 A 完成，不绑定平台、不自动启动 B。
+
+普通修复和交回都留在 QUALITY，Review/Verification 检查本身只读。A 接回后只审查增量和补受影响检查，复用 B 已执行且输入未变的证据。需求、契约或主要实施方案变化才退回 ANALYSIS/IMPLEMENT。重复 claim 不重复登记；A→B→A 保留各会话的 Spec 消费凭据。
+
 #### 4. 编码实现（IMPLEMENT）
 
 Agent 按确认的方案执行编码，严格限制在改动范围表列出的文件内。
@@ -309,7 +321,7 @@ QUALITY 将 Review Gate 与 Verification Gate 绑定到同一候选指纹，并�
 影响检查；Strict 使用至少两个独立维度，并只对实际修改仓库运行完整适用检查。
 
 Review Gate 不执行测试或写代码，Verification Gate 不修复代码。全部结果完成后一次性汇总
-Repair Bundle，只回 IMPLEMENT 修复一轮。环境故障留在 QUALITY 重试，不重跑 Review；
+Repair Bundle，普通修复留在 QUALITY，用户可以选择当前 Agent 执行或人工交接。环境故障留在 QUALITY 重试，不重跑 Review；
 契约或范围歧义回 ANALYSIS。审查以 Dev-Spec、RULES 和 Local Baseline 为依据，不会仅凭
 通用最佳实践要求补 null 判断、抽象层或常量，也会阻止无意义的范围外格式/注释改动。
 

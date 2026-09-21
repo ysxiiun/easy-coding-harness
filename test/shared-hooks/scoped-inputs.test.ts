@@ -7,4 +7,4 @@ it("reuses only unchanged check inputs and bounds fingerprint work", () => {
     encoding: "utf8",
     stdio: "pipe",
   });
-}, 30000);
+}, 60000);

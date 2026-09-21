@@ -17,7 +17,8 @@ from pathlib import Path
 import sys
 
 from easy_coding_inputs import (
-    evidence_operation, memo, digest, input_spec, capture, changed_inputs, command_covers,
+    evidence_operation, memo, cached_memo, invalidate_memo, digest, input_spec, capture, changed_inputs,
+    command_covers, command_identity,
 )
 
 from easy_dev_spec import (
@@ -476,17 +477,15 @@ def parse_unit_test_mode(value: object, source: str) -> str:
     return str(value)
 
 
-def read_project_behavior(root: Path) -> tuple[str, str, str, int]:
-    path = root / ".easy-coding" / "config.yaml"
+def read_behavior_file(path: Path) -> tuple[dict, int]:
+    return memo(("behavior", str(path)), lambda: _read_behavior_file(path))
+
+
+def _read_behavior_file(path: Path) -> tuple[dict, int]:
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return (
-            DEFAULT_APPROVAL_MODE,
-            DEFAULT_WORKFLOW_MODE,
-            DEFAULT_UNIT_TEST_MODE,
-            DEFAULT_UT_COVERAGE_THRESHOLD,
-        )
+    except FileNotFoundError:
+        return {}, 0
 
     in_behavior = False
     behavior_indent = 0
@@ -498,6 +497,8 @@ def read_project_behavior(root: Path) -> tuple[str, str, str, int]:
         if not stripped:
             continue
         indent = len(without_comment) - len(without_comment.lstrip(" "))
+        if stripped.startswith("behavior:") and stripped != "behavior:":
+            raise StateError("Behavior configuration must use an indented YAML mapping; write it with easy-coding config.")
         if stripped == "behavior:":
             in_behavior = True
             behavior_indent = indent
@@ -515,6 +516,11 @@ def read_project_behavior(root: Path) -> tuple[str, str, str, int]:
         key, value = stripped.split(":", 1)
         behavior[key] = value.strip().strip("'\"")
 
+    return behavior, schema_version
+
+
+def read_project_behavior(root: Path) -> tuple[str, str, str, int]:
+    behavior, schema_version = read_behavior_file(root / ".easy-coding" / "config.yaml")
     legacy = behavior.get("confirm_mode")
     approval_mode = behavior.get("approval_mode")
     workflow_mode = behavior.get("workflow_mode")
@@ -551,6 +557,28 @@ def read_project_behavior(root: Path) -> tuple[str, str, str, int]:
         unit_test_mode = DEFAULT_UNIT_TEST_MODE
         threshold = DEFAULT_UT_COVERAGE_THRESHOLD
     return approval_mode, workflow_mode, unit_test_mode, threshold
+
+
+def behavior_layers(root: Path, session: dict) -> dict:
+    project, _ = read_behavior_file(root / ".easy-coding" / "config.yaml")
+    local, _ = read_behavior_file(Path.home() / ".easy-coding" / "config.yaml")
+    defaults = {"approval_mode": DEFAULT_APPROVAL_MODE, "cooperate_mode": "default",
+                "unit_test_mode": DEFAULT_UNIT_TEST_MODE,
+                "ut_coverage_threshold": DEFAULT_UT_COVERAGE_THRESHOLD}
+    layers = {"project": project, "local": local, "session": session}
+    result = {}
+    for key, default in defaults.items():
+        source = next((name for name in ("session", "local", "project")
+                       if layers[name].get(key) is not None), "default")
+        value = layers[source][key] if source != "default" else default
+        if key == "ut_coverage_threshold":
+            value = parse_ut_threshold(value, f"{source} {key}")
+        elif key == "unit_test_mode":
+            value = parse_unit_test_mode(value, f"{source} {key}")
+        elif value not in (APPROVAL_MODES if key == "approval_mode" else {"default", "dispatch"}):
+            raise StateError(f"Invalid {source} {key}: {value}")
+        result[key] = {"value": value, "source": source}
+    return result
 
 
 def safe_tdd_report_pattern(value: object) -> bool:
@@ -753,19 +781,23 @@ def resolve_behavior(
         session_threshold = parse_ut_threshold(
             session_threshold, "session ut_coverage_threshold"
         )
+    local, _ = read_behavior_file(Path.home() / ".easy-coding" / "config.yaml")
+    effective = behavior_layers(root, session)
     return (
         project_approval,
         str(session_approval) if session_approval else None,
-        str(session_approval or project_approval),
+        str(session_approval or (effective["approval_mode"]["value"] if "approval_mode" in local else project_approval)),
         project_workflow,
         str(session_workflow) if session_workflow else None,
         str(session_workflow or project_workflow),
         project_unit_test,
         session_unit_test,
-        session_unit_test if session_unit_test is not None else project_unit_test,
+        session_unit_test if session_unit_test is not None else (
+            effective["unit_test_mode"]["value"] if "unit_test_mode" in local else project_unit_test),
         project_threshold,
         session_threshold,
-        session_threshold if session_threshold is not None else project_threshold,
+        session_threshold if session_threshold is not None else (
+            effective["ut_coverage_threshold"]["value"] if "ut_coverage_threshold" in local else project_threshold),
     )
 
 
@@ -1815,6 +1847,11 @@ def append_execution_record(root: Path, task_id: str, record: dict) -> None:
         handle.write(json.dumps(record, ensure_ascii=False) + "\n")
         handle.flush()
         os.fsync(handle.fileno())
+    records = cached_memo(("execution", str(path)))
+    if records is not None:
+        records.append(record)
+    if record.get("type") in {"plan", "spec-design-sync"}:
+        invalidate_memo(("plan", str(path)))
 
 
 def is_non_empty_string(value: object) -> bool:
@@ -1844,13 +1881,18 @@ def is_valid_review_finding(value: object) -> bool:
 
 
 def gate_identity(record: dict) -> tuple:
+    # 已有手写证据没有输入凭据，保留原覆盖语义；新证据与 prepare-check 共用身份。
+    if isinstance(record.get("inputs"), dict):
+        return check_identity(record)
     return (str(record.get("source_task_id") or ""), str(record.get("unit_id") or ""),
             str(record.get("dimension") or record.get("check") or ""),
             str(record.get("review_scope") or record.get("coverage_scope") or ""))
 
 
 def failure_label(record: dict) -> str:
-    _, unit, name, scope = gate_identity(record)
+    unit = str(record.get("unit_id") or "")
+    name = str(record.get("dimension") or record.get("check") or "")
+    scope = str(record.get("review_scope") or record.get("coverage_scope") or "")
     label = f"{record['type']}:{name}"
     if scope:
         label += f":{scope}"
@@ -2223,30 +2265,42 @@ def inspect_task_spec(
 def restore_spec_context(
     root: Path, task_id: str, task: dict, agent: str,
     session_file: str | Path | None = None,
+    *, force: bool = False,
 ) -> dict | None:
     if not isinstance(task.get("spec_source"), dict):
         return None
-    task.pop("spec_context", None)
+    session_key = resolve_session_path(root, session_file).relative_to(root.resolve()).as_posix()
     try:
         inspection, _ = inspect_task_spec(root, task, allow_pending_hard_dependencies=True)
+        if isinstance(task.get("spec_change"), dict):
+            raise StateError("Confirmed Spec change is pending; update the bound source and run sync-spec-design.")
+        expected = {
+            "session_file": session_key, "agent": normalize_session_agent(agent),
+            "spec_id": inspection["spec_id"], "revision": inspection["revision"],
+            "design_sha256": inspection["design_sha256"],
+            "selected_spec_tasks": task["selected_spec_tasks"],
+        }
+        receipts = task.setdefault("spec_contexts", {})
+        receipt = receipts.get(session_key) or task.get("spec_context")
+        if not force and isinstance(receipt, dict) and all(receipt.get(k) == v for k, v in expected.items()):
+            receipts[session_key] = receipt
+            task["spec_context"] = receipt
+            write_task(root, task_id, task)
+            return {"status": "ready", "reused": True, "receipt": receipt}
         context = select_consumption_scopes(
             stored_spec_path(root, task), root, task["selected_spec_tasks"]
         )
         if context.get("design_sha256") != inspection.get("design_sha256"):
             raise StateError("Canonical Spec changed while restoring context; retry resume-spec-context.")
-        if isinstance(task.get("spec_change"), dict):
-            raise StateError("Confirmed Spec change is pending; update the bound source and run sync-spec-design.")
         task["spec_context"] = {
-            "session_file": resolve_session_path(root, session_file).relative_to(root.resolve()).as_posix(),
-            "agent": normalize_session_agent(agent),
-            "spec_id": inspection["spec_id"],
-            "revision": inspection["revision"],
-            "design_sha256": inspection["design_sha256"],
-            "selected_spec_tasks": task["selected_spec_tasks"],
+            **expected,
             "loaded_at": now_iso(),
         }
+        receipts[session_key] = task["spec_context"]
         result = {"status": "ready", "consumption": context}
     except (StateError, EasyDevSpecError, OSError, UnicodeError) as exc:
+        task.pop("spec_context", None)
+        task.get("spec_contexts", {}).pop(session_key, None)
         # 接手仍可成功，修复来源与同步状态后必须重新加载，不能沿用旧会话的消费记录。
         result = {"status": "blocked", "reason": str(exc), "source": task["spec_source"]}
     write_task(root, task_id, task)
@@ -2260,7 +2314,7 @@ def resume_spec_context(
     session, resolved_task_id, task = resolve_current_task(root, task_id, session_file)
     if not isinstance(task.get("spec_source"), dict):
         raise StateError("Current task is not backed by a Canonical Spec.")
-    context = restore_spec_context(root, resolved_task_id, task, agent, session_file)
+    context = restore_spec_context(root, resolved_task_id, task, agent, session_file, force=True)
     snapshot = snapshot_state(root, session_file, session)
     snapshot.update({"action": "resume-spec-context", "spec_context": context})
     return snapshot
@@ -2277,9 +2331,10 @@ def require_spec_context(
     inspection, _ = inspect_task_spec(
         root, task, allow_pending_hard_dependencies=allow_pending_hard_dependencies,
     )
-    receipt = task.get("spec_context")
+    session_key = resolve_session_path(root, session_file).relative_to(root.resolve()).as_posix()
+    receipt = task.get("spec_contexts", {}).get(session_key) or task.get("spec_context")
     expected = {
-        "session_file": resolve_session_path(root, session_file).relative_to(root.resolve()).as_posix(),
+        "session_file": session_key,
         "agent": normalize_session_agent(agent),
         "spec_id": inspection["spec_id"],
         "revision": inspection["revision"],
@@ -2633,6 +2688,10 @@ def has_valid_execution_plan(root: Path, task_id: str) -> bool:
 
 def execution_records(root: Path, task_id: str) -> list[dict]:
     path = execution_log_path(root, task_id)
+    return memo(("execution", str(path)), lambda: _execution_records(path))
+
+
+def _execution_records(path: Path) -> list[dict]:
     if not path.exists():
         return []
     records: list[dict] = []
@@ -2649,6 +2708,11 @@ def execution_records(root: Path, task_id: str) -> list[dict]:
 
 
 def latest_execution_plan(root: Path, task_id: str) -> dict | None:
+    return memo(("plan", str(execution_log_path(root, task_id))),
+                lambda: _latest_execution_plan(root, task_id))
+
+
+def _latest_execution_plan(root: Path, task_id: str) -> dict | None:
     latest: dict | None = None
     for record in execution_records(root, task_id):
         if record.get("type") == "plan":
@@ -3147,9 +3211,9 @@ def tdd_infrastructure_fingerprint(repositories: set[Path]) -> str:
 
 
 def check_identity(record: dict) -> tuple:
-    return tuple(str(record.get(key) or "") for key in (
-        "type", "unit_id", "source_task_id", "dimension", "review_scope", "check", "check_type", "command", "coverage_scope"
-    ))
+    return (*tuple(str(record.get(key) or "") for key in (
+        "type", "repo_id", "unit_id", "source_task_id", "dimension", "review_scope", "check_type", "coverage_scope"
+    )), command_identity(str(record.get("command") or "")))
 
 
 def prepare_check(root: Path, task_id: str, task: dict, descriptor: dict, agent: str) -> dict:
@@ -3202,9 +3266,12 @@ def record_check(root: Path, task_id: str, task: dict, prepared_id: str, result:
         if type(result.get("exit_code")) is not int or result["passed"] != (result["exit_code"] == 0):
             raise StateError("Verification passed must agree with its real exit_code.")
     context = None
-    if task.get("status") == "QUALITY":
+    repair = task.get("quality_repair")
+    repairing = (task.get("status") == "QUALITY" and descriptor["type"] == "verify"
+                 and isinstance(repair, dict) and repair.get("approved_at") and not repair.get("completed_at"))
+    if task.get("status") == "QUALITY" and not repairing:
         context = ensure_quality_attempt_context(root, task_id, task, agent, persist=True)
-    elif task.get("status") != "IMPLEMENT":
+    elif task.get("status") != "IMPLEMENT" and not repairing:
         raise StateError("Record checks only during implementation or quality.")
     record = {
         **result, **descriptor, **evidence_fingerprints(root, task_id),
@@ -3250,6 +3317,8 @@ def begin_correction(root: Path, task_id: str, task: dict, files: list[str], sum
     allowed = {f for unit in units for f in unit.get("files", [])}
     if not files or not set(files) <= allowed or not summary.strip():
         raise StateError("A correction must name existing task files and the confirmed change.")
+    if task.get("status") == "QUALITY":
+        return prepare_quality_repair(root, task_id, task, files, summary, agent)
     cancel_active_quality_attempt(root, task_id, task, agent, summary, "manual-return")
     task = load_task(root, task_id) or task
     cleanup_verification_checkpoint(root, task_id, task)
@@ -3277,6 +3346,136 @@ def begin_correction(root: Path, task_id: str, task: dict, files: list[str], sum
     })
     return {"task_id": task_id, "status": "IMPLEMENT", "workflow_mode": task["workflow_mode"],
             "reasons": reasons, "correction": task["correction"]}
+
+
+def prepare_quality_repair(root: Path, task_id: str, task: dict, files: list[str],
+                           summary: str, agent: str) -> dict:
+    plan = latest_execution_plan(root, task_id) or {}
+    records = validated_quality_records(root, task_id)
+    last = records[-1][1] if records else {}
+    if last.get("outcome") == "replan" and last.get("attempt") != task.get("quality_consumed_attempt"):
+        raise StateError("The confirmed contract changed; finish the ANALYSIS replan first.")
+    inputs = capture(input_spec(root, task, plan, {"type": "review"}))
+    repair_id = digest([last.get("attempt", 0), inputs["signature"], sorted(files), summary.strip()])
+    existing = task.get("quality_repair")
+    if isinstance(existing, dict) and not existing.get("completed_at"):
+        if existing["repair_id"] == repair_id:
+            return {"task_id": task_id, "status": "QUALITY", "quality_repair": existing}
+        if existing.get("approved_at"):
+            raise StateError("Complete the approved repair before preparing another one.")
+    repair = {
+        "repair_id": repair_id, "summary": summary.strip(), "files": sorted(set(files)),
+        "unit_ids": [u["id"] for u in plan.get("units", []) if set(u["files"]) & set(files)],
+        "quality_attempt": last.get("attempt", 0),
+        "implementation_fingerprint": inputs["signature"], "inputs": inputs,
+    }
+    task["quality_repair"] = repair
+    write_task(root, task_id, task)
+    return {"task_id": task_id, "status": "QUALITY", "quality_repair": repair}
+
+
+def start_quality_repair(root: Path, repair_id: str, executor: str, confirmed: bool, agent: str,
+                         task_id: str | None = None, session_file: str | Path | None = None) -> dict:
+    session, task_id, task = resolve_current_task(root, task_id, session_file)
+    require_spec_context(root, task, agent, session_file)
+    repair = task.get("quality_repair")
+    if task.get("status") != "QUALITY" or not isinstance(repair, dict) or repair.get("repair_id") != repair_id:
+        raise StateError("Select the current QUALITY repair bundle.")
+    if repair.get("completed_at"):
+        return snapshot_state(root, session_file, session)
+    mode = behavior_layers(root, session)["cooperate_mode"]["value"]
+    if executor not in {"current", "other"} or (not repair.get("approved_at") and executor == "other" and mode != "dispatch"):
+        raise StateError("QUALITY repair handoff requires cooperate_mode dispatch.")
+    if repair.get("approved_at"):
+        if repair.get("executor") != executor:
+            raise StateError("This repair already has an approved executor; resume that handoff.")
+    else:
+        if (mode == "dispatch" or resolve_approval_mode(root, session)[2] == "approve") and not confirmed:
+            raise StateError("Confirm the repair scope and executor once before starting this repair.")
+        if implementation_fingerprint(root, task_id) != repair["implementation_fingerprint"]:
+            raise StateError("Repair inputs changed before approval; refresh the displayed repair bundle.")
+        if isinstance(task.get("spec_source"), dict):
+            task, failed_sources = prepare_canonical_repair_transition(root, task_id, task, agent)
+            plan = latest_execution_plan(root, task_id) or {}
+            repair_sources = {u.get("source_task_id") for u in plan.get("units", [])
+                              if u["id"] in repair["unit_ids"]}
+            if not failed_sources <= repair_sources:
+                raise StateError("The repair bundle must cover all failed Canonical source tasks: "
+                                 + ", ".join(sorted(failed_sources - repair_sources)))
+        cancel_active_quality_attempt(root, task_id, task, agent, repair["summary"], "manual-return")
+        task = load_task(root, task_id) or task
+        repair = task["quality_repair"]
+        repair.update(approved_at=now_iso(), approved_by=agent, executor=executor,
+                      authorization="explicit-user" if confirmed else "approval-policy",
+                      execution_start_index=len(execution_records(root, task_id)))
+        cleanup_verification_checkpoint(root, task_id, task)
+        task.pop("pending_transition", None)
+        write_task(root, task_id, task)
+    if isinstance(task.get("canonical_repair_transition"), dict):
+        sources = set(task["canonical_repair_transition"]["source_task_ids"])
+        writeback_ready_tasks_for_implement(root, task_id, task, agent, {"blocked"}, sources,
+                                           repair_id=repair_id)
+        task = load_task(root, task_id) or task
+        task.pop("canonical_repair_transition", None)
+        write_task(root, task_id, task)
+    if executor == "other" and not repair.get("handed_off"):
+        # 同一授权直接生成接力，接手不再经过阶段审批。
+        result = handoff_task(root, agent, repair["summary"], task_id, session_file,
+                              {"next_action": "repair", "unit_ids": repair["unit_ids"],
+                               "stop_after": "repair", "repair_id": repair_id})
+        task = load_task(root, task_id)
+        task["quality_repair"]["handed_off"] = True
+        write_task(root, task_id, task)
+        return result
+    return snapshot_state(root, session_file, session)
+
+
+def complete_quality_repair(root: Path, repair_id: str, agent: str,
+                            task_id: str | None = None, session_file: str | Path | None = None) -> dict:
+    session, task_id, task = resolve_current_task(root, task_id, session_file)
+    require_spec_context(root, task, agent, session_file)
+    repair = task.get("quality_repair")
+    if task.get("status") != "QUALITY" or not isinstance(repair, dict) or repair.get("repair_id") != repair_id or not repair.get("approved_at"):
+        raise StateError("Complete only the approved current QUALITY repair.")
+    if repair.get("completed_at"):
+        return snapshot_state(root, session_file, session)
+    plan = latest_execution_plan(root, task_id) or {}
+    current = capture(input_spec(root, task, plan, {"type": "review"}))
+    previous = repair["inputs"]
+    if previous["spec"] != current["spec"]:
+        raise StateError("Repair changed the contract or input scope; reconcile the plan before verification.")
+    allowed = set()
+    for unit in plan.get("units", []):
+        if unit["id"] not in repair["unit_ids"]:
+            continue
+        binding = (task.get("repo_paths") or {}).get(unit.get("repo_id"), str(root))
+        repository = Path(binding)
+        if not repository.is_absolute():
+            repository = root / repository
+        allowed.update(str((repository / file).resolve()) for file in repair["files"] if file in unit["files"])
+    changed = [str((Path(repo) / file).resolve()) for repo, files in current["files"].items()
+               for file in set(files) | set(previous["files"].get(repo, {}))
+               if files.get(file) != previous["files"].get(repo, {}).get(file)]
+    if any(not any(path == scope or path.startswith(scope + "/") for scope in allowed) for path in changed):
+        raise StateError("Repair changed files outside the approved bundle.")
+    if isinstance(task.get("spec_source"), dict):
+        inspection, _ = inspect_task_spec(root, task)
+        snapshots = _selected_execution_snapshots(inspection, task)
+        sources = {u["source_task_id"] for u in plan.get("units", []) if u["id"] in repair["unit_ids"]}
+        if any(snapshots.get(source, {}).get("status") not in {"implemented", "verified", "completed"}
+               for source in sources):
+            raise StateError("Write back the repaired Canonical tasks as implemented before returning.")
+    repair["completed_at"] = now_iso()
+    task.pop("quality_return_required", None)
+    records = validated_quality_records(root, task_id)
+    if records:
+        task["quality_consumed_attempt"] = records[-1][1]["attempt"]
+    task["continuation"] = {"next_action": "quality", "unit_ids": repair["unit_ids"]}
+    write_task(root, task_id, task)
+    if repair["executor"] == "other":
+        return handoff_task(root, agent, "Repair complete; review the delta and verify affected inputs.",
+                            task_id, session_file, task["continuation"])
+    return snapshot_state(root, session_file, session)
 
 
 def implementation_fingerprint(root: Path, task_id: str) -> str:
@@ -3524,6 +3723,12 @@ def ensure_quality_attempt_context(
     persist: bool = False,
     infer_existing_evidence: bool = False,
 ) -> dict:
+    repair = task.get("quality_repair")
+    if isinstance(repair, dict) and not repair.get("completed_at"):
+        raise StateError("Complete the current QUALITY repair before collecting gate evidence.")
+    if persist and (task.get("continuation") or {}).get("next_action") == "quality":
+        task.pop("continuation", None)
+        write_task(root, task_id, task)
     if isinstance(task.get("canonical_repair_transition"), dict):
         raise StateError(
             "Canonical repair transition is incomplete; resume it before collecting new QUALITY evidence."
@@ -5660,8 +5865,7 @@ def quality_repair_failures_for_window(
                     and repo_id == task_repositories[source_task_id]
                 )
             ):
-                owner = source_task_id if canonical else task_id
-                latest_reviews[(owner, *gate_identity(record)[1:])] = record
+                latest_reviews[gate_identity(record)] = record
         elif record_type == "verify" and record.get(
             "implementation_fingerprint"
         ) == implementation and record.get("config_fingerprint") == config:
@@ -5689,11 +5893,11 @@ def quality_repair_failures_for_window(
                 )
             ):
                 continue
-            owner = source_task_id if canonical else task_id
-            latest_verifications[(owner, *gate_identity(record)[1:])] = record
+            latest_verifications[gate_identity(record)] = record
 
     failures: dict[str, list[str]] = {}
-    for (source_task_id, unit_id, dimension, _scope), record in latest_reviews.items():
+    for record in latest_reviews.values():
+        source_task_id = str(record.get("source_task_id")) if canonical else task_id
         findings = record.get("findings")
         has_error = isinstance(findings, list) and any(
             isinstance(finding, dict)
@@ -5702,7 +5906,8 @@ def quality_repair_failures_for_window(
         )
         if record.get("passed") is not True or has_error:
             failures.setdefault(source_task_id, []).append(failure_label(record))
-    for (source_task_id, unit_id, check, scope), record in latest_verifications.items():
+    for record in latest_verifications.values():
+        source_task_id = str(record.get("source_task_id")) if canonical else task_id
         if record.get("applicable") is not False and record.get("passed") is not True:
             failures.setdefault(source_task_id, []).append(failure_label(record))
     return failures
@@ -6805,45 +7010,14 @@ def validate_analysis_readiness(
 
 
 def latest_handoff_record(root: Path, task_id: str) -> dict | None:
-    path = execution_log_path(root, task_id)
-    if not path.exists():
-        return None
-    latest: dict | None = None
-    try:
-        for line in path.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(record, dict) and record.get("type") == "handoff":
-                latest = record
-    except OSError:
-        return None
-    return latest
+    return next((r for r in reversed(execution_records(root, task_id))
+                 if r.get("type") == "handoff"), None)
 
 
 def pending_handoff_record(root: Path, task_id: str) -> dict | None:
-    path = execution_log_path(root, task_id)
-    if not path.exists():
-        return None
-    latest_coordination: dict | None = None
-    try:
-        for line in path.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(record, dict) and record.get("type") in {"handoff", "claim"}:
-                latest_coordination = record
-    except OSError:
-        return None
-    if latest_coordination and latest_coordination.get("type") == "handoff":
-        return latest_coordination
-    return None
+    latest = next((r for r in reversed(execution_records(root, task_id))
+                   if r.get("type") in {"handoff", "claim"}), None)
+    return latest if latest and latest["type"] == "handoff" else None
 
 
 def assert_safe_task_id(task_id: str) -> None:
@@ -7012,8 +7186,16 @@ def snapshot_state(
         else {"status": "not_checked", "reasons": []}
     )
 
+    layers = behavior_layers(root, resolved_session)
+    local, _ = read_behavior_file(Path.home() / ".easy-coding" / "config.yaml")
     return {
         "session_file": display_path(root, session_path),
+        "behavior_sources": {key: item["source"] for key, item in layers.items()},
+        "local_behavior": local,
+        "effective_cooperate_mode": layers["cooperate_mode"]["value"],
+        "cooperation": task.get("cooperation") if task else None,
+        "quality_repair": task.get("quality_repair") if task else None,
+        "continuation": task.get("continuation") if task else None,
         "current_task": str(task_id) if task_id else None,
         "task": task,
         "pending_transition": task.get("pending_transition") if task else None,
@@ -7060,8 +7242,9 @@ def build_status_line(
     session: dict,
     agent: str | None = None,
     session_file: str | Path | None = None,
+    state: dict | None = None,
 ) -> str:
-    state = snapshot_state(root, session_file, session)
+    state = state if state is not None else snapshot_state(root, session_file, session)
     if state["lite_mode"]:
         lite_state = (
             "Awaiting Confirmation"
@@ -7076,6 +7259,8 @@ def build_status_line(
     approval = str(state["effective_approval_mode"]).capitalize()
     workflow = str(state["concrete_workflow_mode"] or state["configured_workflow_mode"]).capitalize()
     status_brand = f"> **Easy Coding** · **Approval: {approval}** · **Workflow: {workflow}**"
+    if state["effective_cooperate_mode"] == "dispatch":
+        status_brand += " · **Dispatch**"
     if state["displayed_unit_test_mode"] in {"ut", "tdd"}:
         status_brand += f" · **{state['displayed_unit_test_mode'].upper()}**"
     task_id = state["current_task"]
@@ -7108,8 +7293,9 @@ def build_machine_breadcrumbs(
     session: dict,
     agent: str | None = None,
     session_file: str | Path | None = None,
+    state: dict | None = None,
 ) -> list[str]:
-    state = snapshot_state(root, session_file, session)
+    state = state if state is not None else snapshot_state(root, session_file, session)
     task_id = state["current_task"]
     task = state["task"]
     stage = str(state["status"]) if task else "idle"
@@ -7119,6 +7305,7 @@ def build_machine_breadcrumbs(
         f"[easy-coding:session-file:{resolved_session_file}]",
         f"[easy-coding:approval-mode:{state['effective_approval_mode']}]",
         f"[easy-coding:configured-workflow-mode:{state['configured_workflow_mode']}]",
+        f"[easy-coding:cooperate-mode:{state['effective_cooperate_mode']}]",
     ]
     if state.get("concrete_workflow_mode"):
         lines.append(f"[easy-coding:workflow-mode:{state['concrete_workflow_mode']}]")
@@ -7130,10 +7317,15 @@ def build_machine_breadcrumbs(
 
     if task_id:
         lines.append(f"[current-task:{task_id}]")
+        continuation = state.get("continuation") or {}
+        if continuation.get("next_action"):
+            lines.append(f"[easy-coding:next-action:{continuation['next_action']}]")
+        if continuation.get("stop_after"):
+            lines.append(f"[easy-coding:stop-after:{continuation['stop_after']}]")
         if task and isinstance(task.get("spec_source"), dict):
             source = task["spec_source"]
             lines.append(f"[easy-coding:spec:{source.get('spec_id')}:revision:{source.get('revision')}]")
-            lines.append("[easy-coding:spec-context:resume-spec-context-on-session-resume]")
+            lines.append("[easy-coding:spec-context:reuse-current-session-or-resume-if-missing]")
             if task.get("spec_change"):
                 lines.append("[easy-coding:spec-change:pending-sync-spec-design]")
             if (task.get("spec_writeback_progress") or {}).get("pending_action"):
@@ -7207,6 +7399,7 @@ def build_status_context(
     session: dict,
     agent: str | None = None,
     session_file: str | Path | None = None,
+    state: dict | None = None,
 ) -> str:
     if session.get("harness_disabled") is True:
         session_path = resolve_session_path(root, session_file)
@@ -7227,10 +7420,11 @@ def build_status_context(
         if isinstance(proposal, dict):
             lines.append(f"[easy-coding:lite-proposal:{proposal.get('digest', 'missing')}]")
         return "\n".join(lines)
+    state = state if state is not None else snapshot_state(root, session_file, session)
     return "\n".join(
         [
-            build_status_line(root, session, agent, session_file),
-            *build_machine_breadcrumbs(root, session, agent, session_file),
+            build_status_line(root, session, agent, session_file, state),
+            *build_machine_breadcrumbs(root, session, agent, session_file, state),
         ]
     )
 
@@ -7245,7 +7439,8 @@ def attach_status_context(
     session = load_session(root, resolved_session_file)
     if session is None:
         session = default_session()
-    context = build_status_context(root, session, agent, resolved_session_file)
+    state = data if "current_task" in data and "effective_approval_mode" in data else None
+    context = build_status_context(root, session, agent, resolved_session_file, state)
     first_line = context.splitlines()[0] if context.startswith("> ") else ""
     enriched = dict(data)
     enriched["status_line"] = first_line
@@ -7852,6 +8047,7 @@ def handoff_task(
     summary: str,
     task_id: str | None = None,
     session_file: str | Path | None = None,
+    continuation: dict | None = None,
 ) -> dict:
     if not summary.strip():
         raise StateError("Handoff summary is required.")
@@ -7865,6 +8061,24 @@ def handoff_task(
     stage = str(task.get("status") or "PENDING")
     if stage in TERMINAL_STATUSES:
         raise StateError(f"Cannot hand off terminal task: {resolved_task_id}")
+    if continuation is not None:
+        if not isinstance(continuation, dict) or set(continuation) - {
+            "next_action", "unit_ids", "evidence_refs", "stop_after", "repair_id"
+        }:
+            raise StateError("Unknown handoff continuation fields.")
+        if continuation.get("next_action") not in {"implement", "repair", "quality", "continue"}:
+            raise StateError("Handoff must name the next action.")
+        plan = latest_execution_plan(root, str(resolved_task_id)) or {}
+        unit_ids = continuation.get("unit_ids", [])
+        if not is_string_list(unit_ids) or not set(unit_ids) <= {u["id"] for u in plan.get("units", [])}:
+            raise StateError("Handoff units must belong to the existing plan.")
+        refs = continuation.get("evidence_refs", [])
+        count = len(execution_records(root, str(resolved_task_id)))
+        if not isinstance(refs, list) or any(type(i) is not int or i < 0 or i >= count for i in refs):
+            raise StateError("Handoff evidence must reference existing execution records.")
+        if continuation.get("stop_after") not in {None, "IMPLEMENT", "repair"}:
+            raise StateError("Unknown handoff stop point.")
+        task["continuation"] = continuation
 
     record = {
         "type": "handoff",
@@ -7872,6 +8086,7 @@ def handoff_task(
         "stage": stage,
         "summary": summary.strip(),
         "timestamp": now_iso(),
+        **(continuation or {}),
     }
     append_execution_record(root, str(resolved_task_id), record)
     task["last_agent"] = agent
@@ -7907,6 +8122,9 @@ def claim_task(root: Path, task_id: str, agent: str, session_file: str | Path | 
         else "takeover"
     )
     latest_handoff = latest_handoff_record(root, task_id)
+    already_current = (session.get("current_task") == task_id
+                       and agents_equivalent(previous_agent, agent)
+                       and pending_handoff_record(root, task_id) is None)
     task["last_agent"] = agent
     write_task(root, task_id, task)
 
@@ -7923,7 +8141,8 @@ def claim_task(root: Path, task_id: str, agent: str, session_file: str | Path | 
         "action": action,
         "timestamp": now_iso(),
     }
-    append_execution_record(root, task_id, claim)
+    if not already_current:
+        append_execution_record(root, task_id, claim)
 
     context = restore_spec_context(root, task_id, task, agent, session_file)
     snapshot = snapshot_state(root, session_file, session)
@@ -7934,7 +8153,30 @@ def claim_task(root: Path, task_id: str, agent: str, session_file: str | Path | 
     snapshot["previous_agent"] = previous_agent
     snapshot["latest_handoff"] = latest_handoff
     snapshot["claim"] = claim
+    snapshot["claim_recorded"] = not already_current
     return snapshot
+
+
+def set_cooperate_mode(root: Path, mode: str | None, agent: str,
+                       session_file: str | Path | None = None) -> dict:
+    if mode not in {None, "default", "dispatch"}:
+        raise StateError("cooperate_mode must be default or dispatch.")
+    session = ensure_session(root, session_file)
+    if mode is None:
+        session.pop("cooperate_mode", None)
+    else:
+        session["cooperate_mode"] = mode
+    write_session(root, session, session_file)
+    task_id = session.get("current_task")
+    task = load_task(root, task_id)
+    if task and pending_handoff_record(root, task_id) is None:
+        task["cooperation"] = {
+            "mode": behavior_layers(root, session)["cooperate_mode"]["value"],
+            "coordinator": (task.get("cooperation") or {}).get("coordinator") or {
+                "agent": agent, "session_file": display_path(root, resolve_session_path(root, session_file))},
+        }
+        write_task(root, task_id, task)
+    return snapshot_state(root, session_file, session)
 
 
 def create_task(
@@ -7967,6 +8209,8 @@ def create_task(
         "created_by": agent,
         "last_agent": agent,
         "stage_history": [{"stage": "INIT", "agent": agent, "entered_at": timestamp}],
+        "cooperation": {"mode": behavior_layers(root, session)["cooperate_mode"]["value"],
+                        "coordinator": {"agent": agent, "session_file": display_path(root, resolve_session_path(root, session_file))}},
         "context": {},
         "spawned_from": None,
         "spawned_tasks": [],
@@ -9069,6 +9313,7 @@ def sync_spec_design_state(
     progress.pop("pending_action", None)
     task.pop("spec_change", None)
     task.pop("spec_context", None)
+    task.pop("spec_contexts", None)
     already_acknowledged = any(
         record.get("type") == "spec-design-sync"
         and record.get("idempotency_key") == idempotency_key
@@ -9177,6 +9422,7 @@ def writeback_ready_tasks_for_implement(
     agent: str,
     restart_statuses: set[str] | None = None,
     source_task_ids: set[str] | None = None,
+    *, repair_id: str | None = None,
 ) -> None:
     inspection, _ = inspect_task_spec(root, task)
     implement_attempt = 1 + sum(
@@ -9204,11 +9450,15 @@ def writeback_ready_tasks_for_implement(
             f"{harness_task_id}:{source_task_id}:enter-implement:"
             f"{task['spec_source']['revision']}:attempt-{implement_attempt}"
         )
+        if repair_id:
+            key = f"{harness_task_id}:{source_task_id}:quality-repair:{repair_id}:start"
+        summary = ("Harness started an approved repair within QUALITY" if repair_id else
+                   "Harness entered IMPLEMENT for a dependency-ready Canonical task")
         action = {
             "kind": "task",
             "source_task_id": source_task_id,
             "status": "in_progress",
-            "summary": "Harness entered IMPLEMENT for a dependency-ready Canonical task",
+            "summary": summary,
             "evidence": [],
             "idempotency_key": key,
             "agent": agent,
@@ -9223,7 +9473,7 @@ def writeback_ready_tasks_for_implement(
                 stored_spec_path(root, task),
                 str(source_task_id),
                 "in_progress",
-                "Harness entered IMPLEMENT for a dependency-ready Canonical task",
+                summary,
                 SPEC_WRITEBACK_APP,
                 spec_writeback_agent(agent),
                 design_digest,
@@ -10706,7 +10956,7 @@ def main() -> int:
         if name == "prepare-check":
             check_parser.add_argument("--record", required=True)
         else:
-            check_parser.add_argument("--prepared-id", required=True)
+            check_parser.add_argument("--prepared-id")
             check_parser.add_argument("--result", required=True)
     correction_parser = subcommands.add_parser("begin-correction", parents=[common])
     correction_parser.add_argument("--file", action="append", required=True)
@@ -10714,6 +10964,21 @@ def main() -> int:
     correction_parser.add_argument("--risk", action="append", default=[])
     correction_parser.add_argument("--agent", required=True)
     correction_parser.add_argument("--task-id")
+
+    for name in ("start-quality-repair", "complete-quality-repair"):
+        repair_parser = subcommands.add_parser(name, parents=[common])
+        repair_parser.add_argument("--repair-id", required=True)
+        repair_parser.add_argument("--agent", required=True)
+        repair_parser.add_argument("--task-id")
+        if name == "start-quality-repair":
+            repair_parser.add_argument("--executor", choices=["current", "other"], required=True)
+            repair_parser.add_argument("--confirmed", action="store_true")
+
+    for name in ("set-cooperate-mode", "clear-cooperate-mode"):
+        cooperate_parser = subcommands.add_parser(name, parents=[common])
+        cooperate_parser.add_argument("--agent", required=True)
+        if name == "set-cooperate-mode":
+            cooperate_parser.add_argument("--mode", choices=["default", "dispatch"], required=True)
 
     finalize_quality_parser = subcommands.add_parser(
         "finalize-quality", parents=[common]
@@ -10792,6 +11057,7 @@ def main() -> int:
     handoff.add_argument("--agent", required=True)
     handoff.add_argument("--summary", required=True)
     handoff.add_argument("--task-id")
+    handoff.add_argument("--continuation", help="JSON next_action, unit_ids, evidence_refs and stop_after")
 
     claim = subcommands.add_parser("claim-task", parents=[common])
     claim.add_argument("--task-id", required=True)
@@ -11289,12 +11555,26 @@ def main() -> int:
             session, task_id, task = resolve_current_task(root, args.task_id, session_file)
             require_spec_context(root, task, agent, session_file)
             if command == "prepare-check":
-                result = prepare_check(root, task_id, task, json.loads(args.record), agent)
+                descriptors = json.loads(args.record)
+                result = ([prepare_check(root, task_id, task, item, agent) for item in descriptors]
+                          if isinstance(descriptors, list) else prepare_check(root, task_id, task, descriptors, agent))
             elif command == "record-check":
-                result = record_check(root, task_id, task, args.prepared_id, json.loads(args.result), agent)
+                results = json.loads(args.result)
+                result = ([record_check(root, task_id, task, item["prepared_id"], item["result"], agent) for item in results]
+                          if isinstance(results, list) else record_check(root, task_id, task, args.prepared_id, results, agent))
             else:
                 result = begin_correction(root, task_id, task, args.file, args.summary, args.risk, agent)
             emit(result)
+        elif command in {"start-quality-repair", "complete-quality-repair"}:
+            if command == "start-quality-repair":
+                result = start_quality_repair(root, args.repair_id, args.executor, args.confirmed,
+                                              agent, args.task_id, session_file)
+            else:
+                result = complete_quality_repair(root, args.repair_id, agent, args.task_id, session_file)
+            emit(attach_status_context(root, result, agent, session_file))
+        elif command in {"set-cooperate-mode", "clear-cooperate-mode"}:
+            emit(attach_status_context(root, set_cooperate_mode(root,
+                args.mode if command == "set-cooperate-mode" else None, agent, session_file), agent, session_file))
         elif command == "finalize-quality":
             emit(
                 attach_status_context(
@@ -11411,7 +11691,8 @@ def main() -> int:
             emit(
                 attach_status_context(
                     root,
-                    handoff_task(root, agent, args.summary, args.task_id, session_file),
+                    handoff_task(root, agent, args.summary, args.task_id, session_file,
+                                 json.loads(args.continuation) if args.continuation else None),
                     agent,
                     session_file,
                 )

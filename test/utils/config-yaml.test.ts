@@ -1,13 +1,17 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   addAgentsToConfig,
   createDefaultConfig,
   ensureProjectId,
   migrateBehaviorConfig,
   readConfigYaml,
+  localConfigPath,
+  readLocalBehavior,
+  resolveBehaviorSettings,
+  writeBehaviorOverrides,
   resolveLegacyBehavior,
   setBehaviorModes,
   setConfirmMode,
@@ -21,6 +25,7 @@ let configPath: string;
 
 beforeEach(async () => {
   tempDir = await mkdtemp(path.join(os.tmpdir(), "ec-yaml-"));
+  vi.spyOn(os, "homedir").mockReturnValue(path.join(tempDir, "home"));
   configPath = path.join(tempDir, "config.yaml");
   await writeFile(
     configPath,
@@ -50,6 +55,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await rm(tempDir, { recursive: true, force: true });
 });
 
@@ -63,10 +69,49 @@ describe("config-yaml", () => {
     expect(config.version).toBe(6);
     expect(config.behavior).toEqual({
       approval_mode: "guard",
+      cooperate_mode: "default",
       workflow_mode: "adaptive",
       unit_test_mode: "none",
       ut_coverage_threshold: 90,
     });
+  });
+
+  it("resolves each field with session > local > project > defaults", () => {
+    const resolved = resolveBehaviorSettings(
+      { approval_mode: "approve", cooperate_mode: "dispatch", unit_test_mode: "tdd" },
+      { approval_mode: "auto", unit_test_mode: "ut", ut_coverage_threshold: 95 },
+      { cooperate_mode: "default", unit_test_mode: "none" },
+    );
+    expect(resolved).toEqual({
+      values: {
+        approval_mode: "auto",
+        cooperate_mode: "default",
+        unit_test_mode: "none",
+        ut_coverage_threshold: 95,
+      },
+      sources: {
+        approval_mode: "local",
+        cooperate_mode: "session",
+        unit_test_mode: "session",
+        ut_coverage_threshold: "local",
+      },
+    });
+    expect(resolveBehaviorSettings({}).values.cooperate_mode).toBe("default");
+  });
+
+  it("creates local settings only on save and resets by deleting just the selected field", async () => {
+    const file = localConfigPath();
+    expect(await readLocalBehavior()).toEqual({});
+    await writeBehaviorOverrides(file, { cooperate_mode: null });
+    await expect(readFile(file)).rejects.toMatchObject({ code: "ENOENT" });
+    await writeBehaviorOverrides(file, { cooperate_mode: "dispatch" });
+    expect(await readLocalBehavior()).toEqual({ cooperate_mode: "dispatch" });
+    await writeFile(file, `${await readFile(file, "utf8")}# keep comment\ncustom: preserved\n`);
+    await writeBehaviorOverrides(file, { unit_test_mode: "ut", cooperate_mode: null });
+    expect(await readLocalBehavior()).toEqual({ unit_test_mode: "ut" });
+    expect(await readFile(file, "utf8")).toContain("# keep comment");
+    expect(await readFile(file, "utf8")).toContain("custom: preserved");
+    expect(await readFile(file, "utf8")).not.toContain("approval_mode");
   });
 
   it("migrates legacy confirmation booleans and removes them", async () => {
@@ -108,23 +153,27 @@ describe("config-yaml", () => {
   });
 
   it.each([0, 101, 90.5])("rejects invalid TDD coverage threshold %s", async (threshold) => {
-    await expect(setBehaviorModes(configPath, "guard", "adaptive", "tdd", threshold)).rejects.toThrow(
-      "integer from 1 to 100",
-    );
+    await expect(
+      setBehaviorModes(configPath, "guard", "adaptive", "tdd", threshold),
+    ).rejects.toThrow("integer from 1 to 100");
   });
 
-  it.each(["none", "ut", "tdd"] as const)("preserves %s and its threshold across idempotent migration", async (mode) => {
-    await setBehaviorModes(configPath, "guard", "adaptive", mode, 93);
-    await migrateBehaviorConfig(configPath);
-    const before = await readFile(configPath, "utf8");
-    await migrateBehaviorConfig(configPath);
-    expect(await readFile(configPath, "utf8")).toBe(before);
-    expect((await readConfigYaml(configPath)).behavior).toMatchObject({
-      unit_test_mode: mode, ut_coverage_threshold: 93,
-    });
-    expect(before).not.toContain("tdd_enabled");
-    expect(before).not.toContain("tdd_coverage_threshold");
-  });
+  it.each(["none", "ut", "tdd"] as const)(
+    "preserves %s and its threshold across idempotent migration",
+    async (mode) => {
+      await setBehaviorModes(configPath, "guard", "adaptive", mode, 93);
+      await migrateBehaviorConfig(configPath);
+      const before = await readFile(configPath, "utf8");
+      await migrateBehaviorConfig(configPath);
+      expect(await readFile(configPath, "utf8")).toBe(before);
+      expect((await readConfigYaml(configPath)).behavior).toMatchObject({
+        unit_test_mode: mode,
+        ut_coverage_threshold: 93,
+      });
+      expect(before).not.toContain("tdd_enabled");
+      expect(before).not.toContain("tdd_coverage_threshold");
+    },
+  );
 
   it("keeps an existing workflow mode when the deprecated approval setter is used", async () => {
     await setBehaviorModes(configPath, "guard", "strict");

@@ -34,7 +34,10 @@ async function writeReadyTddInfrastructure(): Promise<void> {
   await writeFile(path.join(tempDir, "pom.xml"), build, "utf8");
   await writeFile(path.join(tempDir, ".gitlab-ci.yml"), ci, "utf8");
   await mkdir(path.join(tempDir, ".easy-coding", "tools"), { recursive: true });
-  await writeFile(path.join(tempDir, ".easy-coding", "tools", "easy_coding_java_coverage.py"), tool);
+  await writeFile(
+    path.join(tempDir, ".easy-coding", "tools", "easy_coding_java_coverage.py"),
+    tool,
+  );
   const readinessPath = path.join(tempDir, ".easy-coding", "tdd", "readiness.json");
   await mkdir(path.dirname(readinessPath), { recursive: true });
   await writeFile(
@@ -45,9 +48,7 @@ async function writeReadyTddInfrastructure(): Promise<void> {
       coverage_scope: "changed-production-lines",
       historical_coverage_required: false,
       build_files: [{ path: "pom.xml", sha256: createHash("sha256").update(build).digest("hex") }],
-      ci_files: [
-        { path: ".gitlab-ci.yml", sha256: createHash("sha256").update(ci).digest("hex") },
-      ],
+      ci_files: [{ path: ".gitlab-ci.yml", sha256: createHash("sha256").update(ci).digest("hex") }],
       tool_files: [
         {
           path: ".easy-coding/tools/easy_coding_java_coverage.py",
@@ -82,6 +83,7 @@ beforeEach(async () => {
   originalCwd = process.cwd();
   tempDir = await mkdtemp(path.join(os.tmpdir(), "ec-config-command-"));
   process.chdir(tempDir);
+  vi.spyOn(os, "homedir").mockReturnValue(path.join(tempDir, "home"));
   configPath = path.join(tempDir, ".easy-coding", "config.yaml");
   await mkdir(path.dirname(configPath), { recursive: true });
   await writeFile(
@@ -104,19 +106,54 @@ beforeEach(async () => {
     "utf8",
   );
   vi.clearAllMocks();
+  promptMocks.select.mockResolvedValue("default");
 });
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   process.chdir(originalCwd);
   await rm(tempDir, { recursive: true, force: true });
 });
 
 describe("config command", () => {
+  it("saves a local preference outside a project without scanning readiness", async () => {
+    await rm(configPath);
+    await config({
+      scope: "local",
+      cooperateMode: "dispatch",
+      unitTestMode: "ut",
+      utCoverageThreshold: "94",
+      yes: true,
+    });
+    const content = await readFile(path.join(tempDir, "home/.easy-coding/config.yaml"), "utf8");
+    expect(content).toContain("cooperate_mode: dispatch");
+    expect(content).toContain("unit_test_mode: ut");
+    expect(content).toContain("ut_coverage_threshold: 94");
+    expect(content).not.toContain("approval_mode");
+    expect(promptMocks.cancel).not.toHaveBeenCalled();
+    expect(promptMocks.confirm).not.toHaveBeenCalled();
+  });
+
+  it("does not create local config after cancel or reset of an absent override", async () => {
+    const file = path.join(tempDir, "home/.easy-coding/config.yaml");
+    promptMocks.confirm.mockResolvedValueOnce(false);
+    await config({ scope: "local", cooperateMode: "dispatch" });
+    await expect(readFile(file)).rejects.toMatchObject({ code: "ENOENT" });
+    await config({ scope: "local", reset: "cooperate_mode", yes: true });
+    await expect(readFile(file)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("changes only the named project override", async () => {
+    await config({ cooperateMode: "dispatch", yes: true });
+    const content = await readFile(configPath, "utf8");
+    expect(content).toContain("cooperate_mode: dispatch");
+    expect(content).toContain("approval_mode: guard");
+    expect(content).toContain("unit_test_mode: none");
+  });
+
   it.each(["ut", "tdd"])("interactively selects %s and the shared threshold", async (mode) => {
     await writeReadyTddInfrastructure();
-    promptMocks.select
-      .mockResolvedValueOnce("confirm")
-      .mockResolvedValueOnce(mode);
+    promptMocks.select.mockResolvedValueOnce("confirm").mockResolvedValueOnce(mode);
     promptMocks.text.mockResolvedValueOnce("95");
     promptMocks.confirm.mockResolvedValue(true);
 
@@ -128,14 +165,14 @@ describe("config command", () => {
     expect(content).toContain(`unit_test_mode: ${mode}`);
     expect(content).toContain("ut_coverage_threshold: 95");
     expect(promptMocks.outro).toHaveBeenCalledWith(
-      expect.stringContaining(`Project modes updated: approval=confirm, workflow=adaptive, unit-test=${mode} (95%)`),
+      expect.stringContaining(
+        `Project modes updated: approval=confirm, workflow=adaptive, unit-test=${mode} (95%)`,
+      ),
     );
   });
 
   it("rejects enabling TDD before initialization without partially changing project modes", async () => {
-    promptMocks.select
-      .mockResolvedValueOnce("confirm")
-      .mockResolvedValueOnce("tdd");
+    promptMocks.select.mockResolvedValueOnce("confirm").mockResolvedValueOnce("tdd");
 
     await config();
 
@@ -145,14 +182,14 @@ describe("config command", () => {
     expect(content).toContain("unit_test_mode: none");
     expect(promptMocks.text).not.toHaveBeenCalled();
     expect(promptMocks.confirm).not.toHaveBeenCalled();
-    expect(promptMocks.cancel).toHaveBeenCalledWith(expect.stringContaining("Run ec-tdd-init first"));
+    expect(promptMocks.cancel).toHaveBeenCalledWith(
+      expect.stringContaining("Run ec-tdd-init first"),
+    );
   });
 
   it("rechecks readiness immediately before saving project TDD", async () => {
     await writeReadyTddInfrastructure();
-    promptMocks.select
-      .mockResolvedValueOnce("confirm")
-      .mockResolvedValueOnce("tdd");
+    promptMocks.select.mockResolvedValueOnce("confirm").mockResolvedValueOnce("tdd");
     promptMocks.text.mockResolvedValueOnce("95");
     promptMocks.confirm.mockImplementationOnce(async () => {
       await rm(path.join(tempDir, "pom.xml"));
@@ -171,9 +208,7 @@ describe("config command", () => {
   });
 
   it("leaves the config unchanged when confirmation is declined", async () => {
-    promptMocks.select
-      .mockResolvedValueOnce("approve")
-      .mockResolvedValueOnce("none");
+    promptMocks.select.mockResolvedValueOnce("approve").mockResolvedValueOnce("none");
     promptMocks.confirm.mockResolvedValue(false);
 
     await config();
