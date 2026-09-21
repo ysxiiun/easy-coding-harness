@@ -1271,14 +1271,15 @@ describe("easy_coding_state.py MEMORY instruction", () => {
     expect(reused.stderr).toContain("does not match current task 06-23-invalid-memory");
   });
 
-  it("requires the complete accepted post-verification decision in short memory", async () => {
-    const taskId = "08-13-accepted-memory";
-    await writeSessionFixture(taskId);
-    await writeTaskFixture(taskId, "MEMORY", "codex", { memory_progress: {} });
-    const acceptanceDigest = "a".repeat(64);
-    await writeFile(
-      path.join(tempDir, ".easy-coding", "tasks", taskId, "execution.jsonl"),
-      `${JSON.stringify({
+  it.each(["technical", "none"])(
+    "records %s memory without duplicating acceptance evidence",
+    async (value) => {
+      const taskId = "08-13-accepted-memory";
+      await writeSessionFixture(taskId);
+      await writeTaskFixture(taskId, "MEMORY", "codex", { memory_progress: {} });
+      const acceptanceDigest = "a".repeat(64);
+      const executionPath = path.join(tempDir, ".easy-coding", "tasks", taskId, "execution.jsonl");
+      const acceptanceRecord = `${JSON.stringify({
         type: "acceptance",
         from_implementation_fingerprint: "before",
         implementation_fingerprint: "after",
@@ -1289,99 +1290,56 @@ describe("easy_coding_state.py MEMORY instruction", () => {
         approval_mode: "auto",
         review_policy: "user-accepted-without-rereview",
         verification_policy: "carry-forward",
+        required_targeted_source_tasks: ["R1-T1"],
         summary: "User accepted a documentation-only edit",
         recorded_by: "codex",
         timestamp: "2026-08-13T00:00:00Z",
-      })}\n`,
-      "utf8",
-    );
-    const memoryId = memoryFixtureId(77);
-    const memoryName = `${memoryId}_20260813_accepted-diff.md`;
-    const memoryPath = path.join(tempDir, ".easy-coding", "memory", "short", memoryName);
-    await mkdir(path.dirname(memoryPath), { recursive: true });
-    const memoryText = [
-      "---",
-      "memory_schema: 2",
-      `id: ${memoryId}`,
-      "date: 2026-08-13",
-      `source_task: ${taskId}`,
-      "---",
-      "",
-      "User accepted a documentation-only edit.",
-      "",
-    ].join("\n");
-    await writeFile(memoryPath, memoryText, "utf8");
-
-    const missingDigest = spawnSync(
-      "python3",
-      [
-        stateApiPath(),
-        "memory-short-complete",
-        "--session-file",
-        ".easy-coding/sessions/test.json",
-        "--file",
-        `.easy-coding/memory/short/${memoryName}`,
-        "--agent",
-        "codex",
-      ],
-      { cwd: tempDir, encoding: "utf8" },
-    );
-    expect(missingDigest.status).toBe(1);
-    expect(missingDigest.stderr).toContain(
-      "must record the complete accepted post-quality decision",
-    );
-
-    await writeFile(memoryPath, `${memoryText}diff_sha256: ${acceptanceDigest}\n`, "utf8");
-    const missingDecision = spawnSync(
-      "python3",
-      [
-        stateApiPath(),
-        "memory-short-complete",
-        "--session-file",
-        ".easy-coding/sessions/test.json",
-        "--file",
-        `.easy-coding/memory/short/${memoryName}`,
-        "--agent",
-        "codex",
-      ],
-      { cwd: tempDir, encoding: "utf8" },
-    );
-    expect(missingDecision.status).toBe(1);
-    expect(missingDecision.stderr).toContain("authorization");
-    expect(missingDecision.stderr).toContain("changed_file:src/example.ts");
-
-    await writeFile(
-      memoryPath,
-      [
-        memoryText,
-        `diff_sha256: ${acceptanceDigest}`,
-        "authorization: explicit-user",
-        "approval_mode: auto",
-        "review_policy: user-accepted-without-rereview",
-        "verification_policy: carry-forward",
-        "changed_files: src/example.ts",
+      })}\n`;
+      await writeFile(executionPath, acceptanceRecord, "utf8");
+      const memoryId = memoryFixtureId(77);
+      const memoryName = `${memoryId}_20260813_accepted-diff.md`;
+      const memoryPath = path.join(tempDir, ".easy-coding", "memory", "short", memoryName);
+      await mkdir(path.dirname(memoryPath), { recursive: true });
+      const memoryText = [
+        "---",
+        "memory_schema: 2",
+        `id: ${memoryId}`,
+        "date: 2026-08-13",
+        `source_task: ${taskId}`,
+        `memory_value: ${value}`,
+        `target_long: ${value === "none" ? "NONE" : "TECHNICAL"}`,
+        "---",
         "",
-      ].join("\n"),
-      "utf8",
-    );
-    const accepted = JSON.parse(
-      execFileSync(
-        "python3",
-        [
-          stateApiPath(),
-          "memory-short-complete",
-          "--session-file",
-          ".easy-coding/sessions/test.json",
-          "--file",
-          `.easy-coding/memory/short/${memoryName}`,
-          "--agent",
-          "codex",
-        ],
-        { cwd: tempDir, encoding: "utf8" },
-      ),
-    ) as { memory_progress: { short_memory_written: boolean } };
-    expect(accepted.memory_progress.short_memory_written).toBe(true);
-  });
+        "# Shared cache write behavior",
+        value === "none"
+          ? "No new reusable knowledge; the existing cache contract is unchanged."
+          : "A cache write can fail without throwing; only a persisted epoch can identify shared counters.",
+        `Source: .easy-coding/tasks/${taskId}/execution.jsonl`,
+        "",
+      ].join("\n");
+      await writeFile(memoryPath, memoryText, "utf8");
+
+      const accepted = JSON.parse(
+        execFileSync(
+          "python3",
+          [
+            stateApiPath(),
+            "memory-short-complete",
+            "--session-file",
+            ".easy-coding/sessions/test.json",
+            "--file",
+            `.easy-coding/memory/short/${memoryName}`,
+            "--agent",
+            "codex",
+          ],
+          { cwd: tempDir, encoding: "utf8" },
+        ),
+      ) as { memory_progress: { short_memory_written: boolean } };
+      expect(accepted.memory_progress.short_memory_written).toBe(true);
+      expect(await readFile(executionPath, "utf8")).toBe(acceptanceRecord);
+      expect(await readFile(memoryPath, "utf8")).toBe(memoryText);
+    },
+  );
 
   it("rejects a UUIDv7 id that does not match the filename prefix", async () => {
     await writeSessionFixture("06-23-mismatched-memory-id");

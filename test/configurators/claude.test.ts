@@ -429,6 +429,10 @@ describe("configureClaude", () => {
     expect(memorySkill).toContain("memory-complete");
     expect(memorySkill).toContain("source_task: {current task id, exact}");
     expect(memorySkill).toContain("{memory_id}_{YYYYMMDD}_{smart_name}.md");
+    expect(memorySkill).toContain("A short memory is directly usable knowledge, not an acceptance report");
+    expect(memorySkill).toContain("Leave acceptance records in `execution.jsonl`");
+    expect(memorySkill).toContain("`memory_value: none`");
+    expect(memorySkill).not.toContain("Copy the final `acceptance` record");
 
     const initSkill = await readFile(
       path.join(tempDir, ".claude", "skills", "ec-init", "SKILL.md"),
@@ -458,6 +462,10 @@ describe("configureClaude", () => {
       "utf8",
     );
     expect(shortMemoryTemplate).toContain("id: {memory_id}");
+    expect(shortMemoryTemplate).toContain("## Knowledge Summary");
+    expect(shortMemoryTemplate).toContain("## Reusable Knowledge");
+    expect(shortMemoryTemplate).toContain("## Sources");
+    expect(shortMemoryTemplate).not.toMatch(/^## (Task Summary|Execution Evidence|Non-Distillation Content)$/m);
     expect(shortMemoryTemplate).not.toMatch(
       /^id: SM-[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/m,
     );

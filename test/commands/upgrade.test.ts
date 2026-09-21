@@ -214,6 +214,47 @@ afterEach(async () => {
 });
 
 describe("upgrade command", () => {
+  it.each([
+    { agent: "claude-code", skillDirs: [".claude"], mainPaths: ["CLAUDE.md"] },
+    { agent: "codex,qoder", skillDirs: [".agents", ".qoder"], mainPaths: ["AGENTS.md"] },
+  ])(
+    "upgrades MEMORY guidance from beta.2 and preserves user assets for $agent",
+    async ({ agent, skillDirs, mainPaths }) => {
+      await init({ agent, yes: true });
+      await markProjectInitComplete();
+      await setHarnessVersion("1.1.0-beta.2");
+
+      const templatePath = path.join(tempDir, ".easy-coding", "memory", "SHORT_MEMORY_TEMPLATE.md");
+      const memoryPath = path.join(tempDir, ".easy-coding", "memory", "short", "legacy.md");
+      const legacyTemplate = "# User memory template\n\n## Execution Evidence\nKeep user customization.\n";
+      const legacyMemory = "---\nmemory_schema: 2\nsource_task: old-task\n---\n# Prior acceptance\n";
+      await writeFile(templatePath, legacyTemplate, "utf8");
+      await writeFile(memoryPath, legacyMemory, "utf8");
+      const skillPaths = skillDirs.map((dir) =>
+        path.join(tempDir, dir, "skills", "ec-memory", "SKILL.md"),
+      );
+      for (const skillPath of skillPaths) {
+        await writeFile(skillPath, "Copy the final `acceptance` record into short memory.\n", "utf8");
+      }
+
+      await upgrade({ yes: true });
+
+      for (const skillPath of skillPaths) {
+        const content = await readFile(skillPath, "utf8");
+        expect(content).toContain("A short memory is directly usable knowledge, not an acceptance report");
+        expect(content).toMatch(/take precedence over legacy\s+process sections/);
+        expect(content).not.toContain("Copy the final `acceptance` record");
+      }
+      for (const mainPath of mainPaths) {
+        const content = await readFile(path.join(tempDir, mainPath), "utf8");
+        expect(content).toContain("acceptance digests and process evidence stay in task records");
+        expect(content).not.toContain("its checkpoint records any accepted post-quality diff digest");
+      }
+      expect(await readFile(templatePath, "utf8")).toBe(legacyTemplate);
+      expect(await readFile(memoryPath, "utf8")).toBe(legacyMemory);
+    },
+  );
+
   it("refreshes durable ANALYSIS receipts from an older managed installation", async () => {
     await init({ agent: "codex,qoder", yes: true });
     await markProjectInitComplete();

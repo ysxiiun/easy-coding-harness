@@ -10460,46 +10460,6 @@ def memory_short_complete(
         memory_file.strip(),
         require_current_id=True,
     )
-    acceptance = latest_acceptance_record(root, resolved_task_id, task)
-    if isinstance(acceptance, dict) and acceptance.get("changed_files"):
-        try:
-            memory_text = resolved_memory_path.read_text(encoding="utf-8")
-        except (OSError, UnicodeError) as exc:
-            raise StateError(f"Cannot read short-memory file: {resolved_memory_path}") from exc
-        required_decision_fields = {
-            "diff_sha256": str(acceptance.get("diff_sha256") or ""),
-            "authorization": str(acceptance.get("authorization") or ""),
-            "approval_mode": str(acceptance.get("approval_mode") or ""),
-            "review_policy": str(acceptance.get("review_policy") or ""),
-            "verification_policy": str(acceptance.get("verification_policy") or ""),
-            "summary": str(acceptance.get("summary") or ""),
-        }
-        missing_decision_fields = [
-            field_name
-            for field_name, value in required_decision_fields.items()
-            if not value or value not in memory_text
-        ]
-        missing_changed_files = [
-            str(file_name)
-            for file_name in acceptance.get("changed_files", [])
-            if not is_non_empty_string(file_name) or str(file_name) not in memory_text
-        ]
-        missing_targeted_tasks = [
-            str(source_task_id)
-            for source_task_id in acceptance.get("required_targeted_source_tasks", [])
-            if not is_non_empty_string(source_task_id)
-            or str(source_task_id) not in memory_text
-        ]
-        if missing_decision_fields or missing_changed_files or missing_targeted_tasks:
-            missing_labels = [
-                *missing_decision_fields,
-                *(f"changed_file:{file_name}" for file_name in missing_changed_files),
-                *(f"targeted_source_task:{task_name}" for task_name in missing_targeted_tasks),
-            ]
-            raise StateError(
-                "Short memory must record the complete accepted post-quality decision; "
-                "missing: " + ", ".join(missing_labels)
-            )
     progress = task.get("memory_progress")
     if not isinstance(progress, dict):
         progress = {}

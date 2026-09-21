@@ -1,7 +1,7 @@
 ---
 memory_schema: 2
 memory_file: TECHNICAL
-last_updated: 2026-08-17
+last_updated: 2026-09-22
 ---
 
 # 技术记忆
@@ -17,10 +17,12 @@ last_updated: 2026-08-17
 | `init` 支持重入追加子仓 | 父仓已安装后仍要允许新增 AB 等后续检出的子仓 | `init` 读取父仓已安装 agents，安装新子仓后刷新父仓 topology 和主约束 | supermodule-support | active |
 | Git 共享 Harness 产物必须去本地化 | 防止团队提交本机路径或 Python 编译产物 | task/config/install 产物、hook launcher、init/add-agent/upgrade | SM-20260703-001 | active |
 | 状态 API 是任务阶段、行为模式和面板数据的单一事实源 | 避免 skills、状态栏和平台模板各自重复解析优先级 | `easy_coding_state.py`、阶段 skills、三平台主约束 | SM-20260711-002, SM-20260711-003, SM-20260711-004 | active |
-| 新代码任务统一经过 REVIEW，旧 direct edge 仅保留迁移兼容 | 0.9 起审批等待与执行深度拆分，不能继续沿用旧 Lite 的跳审语义 | 状态图、legacy migration marker、review/verification evidence | current code, SM-20260711-002, SM-20260713-005 | active |
+| Harness 代码任务在 QUALITY 统一审查与验证 | 阶段门负责真实验收，MEMORY 负责可复用知识，不能用记忆报告代替质量证据 | `easy_coding_state.py`、`ec-quality`、`ec-memory` | 当前状态图；SM-019ff069-c307-7c81-9114-365b70ee91dd | active |
 | 平台 owner、展示归属和 handoff 协调事件彼此独立 | 防止 `root`、展示署名或共用约束路径被误当成跨 Agent 交接 | 状态脚本内嵌平台身份；可变 owner 只用三种 canonical ID；handoff/claim 以 execution 协调事件为事实源 | SM-20260722-007, SM-20260804-008, SM-20260806-010, current code | active |
 | Canonical Spec 以所选任务闭包共享设计和执行事实 | 多仓 Spec 只应加载当前选择及直接依赖，路径提示不能替代仓库身份 | normalized remote 绑定、selected-task closure、共享 execution writer 与本地 Harness 投影 | SM-20260805-009, current code | active |
-| Java TDD 是 readiness 保护的可选任务合同 | 关闭时保持零额外门禁，开启时冻结测试与 changed-line coverage 要求 | 项目/session 配置、TDD readiness receipt、任务快照、JaCoCo 本地门禁 | SM-20260807-011, current code | active |
+| Java UT/TDD 共用 readiness 与本地覆盖率合同 | UT 只要求本地单测与覆盖率，TDD 另要求测试驱动过程；远程 pipeline 状态不构成本地验收条件 | `unit_test_mode`、`ut_coverage_threshold`、任务冻结、JaCoCo | README；SM-019fe97d-50e5-7765-88ea-982793081e5c | active |
+| 日常记忆与架构维护分开 | 常规任务不应因为进入 MEMORY 就重扫仓库或改写架构 | 只有 distill 或首次 startup 缺失 ABSTRACT 时评估；默认 no-op，仅更新有证据的受影响章节 | `ec-memory`；SM-019fef97-2c56-7909-aaf8-77a307af75c4 | active |
+| 验收事实与开发记忆各有存储职责 | 完整授权、差异和质量策略需要可追溯，重复写入记忆会挤占知识正文 | 验收保存在 execution.jsonl 与 Canonical 投影；记忆保留知识和来源，仍校验归属及内容完整性 | `memory_short_complete`；SM-019ff069-c307-7c81-9114-365b70ee91dd | active |
 
 ## 工程规则与工作流
 
@@ -33,6 +35,8 @@ last_updated: 2026-08-17
 | 任务/session 面板默认展示解析后的行为配置 | 裸唤起也要能解释当前有效行为 | 同时调用 `list-tasks` 与 `snapshot`，展示 project/session/effective approval 与 workflow；仅在用户明确要求时写 override | SM-20260711-003, SM-20260711-004 | active |
 | 确认边必须保留可恢复的真实用户决策 | 原生选择失败或会话切换不能丢失 `pending_transition`，自动化输出不能替代用户选择 | 优先使用宿主原生选择；不可用时展示完整编号分支；取消、超时或无法解析时不推进状态 | SM-20260714-006, SM-019f82c7-8558-79cc-9b9f-c6748e807754 | active |
 | 身份校验在状态写入前闭合 | 共用 AGENTS、错误脚本或展示署名都可能污染 owner | 安装脚本身份、`--agent`、注入 session 命名空间三方一致；upgrade 与首次 SessionStart 幂等迁移旧可变状态 | SM-20260722-007, SM-20260804-008, SM-20260806-010, current code | active |
+| 验证后差异按真实影响接受 | 已有 QUALITY 检查点后用户保存代码 | 绑定并展示精确差异；接受后保留 Review，按 carry-forward / targeted / waived 处理验证；配置或设计漂移不适用 | SM-019ff069-c307-7c81-9114-365b70ee91dd；`ec-quality` | active |
+| 会话清理只在事件边界发生 | 新逻辑 session 创建与实际 upgrade | 空闲 7 天、绑定任务 30 天、按活动时间最多 100 个；新建前预留槽，dry-run 不清理 | SM-01a01430-495b-7759-b8ef-2bbb41bc50a1；`src/utils/session.ts` | active |
 
 ## 实现模式与复用写法
 
@@ -44,8 +48,9 @@ last_updated: 2026-08-17
 | 快照驱动的统一渲染 | Ready、Waiting、活动任务、Handoff 和管理面板 | 只消费 snapshot 已解析的 `effective_approval_mode` / concrete workflow，不在渲染层重算覆盖关系 | 旧 `confirm_mode` / `lite` 只用于迁移兼容 | SM-20260711-003, SM-20260711-004 |
 | 受限自动迁移接口 | 只有不需要用户决策的边可自动推进 | 使用固定边白名单，并在目标阶段执行 artifact/evidence gate | 不得把 `auto-transition` 变成通用确认绕过接口 | SM-20260711-002 |
 | 显式 coordination ledger | 跨 Agent 接手与恢复 | `handoff-task` 追加 handoff，`claim-task` 追加 claim；状态行只读取最新协调事件 | 不从 `last_agent` 字符串差异制造 handoff；历史 execution 归属不重写 | SM-20260804-008, SM-20260806-010, current code |
-| Canonical 消费闭包与执行投影 | `easy-dev-spec/v1` 多任务、多仓库执行 | 一个 Harness task 保存 selected source tasks、repo/task/step/test 追踪和依赖证据，共享 writer 原地更新 execution | 未选仓库和 `path_hint` 不参与本地强校验；设计变化走显式同步门禁 | SM-20260805-009, current code |
-| Java changed-line coverage 门禁 | 已完成 TDD 初始化的 Java 代码任务 | 基于 Git diff 与 JaCoCo XML 计算修改行覆盖，支持未跟踪文件、多模块和 aggregate 报告 | 报告过期、源码歧义或 readiness 缺失时失败关闭；TDD 关闭时不运行 | SM-20260807-011, current code |
+| Canonical 消费闭包与执行投影 | `easy-dev-spec/v1` 多任务、多仓库执行 | 本地保存详细证据，唯一原稿通过 writer 维护 EDS:EXECUTION；先落本地证据，再共享 CAS、acknowledgment，最后迁移阶段 | 设计身份使用 revision + design_sha256；普通共享进度更新不等同设计变化；未选仓库不参与强校验 | SM-20260805-009；SM-019ff030-06a3-7cf5-a3e4-42ea5a76a432；`easy_dev_spec*.py` |
+| Java changed-line coverage 门禁 | 已完成 readiness 的 UT/TDD 任务 | 同次本地单测生成 JaCoCo 证据，绑定任务 baseline、阈值和报告；按所选仓库或 source task 证明本地单测通过 | 仅有覆盖率不能替代单测成功；none 不开启覆盖率，远程 pending/failed 记录不阻断本地验收 | SM-019fe97d-50e5-7765-88ea-982793081e5c；README |
+| 冻结候选后完成架构评估再消费 | 长期记忆蒸馏 | 在已冻结候选与匹配主题内提炼；评估 no-op / backfill / update，成功后删除候选并保留窗口内记忆 | 评估失败不得先删候选；不因一次普通修复重写 ABSTRACT，不静默修改 SOUL/RULES/TEST_STRATEGY | SM-019fef97-2c56-7909-aaf8-77a307af75c4 |
 
 ## 易错点与修复策略
 
@@ -55,11 +60,13 @@ last_updated: 2026-08-17
 | `clear` 父仓误清所有子仓 | 删除类命令如果默认继承 init 全选会扩大破坏面 | `resolveClearTargets` 对 `--yes` 和 TUI 默认只选父仓，子仓需显式选择 | `test/commands/supermodule-targets-interactive.test.ts` 覆盖默认勾选 | supermodule-support |
 | task.json 泄漏本机绝对路径 | 共享的 project-init task 曾写入零消费的 `context.project_path` | 新任务不写该字段，upgrade 幂等清洗存量字段 | `task-json.test.ts` 验证新建与存量清洗 | SM-20260703-001 |
 | Python hooks 产生 `__pycache__` | launcher 执行入口后，被 import 的共享库默认写 `.pyc` | import 前禁写字节码，并让模板复制器过滤 `__pycache__` / `.pyc` | launcher A/B 测试、打包文件清单 | SM-20260703-001 |
-| 把旧 Lite 当作当前执行模式 | 0.9 已拆分 `approval_mode` 与 `workflow_mode`，Lite 只剩迁移别名 | 旧 Lite 映射为 Guard + Fast；新任务仍进入 REVIEW，direct edge 仅限有显式 legacy marker 的存量任务 | 状态迁移与 upgrade 回归测试 | SM-20260713-005, current code |
+| 混用旧 lite 配置与显式 ec-lite | 旧配置别名和当前独立入口具有不同协议 | 旧配置映射为 Guard + Fast，仍走 QUALITY；显式 ec-lite 由用户启停，使用独立提案与范围校验 | 状态迁移与 Lite 入口回归 | SM-20260713-005；README |
 | SemVer 预发布字符串按直觉递增 | `0.7.1-beta.1` 会低于历史命名 `0.7.1-beta0` | 延续同核心历史命名并用 `compareVersions` 固化顺序 | version/upgrade prerelease tests | SM-20260711-004 |
 | 同一 Agent 被反复显示为 Handoff | 把 `last_agent` 差异、`root` 路径或展示署名当成交接事实 | owner 在边界规范化，状态行只消费未被 claim 关闭的显式 handoff | 无 handoff、handoff 后、claim 后、三平台错配和升级迁移回归 | SM-20260722-007, SM-20260804-008, SM-20260806-010, current code |
 | Canonical Spec 分析重复整仓寻址和依赖考古 | 把 path_hint 当仓库身份，或读取未选任务/仓库 | normalized remote 绑定当前 worktree，只消费 selected-task closure 与共享依赖证据 | 多仓 fixture 验证未选仓库不解析、不抬高执行范围 | SM-20260805-009, current code |
-| TDD 在未初始化项目中被部分开启 | 配置写入与 readiness 校验分离，导致任务合同不可执行 | 保存前复查 readiness；upgrade 关闭无 receipt 的旧项目/session 开关 | config、readiness、Java coverage 与 upgrade 回归 | SM-20260807-011, current code |
+| UT/TDD 在未具备本地能力时被部分开启 | 策略生效与 readiness 脱节，导致冻结合同不可执行 | 实际启用时检查 readiness；升级保护进行中任务的冻结策略、工具与进度，不把工具更新当成清空状态的理由 | config、readiness、Java coverage 与 upgrade 回归 | SM-019fe97d-50e5-7765-88ea-982793081e5c；README |
+| Canonical 重试覆盖未完成写回或消费旧实施结果 | 本地与共享投影有独立的并发和恢复边界 | 单槽 pending 保留可重试 CAS 冲突；修复只消费当前共享 in_progress acknowledgment 后的 dispatch/result，设计变化显式同步 | `easy-dev-spec.test.ts` 的 writer、恢复与修复回归 | SM-019ff030-06a3-7cf5-a3e4-42ea5a76a432 |
+| session GC 误删任务或活动验收依据 | 运行会话与任务知识混为一类，或把合法标量 JSON 当成有效任务 | 仅清理会话及已确认孤立的验收快照；任务结构不明时保留快照，删除前复核内容，时间缺失用 mtime | Python/TypeScript 双实现与 upgrade dry-run 回归 | SM-01a01430-495b-7759-b8ef-2bbb41bc50a1 |
 
 ## 验证、发布与安装经验
 

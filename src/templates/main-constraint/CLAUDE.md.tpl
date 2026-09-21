@@ -123,8 +123,9 @@ First run `/ec-init`; daily work goes through `/ec-workflow`.
   ANALYSIS reads the selected consumption closure once and treats exact/scope-unchanged as a fast
   projection, while shared execution is the dependency fact source.
 - MEMORY combines short-memory creation and the conditional long-memory gate. Entry follows the
-  effective confirmation mode; its checkpoint records any accepted post-quality diff digest
-  and decision. Once memory processing completes, COMPLETE is automatic.
+  effective confirmation mode. Record reusable development knowledge and source references;
+  acceptance digests and process evidence stay in task records. Do not add reports or repeated
+  checks for memory. Once memory processing completes, COMPLETE is automatic.
 - NO CODE-TASK COMPLETION CLAIMS WITHOUT FRESH VERIFICATION EVIDENCE.
 - All cross-platform modules (skills, hooks, references) must use universal agent protocols.
   Do not rely on any specific agent's proprietary conventions unless the module is explicitly

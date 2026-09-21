@@ -1,7 +1,7 @@
 ---
 memory_schema: 2
 memory_file: MEMORY
-last_updated: 2026-08-17
+last_updated: 2026-09-22
 ---
 
 # 长期记忆索引
@@ -20,9 +20,12 @@ last_updated: 2026-08-17
 | 行为模式与任务/session 面板 | technical | approval_mode, workflow_mode, snapshot, task management, status line | `TECHNICAL.md` | active | 2026-08-05 | SM-20260711-003, SM-20260711-004 |
 | 旧 Lite 跳审语义 | technical | lite, review bypass, legacy direct edge | `TECHNICAL.md` | deprecated | 2026-08-05 | SM-20260713-005 |
 | 原生确认与待决策恢复 | technical | native choice, pending transition, timeout, numbered fallback | `TECHNICAL.md` | active | 2026-08-17 | SM-20260714-006, SM-019f82c7-8558-79cc-9b9f-c6748e807754 |
-| Session、canonical owner 与 Handoff 协调 | technical | session namespace, canonical agent, handoff, claim, root | `TECHNICAL.md` | active | 2026-08-17 | SM-20260722-007, SM-20260804-008, SM-20260806-010, current code |
-| Canonical Spec 共享执行 | technical | easy-dev-spec/v1, selected task closure, normalized remote, execution writer | `TECHNICAL.md` | active | 2026-08-17 | SM-20260805-009, current code |
-| Java 可选 TDD 与本地门禁 | technical | TDD readiness, changed-line coverage, JaCoCo, task freeze | `TECHNICAL.md` | active | 2026-08-17 | SM-20260807-011, current code |
+| Session、canonical owner 与 Handoff 协调 | technical | session namespace, canonical agent, handoff, claim, root | `TECHNICAL.md` | active | 2026-09-22 | SM-20260722-007, SM-20260804-008, SM-20260806-010, SM-01a00db2-897e-7f72-95ad-bccf6beb859a |
+| Canonical Spec 共享执行 | technical | easy-dev-spec/v1, selected task closure, CAS, acknowledgment, pending | `TECHNICAL.md` | active | 2026-09-22 | SM-20260805-009, SM-019ff030-06a3-7cf5-a3e4-42ea5a76a432 |
+| Java UT/TDD 与本地门禁 | technical | unit_test_mode, readiness, changed-line coverage, JaCoCo, local test | `TECHNICAL.md` | active | 2026-09-22 | SM-019fe97d-50e5-7765-88ea-982793081e5c, README |
+| 日常记忆与架构维护边界 | technical | distill, frozen candidates, architecture assessment, ABSTRACT | `TECHNICAL.md` | active | 2026-09-22 | SM-019fef97-2c56-7909-aaf8-77a307af75c4 |
+| QUALITY 验收与开发记忆分工 | technical | acceptance, targeted verification, source reference, memory value | `TECHNICAL.md` | active | 2026-09-22 | SM-019ff069-c307-7c81-9114-365b70ee91dd, memory_short_complete |
+| 会话与孤立验收快照清理 | technical | session GC, TTL, LRU, acceptance snapshot, upgrade | `TECHNICAL.md` | active | 2026-09-22 | SM-01a01430-495b-7759-b8ef-2bbb41bc50a1 |
 
 ## 当前重点业务域
 
@@ -33,7 +36,8 @@ last_updated: 2026-08-17
 - CLI supermodule 目标解析、父仓拓扑刷新、无参数 TUI 安全默认值
 - Harness 共享产物可移植性、状态机机械门禁、行为配置与任务/session 可观察性
 - 原生确认恢复、canonical Agent 身份、显式 handoff/claim 协调事件
-- Canonical Spec 所选任务闭包与共享 execution、Java TDD readiness 和修改行覆盖门禁
+- Canonical Spec 所选任务闭包与共享 execution、Java UT/TDD readiness 和本地修改行覆盖
+- 验收证据与开发记忆的职责、冻结候选的架构评估边界、事件触发的会话清理
 
 ## 读取策略
 

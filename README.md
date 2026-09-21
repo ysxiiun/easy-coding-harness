@@ -102,7 +102,9 @@ any stage --[user abort via ec-task-close]--> CLOSED
   `diff_sha256`。用户确认后不重跑 Review Gate：纯非执行差异可沿用
   原验证，可执行差异补定向验证，显式风险豁免单独记录。配置、方案或 Canonical 设计漂移
   不能走这条例外。
-- `MEMORY` 先写入本次任务短期记忆，再执行长期记忆阈值门禁；未超过阈值时长期沉淀为 no-op。
+- `MEMORY` 提炼可直接用于后续开发的知识：业务规则、设计原因、修改入口、适用边界与踩坑经验。
+  复用已有方案、实施和 Review 结论，验收及过程证据留在任务日志，记忆只引用来源；没有新增
+  可复用知识时简短注明，不拼凑报告。短期记忆超过阈值才归并长期知识，否则长期沉淀为 no-op。
 - `ec-lite` 仅由用户显式启停，不是 Fast 的别名。它只保留“紧凑方案 → 用户确认 → 最小实现”，
   不创建任务、Dev-Spec、QUALITY 或 MEMORY；存在活动任务时由用户选择取消启动、关闭任务后
   启动，或只清除当前任务指针后启动。活动任务决策使用 session 级原子锁；每次方案生成一次性
@@ -174,7 +176,7 @@ Dev-Spec 继续走原有整文分析流程。
 | `ec-analysis` | 生成 dev-spec、执行计划和测试策略 |
 | `ec-implementing` | 按确认后的计划执行代码实现；非 TDD 不运行质量命令 |
 | `ec-quality` | 编排 Review/Verification 双门、证据复用和一次性 Repair Bundle |
-| `ec-memory` | 写短期记忆，并在超过阈值时沉淀长期记忆 |
+| `ec-memory` | 提炼可复用开发知识，超过阈值时归并长期记忆 |
 | `ec-task-management` | 任务面板：查看、创建、选择、恢复、交接任务 |
 | `ec-config` | 只读查看或显式修改项目/session 的 Approval、Workflow、单测策略与阈值 |
 | `ec-tdd-init` | 为 UT/TDD 初始化/刷新 Java changed-line coverage 基础设施，不补存量单测 |

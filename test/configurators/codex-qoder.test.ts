@@ -105,6 +105,14 @@ describe("configureCodex", () => {
     expect(analysisSkill).toContain("`exact` and `scope-unchanged` use the fast projection path");
     expect(analysisSkill).toContain("mechanical minimum for the actual current scope");
     expect(analysisSkill).toContain("Old configured/frozen modes do not raise the minimum");
+    const memorySkill = await readFile(
+      path.join(tempDir, ".agents", "skills", "ec-memory", "SKILL.md"),
+      "utf8",
+    );
+    expect(memorySkill).toContain("A short memory is directly usable knowledge, not an acceptance report");
+    expect(memorySkill).toContain("Leave acceptance records in `execution.jsonl`");
+    expect(memorySkill).not.toContain("Copy the final `acceptance` record");
+    expect(memorySkill).not.toContain("{{");
     const noHarnessSkill = await readFile(
       path.join(tempDir, ".agents", "skills", "ec-no-harness", "SKILL.md"),
       "utf8",
@@ -547,6 +555,14 @@ describe("configureQoder", () => {
     expect(analysisSkill).toContain("`exact` and `scope-unchanged` use the fast projection path");
     expect(analysisSkill).toContain("mechanical minimum for the actual current scope");
     expect(analysisSkill).toContain("Old configured/frozen modes do not raise the minimum");
+    const memorySkill = await readFile(
+      path.join(tempDir, ".qoder", "skills", "ec-memory", "SKILL.md"),
+      "utf8",
+    );
+    expect(memorySkill).toContain("A short memory is directly usable knowledge, not an acceptance report");
+    expect(memorySkill).toContain("Leave acceptance records in `execution.jsonl`");
+    expect(memorySkill).not.toContain("Copy the final `acceptance` record");
+    expect(memorySkill).not.toContain("{{");
     const taskManagementSkill = await readFile(
       path.join(tempDir, ".qoder", "skills", "ec-task-management", "SKILL.md"),
       "utf8",

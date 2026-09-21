@@ -15,9 +15,11 @@ Communicate with the user in the user's language.
 
 1. Read task.json, SOUL, RULES index/headings, ABSTRACT index/headings, and the dev-spec
    skeleton.
-2. Search short-memory frontmatter and summaries first. Open only memories whose domains,
+2. Search short-memory frontmatter and knowledge summaries first. Open only memories whose domains,
    tags, related files, or predecessor links match this task. Do not load the newest five
-   memories unconditionally.
+   memories unconditionally. Skip `memory_value: none` during knowledge retrieval. For legacy
+   reports, read the matching reusable decisions or pitfalls; consult acceptance/process records
+   only when the current task needs that history, not as default development context.
 3. Read full RULES/ABSTRACT sections only for affected modules.
 4. Inspect concrete code paths and tests. Expand context only when evidence reveals another
    dependency or risk.

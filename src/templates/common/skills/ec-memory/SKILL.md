@@ -1,27 +1,55 @@
 ---
 name: ec-memory
-description: MEMORY-stage skill. Creates a workflow-mode-aware schema-v2 checkpoint from existing task evidence and performs conditional long-memory distillation.
+description: MEMORY-stage skill. Extracts reusable development knowledge from existing task evidence and performs conditional long-memory distillation.
 ---
 
-# ec-memory — evidence-derived checkpoint and knowledge governance
+# ec-memory — reusable knowledge for future development
 
 MEMORY remains mandatory for code tasks. Daily task processing and architecture maintenance are
 separate responsibilities: every completed code task produces one immutable short-memory fact;
 only a long-memory distillation, or the explicit missing-ABSTRACT startup exception, may open an
 architecture assessment. Never update architecture merely because MEMORY was entered.
 
-The short-memory checkpoint must not re-analyze the repository or repeat the entire conversation.
-Generate it only from the verified evidence already stored in `task.json`, `dev-spec.md`, and
-`execution.jsonl`. The bounded repository reads described below belong only to a required
-`backfill` or `update` architecture assessment.
+MEMORY must not re-analyze the repository or repeat the entire conversation. Reuse confirmed
+decisions and verified findings already available in `dev-spec.md`, implementation results and
+Review evidence in `execution.jsonl`; `task.json` supplies identity and frozen mode. The bounded
+repository reads below belong only to a required `backfill` or `update` architecture assessment.
+
+## Knowledge value
+
+A short memory is directly usable knowledge, not an acceptance report. Keep a fact when it helps
+a later task understand behavior, choose the right change, diagnose a failure, or verify correctly.
+
+- Lead with a knowledge topic and a retrieval summary, not a version release or task-completion
+  headline. Prefer business semantics, design reasons, relevant code entrypoints, compatibility
+  boundaries, and observed failure causes with their fixes.
+- State the applicable situation and useful conclusion. Include reasons, limitations and exact
+  symbols or source references where they help the next developer; do not fill a fixed checklist
+  for every fact. Preserve only confirmed conclusions, and keep task-specific scope constraints
+  scoped to that task rather than turning them into permanent project rules.
+- Leave acceptance records in `execution.jsonl`; cite the relevant source instead of copying it.
+  Omit approval JSON, fingerprints, execution timelines, test counts, per-run coverage numbers,
+  temporary log paths, file inventories and handoff history. Do not add a list of excluded noise.
+  A reusable verification command or environment constraint belongs here only when it guides
+  future work; a single run's pass/fail and UT/TDD lifecycle evidence stay in the task record.
+- When no new reusable knowledge exists, set `memory_value: none` and `target_long: NONE`, write
+  a brief reason and retain the source reference. Do not manufacture lessons or duplicate existing
+  knowledge merely to populate sections. This still completes the mandatory short-memory step.
+
+For example, preserve that a cache write may return a failure code without throwing, why proceeding
+with an unpersisted local value breaks shared counting, and where to bypass that behavior. A count
+of passing tests and the user's acceptance timestamp do not teach a future task how to handle it.
+
+Both `default` and `dispatch` use this contract. The coordinator reuses the analysis, implementation
+results and Review findings already available. Reuse any executor-only discovery from its existing
+result; do not require another report, another handoff, or repeated checks for MEMORY.
 
 ## Depth by workflow mode
 
-- `fast`: mechanically produce a compact checkpoint: goal, scope, result, frozen mode,
-  commands/results, and only clearly reusable decisions.
-- `standard`: add reusable contract, compatibility, and troubleshooting facts when present.
-- `strict`: preserve architecture, migration, risk, verification, and cross-module decisions
-  needed for future high-risk work.
+- `fast`: keep the directly reusable conclusions concise.
+- `standard`: include relevant contract, compatibility, and troubleshooting reasons when present.
+- `strict`: retain non-obvious architecture, migration and cross-module boundaries needed by
+  future changes. Greater depth never requires process logs, more checks, or invented knowledge.
 
 Every memory uses schema 2 and includes `workflow_mode` in frontmatter. Generate its UUIDv7 ID
 through:
@@ -33,22 +61,18 @@ through:
 Name it `{memory_id}_{YYYYMMDD}_{smart_name}.md` and set
 `source_task: {current task id, exact}`. Write one immutable short memory under
 `.easy-coding/memory/short/`, then register it with
-`memory-short-complete`. Never invent test results or commit hashes.
+`memory-short-complete`. Task ownership and content integrity remain runtime checks; acceptance
+and Canonical evidence remain in their existing records, not duplicated in the memory body.
 
-Copy the final `acceptance` record from `execution.jsonl` into the checkpoint as a concise
-decision fact: authorization source, decision summary, `diff_sha256`, review policy, verification
-policy, changed files, and any Canonical source tasks that required targeted verification.
-`memory-short-complete` rejects a checkpoint that omits any of those decision fields. This records
-the user's accepted exception without re-reviewing or re-analyzing the code. Canonical writeback
-already carries the same digest and authorization as shared `acceptance` evidence.
-
-For frozen UT/TDD, record the strategy, shared threshold, passed local unit-test result, and
-changed-line coverage result with its frozen baseline. Only TDD includes lifecycle evidence.
-Remote CI is not acceptance evidence. With `none`, omit coverage-specific fields.
+Upgrades preserve existing project templates. These instructions take precedence over legacy
+process sections in `SHORT_MEMORY_TEMPLATE.md`; omit those sections when writing a new memory.
+Do not rewrite old memories or user templates to adopt this contract.
 
 Ask the state API for `memory-instruction`. Distill only when it returns `action:distill`;
-otherwise record `no-op`. Long memory receives reusable facts only, not file dumps, transient
-logs, routine command output, or speculation.
+otherwise record `no-op`. Long memory merges reusable facts, deduplicates matching knowledge and
+retires superseded conclusions. Extract useful knowledge from legacy acceptance reports without
+carrying over process noise; `memory_value: none` contributes no long-memory topic. Work only
+within the frozen candidates and matching topics, without a global history cleanup.
 
 ## Architecture assessment
 
