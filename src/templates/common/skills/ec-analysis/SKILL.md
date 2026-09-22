@@ -208,7 +208,11 @@ Acceptance: <observable outcome and minimum check>
 Record Unit `input_files` for the known additional direct inputs (an empty list means the
 Unit files are self-contained). Include shared helpers, fixtures, schemas and configuration
 actually consumed by its checks. Without a declared closure, checks cover the owning module.
-Build commands still include their module compilation inputs. Do not infer a whole-program call graph. Keep Unit contracts and test points in the existing execution plan. Do not duplicate them across
+For targeted Vitest/Jest/Python/Node checks, name the selected test file in the command and declare
+its helper/fixture inputs so unrelated test cases can retain their evidence. Module production
+inputs and build configuration remain included. Maven/Gradle/tsc compilation still includes
+neighboring sources/tests even with a test selector. Do not infer a whole-program call graph.
+Keep Unit contracts and test points in the existing execution plan. Do not duplicate them across
 full template chapters or create a separate test strategy for this compact form. Canonical work
 consumes the selected source closure; it does not redesign unrelated selected tasks.
 

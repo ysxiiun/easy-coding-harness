@@ -37,6 +37,9 @@ tracking metadata is handled once; do not reopen design or rewrite the complete 
 
 When a lifecycle check is necessary, call `prepare-check` before running it and `record-check`
 afterward as documented in ec-quality. QUALITY reuses these input-bound results.
+Batch independent checks at the same code state with the array forms of `--record` and `--result`.
+Use each state operation's returned context and next action; query again only when required
+information is absent or an intervening edit makes the returned context stale.
 
 ## Non-negotiable gates
 

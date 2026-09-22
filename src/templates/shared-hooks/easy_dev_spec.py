@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from easy_dev_spec_protocol import SCHEMA, select_scope, validate_spec
+from easy_coding_operation import memo
 
 
 UPSTREAM_PROTOCOL_COMMIT = "8239a5befae08b41da43b7cfbf41acf07e487d04"
@@ -29,10 +30,10 @@ def _read_spec(
         raise EasyDevSpecError(f"Spec file does not exist: {path}")
     try:
         text = path.read_text(encoding="utf-8")
-        report = validate_spec(
-            text,
-            require_ready=require_ready,
-            require_execution=require_execution,
+        report = memo(
+            ("spec-validation", text, require_ready, require_execution),
+            lambda: validate_spec(text, require_ready=require_ready,
+                                  require_execution=require_execution),
         )
     except (OSError, UnicodeError) as exc:
         raise EasyDevSpecError(f"Cannot read Spec as UTF-8: {path}: {exc}") from exc

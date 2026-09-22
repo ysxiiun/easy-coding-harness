@@ -52,6 +52,31 @@ async function writeRuntimeState(configContent: string): Promise<void> {
 }
 
 describe("clear command", () => {
+  it.each([
+    ["claude-code", ".claude"],
+    ["codex", ".codex"],
+    ["qoder", ".qoder"],
+  ])("installs, restores on upgrade and clears the lightweight runtime for %s", async (agent, directory) => {
+    await init({ agent, yes: true });
+    const modules = ["easy_coding_store.py", "easy_coding_operation.py", "easy_coding_status.py"];
+    for (const name of modules) {
+      const destination = path.join(tempDir, directory, "hooks", name);
+      expect(await pathExists(destination)).toBe(true);
+      await rm(destination);
+    }
+    const configPath = path.join(tempDir, ".easy-coding", "config.yaml");
+    await writeFile(configPath, (await readFile(configPath, "utf8"))
+      .replace(/^harness_version:.*$/m, "harness_version: 1.1.0-beta.3"));
+    await upgrade({ yes: true });
+    for (const name of modules) {
+      expect(await pathExists(path.join(tempDir, directory, "hooks", name))).toBe(true);
+    }
+    await clear({ yes: true });
+    for (const name of modules) {
+      expect(await pathExists(path.join(tempDir, directory, "hooks", name))).toBe(false);
+    }
+  });
+
   it("clears managed Qoder files from the China variant directory", async () => {
     await mkdir(path.join(tempDir, ".qodercn"));
     await configureQoder(tempDir);

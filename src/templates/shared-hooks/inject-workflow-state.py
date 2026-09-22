@@ -4,8 +4,8 @@ import os
 from pathlib import Path
 import sys
 
-from easy_coding_state import detect_runtime_agent, ensure_hook_session
-from easy_coding_status import build_status_context
+from easy_coding_operation import evidence_operation
+
 
 
 def configure_stdio() -> None:
@@ -45,6 +45,7 @@ def emit(event_name: str, context: str) -> None:
     )
 
 
+@evidence_operation()
 def main() -> int:
     configure_stdio()
     if os.environ.get("EC_HOOKS") == "0":
@@ -56,6 +57,9 @@ def main() -> int:
         return 0
 
     event_name = payload.get("hook_event_name") or payload.get("hookEventName") or "UserPromptSubmit"
+    from easy_coding_store import detect_runtime_agent, ensure_hook_session
+    from easy_coding_status import build_status_context
+
     agent = detect_runtime_agent()
     session, session_path = ensure_hook_session(root, payload, agent)
     emit(event_name, build_status_context(root, session, agent, session_path))

@@ -2514,7 +2514,20 @@ describe("Canonical Spec v1 runtime integration", () => {
         "--agent",
         "codex",
       ]);
-    writeTask("in_progress", "shared-lifecycle:start");
+    const measured = JSON.parse(execFileSync(pythonCmd, ["-B", "-c", [
+      "import json,sys",
+      "from pathlib import Path",
+      "from unittest.mock import patch",
+      "sys.path.insert(0, sys.argv[1])",
+      "import easy_coding_state as state, easy_dev_spec as spec, easy_dev_spec_execution as writer",
+      "root = Path(sys.argv[2])",
+      "session_file = state.load_task(root, 'shared-lifecycle')['spec_context']['session_file']",
+      "with state.evidence_operation(), patch.object(spec, 'validate_spec', wraps=spec.validate_spec) as reads, patch.object(writer, 'validate_spec', wraps=writer.validate_spec) as writes:",
+      "    result = state.writeback_spec_task(root, 'R1-T1', 'in_progress', 'Shared status in_progress', [], 'shared-lifecycle:start', 'codex', 'shared-lifecycle', session_file)",
+      "    print(json.dumps({'validations': reads.call_count + writes.call_count, 'status': result['spec_writeback']['action']['status']}))",
+    ].join("\n"), path.dirname(stateApiPath()), tempDir], {encoding: "utf8"}));
+    expect(measured.status).toBe("in_progress");
+    expect(measured.validations).toBe(4);
     runState([
       "writeback-spec-step",
       "--spec-task",

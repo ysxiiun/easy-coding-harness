@@ -4,7 +4,8 @@ import os
 from pathlib import Path
 import sys
 
-from easy_coding_state import detect_runtime_agent, ensure_hook_session, snapshot_state
+from easy_coding_operation import evidence_operation
+
 
 
 def configure_stdio() -> None:
@@ -44,6 +45,7 @@ def emit(event_name: str, context: str) -> None:
     )
 
 
+@evidence_operation()
 def main() -> int:
     configure_stdio()
     if os.environ.get("EC_HOOKS") == "0":
@@ -53,6 +55,9 @@ def main() -> int:
     root = find_ec_root(Path(payload.get("cwd") or os.getcwd()))
     if root is None:
         return 0
+
+    from easy_coding_store import detect_runtime_agent, ensure_hook_session
+    from easy_coding_status import snapshot_state
 
     agent = detect_runtime_agent()
     session, session_path = ensure_hook_session(root, payload, agent)

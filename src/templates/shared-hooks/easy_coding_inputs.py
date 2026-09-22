@@ -10,45 +10,14 @@ import stat
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
-from contextlib import contextmanager
-from contextvars import ContextVar
+from easy_coding_operation import evidence_operation, memo, cached_memo, invalidate_memo
 from pathlib import Path
 
 
-_operation = ContextVar("evidence_operation", default=None)
 BUILD_FILES = ("pom.xml", "package.json", "package-lock.json", "pnpm-lock.yaml",
                "yarn.lock", "tsconfig.json", "build.gradle", "build.gradle.kts",
                "settings.gradle", "gradle.properties", ".gitattributes", ".npmrc",
                "vitest.config.ts", "jest.config.js", "biome.json", "pytest.ini", "pyproject.toml")
-
-
-@contextmanager
-def evidence_operation():
-    token = _operation.set({})
-    try:
-        yield
-    finally:
-        _operation.reset(token)
-
-
-def memo(key, compute):
-    cache = _operation.get()
-    if cache is None:
-        return compute()
-    if key not in cache:
-        cache[key] = compute()
-    return cache[key]
-
-
-def invalidate_memo(key):
-    cache = _operation.get()
-    if cache is not None:
-        cache.pop(key, None)
-
-
-def cached_memo(key):
-    cache = _operation.get()
-    return cache.get(key) if cache is not None else None
 
 
 def command_identity(command):
@@ -153,7 +122,7 @@ def is_test(path):
 
 def is_test_case(path):
     name = Path(path).name
-    return bool(re.search(r"(?:Test|Tests|IT)\.java$|\.(?:test|spec)\.[cm]?[jt]sx?$|^test_.*\.py$", name))
+    return bool(re.search(r"(?:Test|Tests|IT)\.java$|\.(?:test|spec)\.[cm]?[jt]sx?$|^test_.*\.py$|_test\.py$", name))
 
 
 def command_tokens(command):
@@ -163,6 +132,36 @@ def command_tokens(command):
     while tokens and re.match(r"^[A-Za-z_][A-Za-z_0-9]*=", tokens[0]):
         tokens = tokens[1:]
     return tokens
+
+
+def targeted_test_files(command):
+    """只识别完整、无 shell 展开的文件选择调用；未知参数保持模块范围。"""
+    if not isinstance(command_identity(command), tuple):
+        return set()
+    tokens = command_tokens(command)
+    if not tokens:
+        return set()
+    if Path(tokens[0]).name == "npx":
+        tokens = tokens[1:]
+    elif tokens[:2] in (["pnpm", "exec"], ["npm", "exec"]):
+        tokens = tokens[2:]
+        if tokens[:1] == ["--"]:
+            tokens = tokens[1:]
+    if not tokens:
+        return set()
+    runner, arguments = Path(tokens[0]).name, tokens[1:]
+    if runner in {"python", "python3"} and arguments[:2] == ["-m", "pytest"]:
+        runner, arguments = "pytest", arguments[2:]
+    if runner == "vitest" and arguments[:1] == ["run"]:
+        arguments = arguments[1:]
+    elif runner == "node" and arguments[:1] == ["--test"]:
+        arguments = arguments[1:]
+    elif runner not in {"jest", "pytest", "python", "python3"}:
+        return set()
+    files = [value for value in arguments if value not in {"-q", "-v", "--runInBand", "--coverage"}]
+    if not files or any(value.startswith("-") or not is_test_case(value) for value in files):
+        return set()
+    return {str(Path(value)) for value in files}
 
 
 def toolchain_identity(command):
@@ -220,14 +219,25 @@ def input_spec(root, task, plan, check):
     tokens = command_tokens(command)
     executable = Path(tokens[0]).name if tokens else ""
     builds_module = check.get("type") == "verify" and executable in {
-        "mvn", "mvnw", "gradle", "gradlew", "npm", "npx", "pnpm", "yarn", "tsc"
+        "mvn", "mvnw", "gradle", "gradlew", "npm", "npx", "pnpm", "yarn", "tsc",
+        "vitest", "jest", "pytest", "python", "python3", "node",
     }
+    selected_tests = targeted_test_files(command)
     repositories = {}
+    production_repositories = {}
     for unit in selected:
         repo_id = unit.get("repo_id") or "current"
         base = Path(task.get("repo_paths", {}).get(repo_id, root))
         base = (base if base.is_absolute() else root / base).resolve()
         paths = repositories.setdefault(str(base), set())
+        # 只有明确文件选择器和已声明依赖闭包的脚本测试才收窄测试输入。
+        # Maven/Gradle/tsc 的编译阶段仍消费模块内源文件，不能按测试名称裁剪。
+        test_files = {str(Path(name)) for name in [*unit.get("files", []), *unit.get("input_files", [])]
+                      if is_test_case(name)}
+        targeted_script = (
+            check.get("type") == "verify" and "input_files" in unit
+            and bool(selected_tests) and selected_tests <= test_files
+        )
         for name in [*unit.get("files", []), *unit.get("input_files", [])]:
             absolute = Path(name) if Path(name).is_absolute() else base / name
             relative = absolute.relative_to(base).as_posix()
@@ -261,16 +271,18 @@ def input_spec(root, task, plan, check):
                             pending.append(candidate)
             for module in involved:
                 for folder in ("src/main", "src" if not (module / "pom.xml").exists() else "src/test"):
-                    if (builds_module or "input_files" not in unit) and (module / folder).is_dir():
-                        paths.add((module / folder).relative_to(base).as_posix())
+                    if (builds_module or targeted_script or "input_files" not in unit) and (module / folder).is_dir():
+                        destination = (production_repositories.setdefault(str(base), set())
+                                       if targeted_script else paths)
+                        destination.add((module / folder).relative_to(base).as_posix())
                 for parent in [module, *module.parents]:
                     if not parent.is_relative_to(base):
                         break
                     for filename in BUILD_FILES:
                         if (parent / filename).is_file():
                             paths.add((parent / filename).relative_to(base).as_posix())
-            for config in (".mvn", "gradle", "test" if builds_module else "test/fixtures",
-                           "tests" if builds_module else "tests/fixtures"):
+            for config in (".mvn", "gradle", "test" if builds_module and not targeted_script else "test/fixtures",
+                           "tests" if builds_module and not targeted_script else "tests/fixtures"):
                 if (base / config).is_dir():
                     paths.add(config)
     if task.get("unit_test_mode") in {"ut", "tdd"}:
@@ -284,6 +296,8 @@ def input_spec(root, task, plan, check):
     return {
         "schema": 1,
         "repositories": {r: sorted(paths) for r, paths in sorted(repositories.items())},
+        **({"production_repositories": {r: sorted(paths) for r, paths in sorted(production_repositories.items())}}
+           if production_repositories else {}),
         "production_only": check.get("review_scope") == "production",
         "contract": [{"id": u["id"], "contracts": u.get("contracts", []),
                       "acceptance_criteria": u.get("acceptance_criteria", [])} for u in owners]
@@ -299,6 +313,9 @@ def capture(spec):
     for root, scopes in spec["repositories"].items():
         repository = memo(("repository", root), lambda: RepositoryInputs(Path(root)))
         inputs[root] = repository.capture(scopes, spec["production_only"])
+        production_scopes = spec.get("production_repositories", {}).get(root, [])
+        if production_scopes:
+            inputs[root].update(repository.capture(production_scopes, production_only=True))
     return {"spec": spec, "files": inputs, "signature": digest([spec, inputs])}
 
 

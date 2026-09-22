@@ -57,6 +57,9 @@ or `qoder`. Never use a display or source-author attribution such as `Codex with
 
 1. Read the injected state breadcrumbs or call:
 
+   Prefer the injected or most recent operation's state. Call `snapshot` only when that context
+   is missing or stale; do not repeat it after a successful operation that already returns state.
+
    ```bash
    {{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py snapshot --agent <agent-id> --session-file <P>
    ```

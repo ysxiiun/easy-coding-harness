@@ -10,6 +10,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src/templates/shared-hooks"))
 import easy_coding_inputs as inputs
 import easy_coding_state as state
+import easy_coding_store as store
 
 
 class ScopedEvidenceTest(unittest.TestCase):
@@ -176,7 +177,7 @@ class ScopedEvidenceTest(unittest.TestCase):
         self.assertEqual("passed", state.finalize_quality_attempt(self.root, "test", task, "passed", "codex")["outcome"])
 
     def test_operation_shares_log_plan_and_snapshot_and_sees_appends(self):
-        with inputs.evidence_operation(), patch.object(state, "_execution_records", wraps=state._execution_records) as reads, patch.object(state, "_latest_execution_plan", wraps=state._latest_execution_plan) as plans:
+        with inputs.evidence_operation(), patch.object(store, "_execution_records", wraps=store._execution_records) as reads, patch.object(state, "_latest_execution_plan", wraps=state._latest_execution_plan) as plans:
             state.latest_execution_plan(self.root, "test")
             state.latest_execution_plan(self.root, "test")
             state.latest_handoff_record(self.root, "test")
@@ -199,11 +200,14 @@ class ScopedEvidenceTest(unittest.TestCase):
                 "--session-file", ".easy-coding/sessions/test.json"],
                 env={**os.environ, "HOME": str(self.home)}, text=True)
             return json.loads(result)
-        descriptors = [self.check, {**self.check, "unit_id": "b", "command": "mvn -pl b test"}]
+        descriptors = [self.check, {**self.check, "unit_id": "b", "command": "mvn -pl b test"},
+                       {"type": "review", "unit_id": "a", "dimension": "correctness"},
+                       {"type": "review", "unit_id": "b", "dimension": "correctness"}]
         prepared = cli("prepare-check", "--record", descriptors)
-        self.assertEqual(2, len(prepared))
+        self.assertEqual(4, len(prepared))
+        self.assertTrue(all(item["stage"] == "IMPLEMENT" and item["next_action"] == "run-check" for item in prepared))
         recorded = cli("record-check", "--result", [{"prepared_id": item["prepared_id"],
-            "result": {"passed": True, "exit_code": 0}} for item in prepared])
+            "result": {"passed": True, "exit_code": 0, "reviewer": "codex", "findings": []}} for item in prepared])
         self.assertTrue(all(item["recorded"] for item in recorded))
         self.assertTrue(all(item["reusable"] for item in cli("prepare-check", "--record", descriptors)))
 

@@ -650,7 +650,7 @@ function ensureConcurrentHookSessions(
     "from concurrent.futures import ThreadPoolExecutor",
     "from pathlib import Path",
     "sys.path.insert(0, sys.argv[1])",
-    "import easy_coding_state as state",
+    "import easy_coding_store as state",
     "original_migrate=state.migrate_legacy_state",
     "def slow_migrate(root, agent):",
     "    result=original_migrate(root, agent)",

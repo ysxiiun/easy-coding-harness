@@ -22,24 +22,27 @@ Call `evidence-fingerprints` once to obtain the runtime-owned attempt and candid
 owns signatures and prior-evidence references. Never calculate historical fingerprints, import
 runtime internals to reconstruct old candidates, or ask a reviewer to audit workflow bookkeeping.
 
-For each distinct review or verification, prepare its actual inputs before executing it:
+Prepare independent checks for the same unchanged candidate in one batch before executing them:
 
 ```bash
 {{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py prepare-check \
-  --record '<review/verify JSON with unit_id, dimension or check/check_type/command>' \
+  --record '[<review/verify JSON with unit_id, dimension or check/check_type/command>, ...]' \
   --agent <agent-id> --session-file <P>
 ```
 
-When `reusable:true`, use the returned evidence index and skip that check. Otherwise run the
-specified check once, then register its real result:
+For each returned item with `reusable:true`, use its evidence index and skip that check. Run the
+remaining checks once, then register their real results in one batch:
 
 ```bash
 {{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py record-check \
-  --prepared-id <returned-id> --result '<JSON with passed, exit_code for verification, findings/reviewer for review>' \
+  --result '[{"prepared_id":"<returned-id>","result":<JSON with passed, exit_code for verification, findings/reviewer for review>}, ...]' \
   --agent <agent-id> --session-file <P>
 ```
 
 Preparation binds code/test inputs, module dependencies, build files and the actual command.
+Batching preserves each check's result and evidence identity. A single check may still use
+`--prepared-id` with one result object. Start a new preparation batch after a code change;
+never reuse a pre-edit input snapshot for post-edit checks.
 Use the analyzed Unit `input_files` closure for additional helpers/fixtures/configuration, and record intentional
 environment overrides in the check descriptor. Production-only reviews may declare
 `review_scope:"production"`; test review still covers changed test behavior. A result is accepted
@@ -185,9 +188,9 @@ This returns other-Agent repairs to the coordinator for delta review/verificatio
 may pass while the repair is pending. Scope/contract changes must be resolved rather than silently
 included in the accepted bundle. Repeated starts/completions reuse the existing repair ID.
 
-`prepare-check --record` also accepts an array. `record-check --result` accepts an array of
-`{prepared_id,result}` to register the results of those prepared checks. Each check keeps its own
-inputs and real result; batching shares runtime reads, not unrelated evidence.
+Use the same batch prepare/record flow for repair checks. Consume returned state and next-action
+fields directly; do not follow a successful state operation with an unchanged `snapshot` or
+Spec inspection merely to retrieve fields already returned.
 
 After repair, choose the minimum honest evidence refresh:
 

@@ -321,7 +321,9 @@ describe("configureClaude", () => {
       "utf8",
     );
     expect(stateApi).toContain("READY_LINE");
-    expect(stateApi).toContain('INSTALLED_WORKFLOW_AGENT = "claude-code"');
+    expect(
+      await readFile(path.join(tempDir, ".claude", "hooks", "easy_coding_store.py"), "utf8"),
+    ).toContain('INSTALLED_WORKFLOW_AGENT = "claude-code"');
     expect(
       await readFile(path.join(tempDir, ".claude", "hooks", "easy_dev_spec.py"), "utf8"),
     ).toContain("8239a5befae08b41da43b7cfbf41acf07e487d04");

@@ -443,10 +443,10 @@ describe("shared Codex and Qoder constraints", () => {
     await mkdir(path.join(tempDir, ".easy-coding"), { recursive: true });
     const codexStateApi = path.join(tempDir, ".codex", "hooks", "easy_coding_state.py");
     const qoderStateApi = path.join(tempDir, ".qoder", "hooks", "easy_coding_state.py");
-    expect(await readFile(codexStateApi, "utf8")).toContain(
+    expect(await readFile(path.join(path.dirname(codexStateApi), "easy_coding_store.py"), "utf8")).toContain(
       'INSTALLED_WORKFLOW_AGENT = "codex"',
     );
-    expect(await readFile(qoderStateApi, "utf8")).toContain(
+    expect(await readFile(path.join(path.dirname(qoderStateApi), "easy_coding_store.py"), "utf8")).toContain(
       'INSTALLED_WORKFLOW_AGENT = "qoder"',
     );
 
