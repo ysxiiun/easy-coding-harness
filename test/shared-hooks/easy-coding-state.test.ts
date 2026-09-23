@@ -1,6 +1,16 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { appendFile, mkdir, mkdtemp, readFile, readdir, rm, utimes, writeFile } from "node:fs/promises";
+import {
+  appendFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  realpath,
+  rm,
+  utimes,
+  writeFile,
+} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -5323,6 +5333,7 @@ describe("easy_coding_state.py handoff and claim", () => {
     const snapshot = JSON.parse(output) as {
       action: string;
       handoff: Record<string, unknown>;
+      handoff_prompt: string;
       status_context: string;
     };
 
@@ -5335,6 +5346,11 @@ describe("easy_coding_state.py handoff and claim", () => {
     });
     expect(snapshot.handoff).not.toHaveProperty("to");
     expect(snapshot.handoff).not.toHaveProperty("next_agent");
+    const handoffPrompt = [
+      `Use ec-workflow in project "${await realpath(tempDir)}" to claim task`,
+      '"06-26-handoff" and continue from the existing handoff.',
+    ].join(" ");
+    expect(snapshot.handoff_prompt).toBe(handoffPrompt);
     expect(snapshot.status_context).toContain("[workflow-state:idle]");
 
     const executionLine = await readFile(
@@ -5344,6 +5360,7 @@ describe("easy_coding_state.py handoff and claim", () => {
     const handoff = JSON.parse(executionLine.trim()) as Record<string, unknown>;
     expect(handoff).not.toHaveProperty("to");
     expect(handoff).not.toHaveProperty("next_agent");
+    expect(handoff).not.toHaveProperty("handoff_prompt");
 
     const session = JSON.parse(
       await readFile(path.join(tempDir, ".easy-coding", "sessions", "test.json"), "utf8"),
@@ -5357,6 +5374,7 @@ describe("easy_coding_state.py handoff and claim", () => {
       ),
     );
     expect(task.pending_transition).toMatchObject({ from: "ANALYSIS", to: "IMPLEMENT" });
+    expect(task).not.toHaveProperty("handoff_prompt");
 
     await writeSessionFixture("06-26-handoff");
     const pendingContext = execFileSync(

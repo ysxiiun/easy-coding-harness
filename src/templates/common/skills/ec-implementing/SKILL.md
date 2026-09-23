@@ -229,6 +229,10 @@ conversation overhead while keeping work observable.
 
 When `continuation.next_action=implement`, execute only its approved Units. Reuse the original plan,
 commands and results. Honor `stop_after:IMPLEMENT`: record completion and hand back with
-`next_action:quality`, then stop. The receiving coordinator handles the existing stage boundary
-once under the approval policy; the executor never starts quality work by inertia. Users may
-instead choose current-Agent execution. No platform is permanently assigned either role.
+`next_action:quality`. After that handoff succeeds, localize its returned `handoff_prompt` into the
+user's language, show it in a standalone copyable code block while preserving `ec-workflow`, the
+exact absolute project path, and task ID, and tell the user to copy it to the original main Agent.
+Persist important details in the handoff summary first; the prompt may append at most one short
+reminder and never carries the scope, approval, progress, or evidence by itself. Then stop without
+starting QUALITY. Users may instead choose current-Agent execution. No platform is permanently
+assigned either role.

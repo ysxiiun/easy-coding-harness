@@ -6562,6 +6562,16 @@ def handoff_task(
     snapshot["task_id"] = str(resolved_task_id)
     snapshot["handoff"] = record
     snapshot["action"] = "handoff"
+    if continuation and continuation.get("next_action") == "quality":
+        snapshot["handoff_prompt"] = (
+            f'Use ec-workflow in project "{root.resolve()}" to resume task "{resolved_task_id}" '
+            "and continue review and verification."
+        )
+    else:
+        snapshot["handoff_prompt"] = (
+            f'Use ec-workflow in project "{root.resolve()}" to claim task "{resolved_task_id}" '
+            "and continue from the existing handoff."
+        )
     return snapshot
 
 

@@ -160,6 +160,12 @@ At an implementation decision, offer current-Agent execution, handoff, or defer/
 Use `handoff-task --continuation` with `next_action`, existing `unit_ids`, optional `evidence_refs`,
 and `stop_after`. Implement-only handoff uses `next_action:implement, stop_after:IMPLEMENT`;
 on completion return `next_action:quality` to the coordinator. QUALITY repairs follow ec-quality.
+After a successful handoff, localize the returned `handoff_prompt` into the user's language and
+show it in a standalone copyable code block while preserving `ec-workflow`, the exact absolute
+project path, and task ID. Persist any necessary extra context in the handoff summary first, then
+append at most one short reminder derived from it. Scope, approval, progress, and evidence remain
+in the task records; the prompt is only navigation. Do not show a success prompt for a cancelled
+or failed handoff, and stop the sending Agent after displaying it.
 The user can authorize the coordinator to fix a small change directly in either mode.
 
 ## Stage dispatch

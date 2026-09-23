@@ -108,6 +108,11 @@ class ScopedEvidenceTest(unittest.TestCase):
                 dispatched = state.start_quality_repair(*args[:3], True, *args[4:])
                 self.assertEqual("repair", dispatched["handoff"]["next_action"])
                 self.assertEqual("QUALITY", dispatched["handoff"]["stage"])
+                self.assertEqual(
+                    f'Use ec-workflow in project "{self.root.resolve()}" to claim task "test" '
+                    "and continue from the existing handoff.",
+                    dispatched["handoff_prompt"],
+                )
                 # 已授权接力不因接手方的默认模式不同而再次审批。
                 claimed = state.claim_task(self.root, "test", "qoder", ".easy-coding/sessions/worker.json")
                 self.assertEqual("repair", claimed["continuation"]["next_action"])
@@ -122,6 +127,11 @@ class ScopedEvidenceTest(unittest.TestCase):
                 state.record_check(self.root, "test", task, prepared["prepared_id"], {"passed": True, "exit_code": 0}, "qoder")
                 completed = state.complete_quality_repair(self.root, repair["repair_id"], "qoder", "test", ".easy-coding/sessions/worker.json")
                 self.assertEqual("quality", completed["handoff"]["next_action"])
+                self.assertEqual(
+                    f'Use ec-workflow in project "{self.root.resolve()}" to resume task "test" '
+                    "and continue review and verification.",
+                    completed["handoff_prompt"],
+                )
                 returned = state.claim_task(self.root, "test", "codex", ".easy-coding/sessions/test.json")
                 self.assertEqual("QUALITY", returned["status"])
                 self.assertEqual([], returned["task"]["stage_history"])

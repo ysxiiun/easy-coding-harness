@@ -95,7 +95,7 @@ any stage --[user abort via ec-task-close]--> CLOSED
 - Java 单测策略由 `unit_test_mode: none | ut | tdd` 选择，默认 `none`，按字段遵循会话 > 本地 `~/.easy-coding/config.yaml` > 项目 > 默认值。UT 要求本地单测通过及改动行覆盖率达标；TDD 在此基础上要求测试先行与 TDD 审查。两者共用 `ut_coverage_threshold`（默认 90，范围 1..100）和现有 `ec-tdd-init`/JaCoCo 基础设施。进入 IMPLEMENT 时冻结策略、baseline 与阈值，只验收本任务修改的生产代码；一次测试同时生成测试及覆盖率证据。UT 无额外过程文档或独立审查，三种策略均不提高机械执行深度。远程 CI 不作为验收条件；`none` 保留普通任务需要的验证，不附加覆盖率工作。
 - 所有修改任务都进入 QUALITY；纯对话分析、解释、报告和只读 review 保持 Ready，不创建任务。文档或配置一旦写入仓库，仍走完整状态机。
 - `QUALITY` 同时编排只读 Review Gate 与 Verification Gate。Fast 使用主 Agent 聚焦自审和最小定向验证，Standard 使用一个独立 reviewer 与受影响检查，Strict 使用至少两个独立维度并只对实际修改仓库运行完整适用检查。两个 Gate 绑定同一候选指纹和 attempt，必须完成或明确取消后才形成一次 Repair Bundle；普通代码/测试修复留在 QUALITY；只有需求、契约或主要实现方案变化才回 ANALYSIS/IMPLEMENT，环境问题留在 QUALITY 重试。修复先登记范围，再执行，完成后只审查增量和验证受影响输入。
-- `cooperate_mode` 默认为 `default`，保留阶段节点交接；`dispatch` 支持人工派发实施及 QUALITY 内修复。主 Agent 分析、验证、沉淀；用户一次选择由当前 Agent 执行、交给其他 Agent 或暂缓。派发与审批合并处理，接手方复用方案、Unit 和证据，完成后交回；不自动启动其他 Agent。
+- `cooperate_mode` 默认为 `default`，保留阶段节点交接；`dispatch` 支持人工派发实施及 QUALITY 内修复。主 Agent 分析、验证、沉淀；用户一次选择由当前 Agent 执行、交给其他 Agent 或暂缓。派发与审批合并处理，接手方复用方案、Unit 和证据，完成后交回；不自动启动其他 Agent。交接成功后会输出包含真实项目绝对路径和任务 ID 的简短 `ec-workflow` 提示词，方便复制到另一 Agent；范围、授权、进度与验证证据仍以原任务和交接记录为准。
 - 修复仅刷新受影响检查；运行时引用输入未变化的历史证据，保留来源与执行时间，Agent 不重写通过记录。
 - 非 TDD 的 IMPLEMENT 只负责编码，不运行测试；Verification Gate 统一执行 lint/typecheck/test/build。TDD 的 RED/GREEN/REFACTOR 是唯一例外，当前指纹绿色证据可在 QUALITY 复用。
 - QUALITY 通过后冻结验收检查点；若代码随后变化，Harness 展示完整差异并绑定

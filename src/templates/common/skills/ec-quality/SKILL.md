@@ -175,18 +175,26 @@ its existing approval policy for local repair, with no handoff inside the stage.
 ```
 
 Pass `--confirmed` only for a real user decision on this bundle. For other-Agent execution the call
-also writes the handoff. The recipient claims the task and directly repairs the approved files;
-it must not ask again or return to IMPLEMENT. Bounded code and necessary tests follow the existing
-unit test strategy, including TDD lifecycle checks only when TDD is frozen. The recipient finishes:
+also writes the handoff. After it succeeds, localize the returned `handoff_prompt` into the user's
+language and show it in a standalone copyable code block while preserving `ec-workflow`, the exact
+absolute project path, and task ID, then stop the coordinator's repair work. Do not show a success
+prompt after cancellation or failure. The recipient claims the task and directly repairs the
+approved files; it must not ask again or return to IMPLEMENT. Bounded code and necessary tests
+follow the existing unit test strategy, including TDD lifecycle checks only when TDD is frozen. The
+recipient finishes:
 
 ```bash
 {{PYTHON_CMD}} {{platform_config_dir}}/hooks/easy_coding_state.py complete-quality-repair \
   --repair-id <id> --agent <agent-id> --session-file <P>
 ```
 
-This returns other-Agent repairs to the coordinator for delta review/verification. No quality gate
-may pass while the repair is pending. Scope/contract changes must be resolved rather than silently
-included in the accepted bundle. Repeated starts/completions reuse the existing repair ID.
+When this returns an other-Agent repair with `next_action:quality`, display its localized
+`handoff_prompt` in the same copyable form, tell the user to copy it to the original main Agent,
+and stop the executor. Persist important details in the existing repair handoff summary; either
+prompt may append at most one short reminder from that summary and never carries scope, approval,
+progress, or evidence by itself. No quality gate may pass while the repair is pending.
+Scope/contract changes must be resolved rather than silently included in the accepted bundle.
+Repeated starts/completions reuse the existing repair ID.
 
 Use the same batch prepare/record flow for repair checks. Consume returned state and next-action
 fields directly; do not follow a successful state operation with an unchanged `snapshot` or

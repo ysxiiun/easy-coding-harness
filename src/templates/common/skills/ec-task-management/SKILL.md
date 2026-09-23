@@ -56,3 +56,9 @@ Display the task coordinator, continuation action/stop point and current repair 
 returns the existing approved work; do not request a second scope approval. The main Agent is not
 replaced by the coding executor. Handoff summaries reference existing plan Units and execution
 indices; never copy a new Spec or reconstruct old verification results.
+
+After `handoff-task` succeeds, localize its returned `handoff_prompt` into the user's language and
+show it in a standalone copyable code block while preserving `ec-workflow`, the exact absolute
+project path, and task ID. Persist important context in the existing task or handoff summary; append
+at most one short reminder from that summary. Never display a success prompt after cancellation or
+failure, and stop the sender after a completed handoff.
